@@ -1,0 +1,13 @@
+*.pyc
+*.swp
+*.egg-info
+__pycache__
+.coverage
+venv
+testdata
+
+
+# Added by cargo
+
+/target
+Cargo.lock
