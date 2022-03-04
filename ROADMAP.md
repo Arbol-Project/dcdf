@@ -101,4 +101,34 @@ experiment with other values. In this case, it means a raster is subdivided into
 quadrants which, in turn, are subdivided into 4 more quadrants, and so on, recursively.
 
 It is this tree structure that allows us to divide a span into some number of chunks to
-be stored independtly of each other. 
+be stored independently of each other.
+
+## IPLD
+
+The software can use adapters to use any IPLD-like datastore, such as IPFS. The basic
+contract needed by the software is just:
+
+    ~~~
+    interface IPLD {
+        method store_chunk(bytes) -> sha1 {
+            // Store a byte array, returning the sha1 hash
+        }
+    
+        method get_chunk(sha1) -> bytes {
+            // Retrieve a byte array given the sha1 hash
+        }
+    }
+    ~~~
+
+For development we might use an implementation that just uses the local filesystem, and
+then later use an implementation that stores to IPFS or any other compatible system that
+might emerge.
+
+## Data Prep
+
+It seems highly likely that the data sources we'd consume for this use data types of a
+much higher precision than their actual data. For instance, we might have an array of 64
+bit floating point numbers when the data could be represented in 32 bit floats or 32,
+24, or 16 bit integer or fixed pointed numbers. There's potentially some utility in
+looking at incoming data and seeing if the raw numbers can be stored in a more compact
+way, before encoding them using K^2 raster.
