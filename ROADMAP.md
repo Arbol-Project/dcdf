@@ -65,13 +65,17 @@ The high level structure of data will be as follows:
       point in the time series raster with logical (integer) coordinates (x, y, z),
       this provides enough data to (longitude, latitude, date/time). 
 
+      GeoTIFF has already solved this problem, so worth looking at (stealing) their
+      solution for mapping geographic coordinates to logical coordinates, using
+      projections, etc...
+
       This mapping will need to be the same for all data in this span. If, in the data
       source, this mapping changes over time, then any time when it changes a new span
       will need to be started.
 
       Because this is stored in an IPLD based datastore, identical maps that are used
       across many spans will only be stored once.
-
+        
     - Directory
 
       This is a file which will be encoded similarly to the K^2 Raster used in the low
