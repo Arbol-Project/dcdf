@@ -1,39 +1,43 @@
 //! Encode/Decode Heuristic K^2 Raster
 //!
-//! An implementation of the algorithm proposed by Silva-Coira, Paramá, de Bernardo, and
-//! Seco in their paper, "Space-efficient representations of raster time series".
+//! An implementation of the algorithm proposed by Silva-Coira, Paramá, de Bernardo, and Seco in
+//! their paper, "Space-efficient representations of raster time series".
 //!
 //! See: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
 
-// Remove later. Currently all private methods that are only used in tests so far are
-// considered dead code. They will get used eventually, but the warnings are annoying
-// at this stage of development
-#![allow(dead_code)]
+use num::{one, zero, Integer};
 
-/// A sequence of bit values (0 or 1)
+/// An array of bits.
 ///
-struct BitMap {
+/// This unindexed version is used to build up a BitMap using the `push` method. Once a BitMap is
+/// built, it should be converted to an indexed type for performant rank and select queries.
+///
+/// Typical usage:
+///
+/// let builder = BitMap::new();
+///
+/// builder.push(...)
+/// builder.push(...)
+/// etc...
+///
+/// let mut bitmap = IndexedBitMap::from(builder);
+///
+pub struct BitMap {
     length: usize,
-    packed: Vec<u8>,
+    bitmap: Vec<u8>,
 }
 
-// This is a very naive implementation. By adding a little bit extra data can vastly
-// improve performance for rank and select queries. Will be revised shortly to use
-// something more performant.
-//
-// See: https://users.dcc.uchile.cl/~gnavarro/algoritmos/ps/wea05.pdf
-//
 impl BitMap {
-    /// Construct an empty BitMap
-    fn new() -> BitMap {
+    /// Initialize an empty BitMap
+    pub fn new() -> BitMap {
         BitMap {
             length: 0,
-            packed: vec![],
+            bitmap: vec![],
         }
     }
 
-    /// Pushes a bit onto the BitMap
-    fn push(&mut self, bit: bool) {
+    /// Push a bit onto the BitMap
+    pub fn push(&mut self, bit: bool) {
         // Which bit do we need to set in the relevant byte?
         let position = self.length % 8;
 
@@ -42,95 +46,278 @@ impl BitMap {
 
         // If position == 0, we start a new byte
         if position == 0 {
-            self.packed.push(if bit { 1 << shift } else { 0 });
+            self.bitmap.push(if bit { 1 << shift } else { 0 });
         }
         // Otherwise add bit to currently started byte
         else if bit {
-            let last = self.packed.len() - 1;
-            self.packed[last] += 1 << shift;
+            let last = self.bitmap.len() - 1;
+            self.bitmap[last] += 1 << shift;
         }
 
         self.length += 1;
     }
 
-    fn iter(&self) -> BitMapIterator {
-        BitMapIterator::new(&self)
-    }
-
-    /// Counts occurence of 1 in BitMap[0...i]
-    fn rank1(&self, i: usize) -> usize {
-        if i > self.length - 1 {
+    /// Count occurences of 1 in BitMap[0...i]
+    ///
+    /// Naive brute force implementation that is only used to double check the indexed
+    /// implementation in tests.
+    pub fn rank(&self, i: usize) -> usize {
+        if i > self.length {
             // Can only happen if there is a programming error in this module
             panic!("index out of bounds. length: {}, i: {}", self.length, i);
         }
 
         let mut count = 0;
-        for bit in self.iter().take(i + 1) {
-            if bit {
-                count += 1;
-            }
+        for word in self.bitmap.iter().take(i / 8) {
+            count += word.count_ones();
         }
 
-        count
+        let leftover_bits = i % 8;
+        if leftover_bits > 0 {
+            let shift = 8 - leftover_bits;
+            let word = self.bitmap[i / 8];
+            count += (word >> shift).count_ones();
+        }
+
+        count.try_into().unwrap()
     }
 
-    /// Returns index of nth occurence of 1 in BitMap
-    fn select1(&self, n: usize) -> usize {
+    /// Get the index of the nth occurence of 1 in BitMap
+    ///
+    /// Naive brute force implementation that is only used to double check the indexed
+    /// implementation in tests.
+    pub fn select(&self, n: usize) -> Option<usize> {
+        if n == 0 {
+            panic!("select(0)");
+        }
+
         let mut count = 0;
+        for (word_index, word) in self.bitmap.iter().enumerate() {
+            let popcount: usize = word.count_ones().try_into().unwrap();
+            if popcount + count >= n {
+                // It's in this word somewhere
+                let mut position = word_index * 8;
+                let mut mask = 1<<7;
+                while count < n {
+                    if word & mask > 0 {
+                        count += 1;
+                    }
+                    mask >>= 1;
+                    position += 1;
+                }
+                return Some(position);
+            }
+            count += popcount;
+        }
+        None
+    }
+}
 
-        for (i, bit) in self.iter().enumerate() {
-            if bit {
+/// An array of bits with a single level index for making fast rank and select queries.
+///
+pub struct IndexedBitMap {
+    length: usize,
+    k: usize,
+    index: Vec<u32>,
+    bitmap: Vec<u32>,
+}
+
+impl IndexedBitMap {
+
+    /// Count occurences of 1 in BitMap[0...i]
+    pub fn rank(&self, i: usize) -> usize {
+        if i > self.length {
+            // Can only happen if there is a programming error in this module
+            panic!("index out of bounds. length: {}, i: {}", self.length, i);
+        }
+
+        // Use the index
+        let index = i / 32 / self.k;
+        let mut count = if index > 0 { self.index[index - 1] } else { 0 };
+
+        // Use popcount/count_ones on any whole words not included in index
+        let start = index * self.k;
+        let end = i / 32;
+        for word in &self.bitmap[start..end] {
+            count += word.count_ones();
+        }
+
+        // Count last bits in remaining fraction of a word
+        let leftover_bits = i - end * 32;
+        if leftover_bits > 0 {
+            let word = &self.bitmap[end];
+            let shift = 32 - leftover_bits;
+            count += (word >> shift).count_ones();
+        }
+
+        count.try_into().unwrap()
+    }
+
+    /// Get the index of the nth occurence of 1 in BitMap
+    pub fn select(&self, n: usize) -> Option<usize> {
+        if n == 0 {
+            panic!("select(0)");
+        }
+
+        // Use binary search to find block containing nth bit set to 1
+        // We can set a lower bound by considering which block would contain n if every bit were
+        // set to 1
+        let mut low_bound = n / 32 / self.k;
+        let mut high_bound = self.index.len();
+    
+        if high_bound == 0 {
+            // Special case. This bitmap isn't large enough to have an index, so go straight to
+            // counting
+            return self.select_from_block(0, n);
+        }
+
+        let mut block = (high_bound - low_bound) / 2;
+        loop {
+            let count: usize = self.index[block].try_into().unwrap();
+            if n == count {
+                // Special case. Count at this block is exactly i, so it's in this block, towards
+                // the end, so count backwards from the end
+                return Some(self.select_first_from_end_of_block(block));
+            }
+
+            if n < count {
+                // Search earlier blocks
+                high_bound = block;
+            }
+            else if n > count {
+                // Search later blocks
+                low_bound = block;
+            }
+            if high_bound - low_bound == 1 {
+                // Search this block
+                return self.select_from_block(low_bound, n);
+            }
+            block = low_bound + (high_bound - low_bound) / 2;
+        }
+    }
+
+    /// Starting from the end of the given block, search in reverse for the first 1 in the block
+    /// and return its position within the BitMap
+    fn select_first_from_end_of_block(&self, block_index: usize) -> usize {
+        let mut word_index = (block_index + 1) * self.k - 1;
+        let mut position = (word_index + 1) * 32;
+        let mut word = self.bitmap[word_index];
+        let mut mask: u32 = 1;
+        while word & mask == 0 {
+            if mask == 1 << 31 {
+                word_index -= 1;
+                word = self.bitmap[word_index];
+                mask = 1;
+            }
+            else {
+                mask <<= 1;
+            }
+            position -= 1;
+        }
+
+        position
+    }
+
+    /// Perform a sequential search in the given block for the nth 1 in the array
+    fn select_from_block(&self, block_index: usize, n: usize) -> Option<usize> {
+        let mut word_index = block_index * self.k;
+        let mut position = word_index * 32;
+        let mut word = self.bitmap[word_index];
+        let mut mask: u32 = 1<<31;
+
+        let mut count: usize = if block_index > 0 {
+            self.index[block_index - 1].try_into().unwrap()
+        }
+        else {
+            0
+        };
+
+        loop {
+            if word & mask != 0 {
                 count += 1;
-                println!("hello? n={} i={} bit={} count={}", n, i, bit, count);
-
                 if count == n {
-                    return i;
+                    return Some(position + 1);
+                }
+            }
+
+            if mask == 1 {
+                word_index += 1;
+                if word_index == self.bitmap.len() {
+                    return None;
+                }
+                word = self.bitmap[word_index];
+                mask = 1 << 31;
+            }
+            else {
+                mask >>= 1;
+            }
+            position += 1;
+        }
+    }
+}
+
+impl From<BitMap> for IndexedBitMap {
+    /// Generate an indexed bitmap from an unindexed one.
+    fn from(bitmap: BitMap) -> Self {
+        // Value of k is more or less arbitrary. Could be tuned via benchmarking.
+        let k = 4; // 25%
+        let blocks = bitmap.length / 32 / k;
+        let mut index: Vec<u32> = Vec::with_capacity(blocks);
+
+        // Convert vector of u8 to vector of u32
+        let words = div_ceil(bitmap.bitmap.len(), 4);
+        let mut bitmap32: Vec<u32> = Vec::with_capacity(words);
+        if words > 0 {
+            let mut shift = 24;
+            let mut word = 0;
+
+            bitmap32.push(0);
+            for byte in bitmap.bitmap {
+                let mut byte: u32 = byte.into();
+                byte <<= shift;
+                bitmap32[word] |= byte;
+
+                if shift == 0 {
+                    bitmap32.push(0);
+                    word += 1;
+                    shift = 24;
+                } else {
+                    shift -= 8;
                 }
             }
         }
 
-        // Can only happen if there is a programming error in this module
-        panic!("select out of bounds. count: {}, n: {}", count, n);
-    }
-}
+        // Generate index
+        let mut count = 0;
+        for i in 0..blocks {
+            for j in 0..k {
+                count += bitmap32[i * k + j].count_ones();
+            }
+            index.push(count);
+        }
 
-struct BitMapIterator<'a> {
-    bitmap: &'a BitMap,
-    position: usize,
-    mask: u8,
-}
-
-impl BitMapIterator<'_> {
-    fn new(bitmap: &BitMap) -> BitMapIterator {
-        BitMapIterator {
-            bitmap: bitmap,
-            position: 0,
-            mask: 1 << 7,
+        IndexedBitMap {
+            length: bitmap.length,
+            k: k,
+            index: index,
+            bitmap: bitmap32,
         }
     }
 }
 
-impl Iterator for BitMapIterator<'_> {
-    type Item = bool;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.position == self.bitmap.length {
-            return None;
-        }
-
-        let index = self.position / 8;
-        let bit = self.bitmap.packed[index] & self.mask;
-
-        self.position += 1;
-        if self.mask == 1 {
-            self.mask = 1 << 7;
-        } else {
-            self.mask >>= 1;
-        }
-
-        Some(bit != 0)
+/// Returns n / m with remainder rounded up to nearest integer
+fn div_ceil<T>(m: T, n: T) -> T
+where
+    T: Integer + Copy,
+{
+    let a = m / n;
+    if m % n > zero() {
+        a + one()
+    } else {
+        a
     }
 }
+
 
 #[cfg(test)]
 mod tests;
