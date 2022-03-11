@@ -97,7 +97,7 @@ impl BitMap {
             if popcount + count >= n {
                 // It's in this word somewhere
                 let mut position = word_index * 8;
-                let mut mask = 1<<7;
+                let mut mask = 1 << 7;
                 while count < n {
                     if word & mask > 0 {
                         count += 1;
@@ -122,8 +122,61 @@ pub struct IndexedBitMap {
     bitmap: Vec<u32>,
 }
 
-impl IndexedBitMap {
+impl From<BitMap> for IndexedBitMap {
+    /// Generate an indexed bitmap from an unindexed one.
+    ///
+    /// Index is an array of bit counts for every k words in the bitmap, such that
+    /// rank(i) = index[i / k / wordlen] if i is an even multiple of k * wordlen. wordlen is 32 for
+    /// this implementation which uses 32 bit unsigned integers.
+    fn from(bitmap: BitMap) -> Self {
+        // Value of k is more or less arbitrary. Could be tuned via benchmarking.
+        // Index will add bitmap.length / k extra space to store the index
+        let k = 4; // 25% extra space to store the index
+        let blocks = bitmap.length / 32 / k;
+        let mut index: Vec<u32> = Vec::with_capacity(blocks);
 
+        // Convert vector of u8 to vector of u32
+        let words = div_ceil(bitmap.bitmap.len(), 4);
+        let mut bitmap32: Vec<u32> = Vec::with_capacity(words);
+        if words > 0 {
+            let mut shift = 24;
+            let mut word_index = 0;
+
+            bitmap32.push(0);
+            for byte in bitmap.bitmap {
+                let mut word: u32 = byte.into();
+                word <<= shift;
+                bitmap32[word_index] |= word;
+
+                if shift == 0 {
+                    bitmap32.push(0);
+                    word_index += 1;
+                    shift = 24;
+                } else {
+                    shift -= 8;
+                }
+            }
+        }
+
+        // Generate index
+        let mut count = 0;
+        for i in 0..blocks {
+            for j in 0..k {
+                count += bitmap32[i * k + j].count_ones();
+            }
+            index.push(count);
+        }
+
+        IndexedBitMap {
+            length: bitmap.length,
+            k: k,
+            index: index,
+            bitmap: bitmap32,
+        }
+    }
+}
+
+impl IndexedBitMap {
     /// Count occurences of 1 in BitMap[0...i]
     pub fn rank(&self, i: usize) -> usize {
         if i > self.length {
@@ -132,11 +185,11 @@ impl IndexedBitMap {
         }
 
         // Use the index
-        let index = i / 32 / self.k;
-        let mut count = if index > 0 { self.index[index - 1] } else { 0 };
+        let block = i / 32 / self.k;
+        let mut count = if block > 0 { self.index[block - 1] } else { 0 };
 
         // Use popcount/count_ones on any whole words not included in index
-        let start = index * self.k;
+        let start = block * self.k;
         let end = i / 32;
         for word in &self.bitmap[start..end] {
             count += word.count_ones();
@@ -164,14 +217,14 @@ impl IndexedBitMap {
         // set to 1
         let mut low_bound = n / 32 / self.k;
         let mut high_bound = self.index.len();
-    
+
         if high_bound == 0 {
             // Special case. This bitmap isn't large enough to have an index, so go straight to
             // counting
             return self.select_from_block(0, n);
         }
 
-        let mut block = (high_bound - low_bound) / 2;
+        let mut block = low_bound + (high_bound - low_bound) / 2;
         loop {
             let count: usize = self.index[block].try_into().unwrap();
             if n == count {
@@ -183,8 +236,7 @@ impl IndexedBitMap {
             if n < count {
                 // Search earlier blocks
                 high_bound = block;
-            }
-            else if n > count {
+            } else if n > count {
                 // Search later blocks
                 low_bound = block;
             }
@@ -208,8 +260,7 @@ impl IndexedBitMap {
                 word_index -= 1;
                 word = self.bitmap[word_index];
                 mask = 1;
-            }
-            else {
+            } else {
                 mask <<= 1;
             }
             position -= 1;
@@ -223,12 +274,11 @@ impl IndexedBitMap {
         let mut word_index = block_index * self.k;
         let mut position = word_index * 32;
         let mut word = self.bitmap[word_index];
-        let mut mask: u32 = 1<<31;
+        let mut mask: u32 = 1 << 31;
 
         let mut count: usize = if block_index > 0 {
             self.index[block_index - 1].try_into().unwrap()
-        }
-        else {
+        } else {
             0
         };
 
@@ -247,60 +297,10 @@ impl IndexedBitMap {
                 }
                 word = self.bitmap[word_index];
                 mask = 1 << 31;
-            }
-            else {
+            } else {
                 mask >>= 1;
             }
             position += 1;
-        }
-    }
-}
-
-impl From<BitMap> for IndexedBitMap {
-    /// Generate an indexed bitmap from an unindexed one.
-    fn from(bitmap: BitMap) -> Self {
-        // Value of k is more or less arbitrary. Could be tuned via benchmarking.
-        let k = 4; // 25%
-        let blocks = bitmap.length / 32 / k;
-        let mut index: Vec<u32> = Vec::with_capacity(blocks);
-
-        // Convert vector of u8 to vector of u32
-        let words = div_ceil(bitmap.bitmap.len(), 4);
-        let mut bitmap32: Vec<u32> = Vec::with_capacity(words);
-        if words > 0 {
-            let mut shift = 24;
-            let mut word = 0;
-
-            bitmap32.push(0);
-            for byte in bitmap.bitmap {
-                let mut byte: u32 = byte.into();
-                byte <<= shift;
-                bitmap32[word] |= byte;
-
-                if shift == 0 {
-                    bitmap32.push(0);
-                    word += 1;
-                    shift = 24;
-                } else {
-                    shift -= 8;
-                }
-            }
-        }
-
-        // Generate index
-        let mut count = 0;
-        for i in 0..blocks {
-            for j in 0..k {
-                count += bitmap32[i * k + j].count_ones();
-            }
-            index.push(count);
-        }
-
-        IndexedBitMap {
-            length: bitmap.length,
-            k: k,
-            index: index,
-            bitmap: bitmap32,
         }
     }
 }
@@ -317,7 +317,6 @@ where
         a
     }
 }
-
 
 #[cfg(test)]
 mod tests;

@@ -310,14 +310,12 @@ mod indexed_bitmap {
 
         // Contrivance to exercise select_first_at_end_of_block
         // Go to the end of the 200th block and zero out the last word of that block
-        let addr = 200 * 4 * 4;   // 4 words per block, 4 bytes per word
-        for i in addr - 5 .. addr {
+        let addr = 200 * 4 * 4; // 4 words per block, 4 bytes per word
+        for i in addr - 5..addr {
             bitmap.bitmap[i] = 0;
         }
         let rank_200 = bitmap.rank(200 * 4 * 4 * 8);
-        test_select(bitmap, &vec![
-            rank_200,
-        ]);
+        test_select(bitmap, &vec![rank_200]);
     }
 
     #[test]
@@ -334,5 +332,4 @@ mod indexed_bitmap {
         let indexes: Vec<usize> = RandomRange(1 << 30).take(1000).collect();
         test_select(bitmap, &indexes);
     }
-
 }
