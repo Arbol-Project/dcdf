@@ -16,3 +16,21 @@ This is very much a work in progress, and is still at the science fiction stage 
 things. 
 
 For more information on the planned implementation, see the [Road Map](ROADMAP.md).
+
+## Quick Start for Development
+
+Install and activate a Python virtual environment using your preferred method.
+
+Then:
+
+$ pip install -U pip setuptools maturin
+$ maturin develop -E dev
+
+Rerun that last command any time you need to recompile Rust code:
+
+
+$ maturin develop -E dev
+
+To run tests:
+
+$ pytest tests
