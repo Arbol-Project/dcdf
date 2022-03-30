@@ -343,15 +343,14 @@ where
         to_traverse.push_back((root.max, root.min, &root));
 
         // Breadth first traversal
-        while let Some((local_max, local_min, child)) = to_traverse.pop_front() {
-            max.push(local_max);
+        while let Some((diff_max, diff_min, child)) = to_traverse.pop_front() {
+            max.push(diff_max);
 
             if !child.children.is_empty() {
                 let elide = child.min == child.max;
                 nodemap.push(!elide);
-                print!("{}", if elide { 0 } else { 1 });
                 if !elide {
-                    min.push(local_min);
+                    min.push(diff_min);
                     for descendant in &child.children {
                         to_traverse.push_back((
                             child.max - descendant.max,
