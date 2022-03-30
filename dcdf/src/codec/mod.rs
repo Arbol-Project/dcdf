@@ -5,7 +5,10 @@
 //!
 //! See: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
 
-use num::{one, zero, Integer};
+use num::{one, zero, Integer, Num};
+use ndarray::{ArrayView2, s};
+use std::collections::VecDeque;
+use std::fmt::Debug;
 
 /// An array of bits.
 ///
@@ -303,6 +306,134 @@ impl IndexedBitMap {
             position += 1;
         }
     }
+}
+
+/// K^2 raster encoded Snapshot
+pub struct Snapshot<T> 
+where
+    T: Num + Copy + PartialOrd + Debug,
+{
+    /// Bitmap of tree structure, known as T in Silva-Coira paper
+    nodemap: IndexedBitMap,
+
+    /// Tree node maximum values, known as Lmax in Silva-Coira paper
+    max: Vec<T>,
+
+    /// Tree node minimum values, known as Lmin in Silva-Coira paper
+    min: Vec<T>,
+
+    /// The K in K^2 raster.
+    k: usize,
+
+    /// Value used to indicate missing value in this snapshot
+    nan: T,
+}
+
+impl<T> Snapshot<T> 
+where
+    T: Num + Copy + PartialOrd + Debug,
+{
+    fn from_array(data: ArrayView2<T>, k: usize, nan: T) -> Self {
+        let mut nodemap = BitMap::new();
+        let mut max: Vec<T> = vec![];
+        let mut min: Vec<T> = vec![];
+
+        let root = K2TreeNode::from_array(data, k);
+        let mut to_traverse = VecDeque::new();
+        to_traverse.push_back((root.max, root.min, &root));
+
+        // Breadth first traversal
+        while let Some((local_max, local_min, child)) = to_traverse.pop_front() {
+            max.push(local_max);
+
+            if !child.children.is_empty() {
+                let elide = child.min == child.max;
+                nodemap.push(!elide);
+                print!("{}", if elide { 0 } else { 1 });
+                if !elide {
+                    min.push(local_min);
+                    for descendant in &child.children {
+                        to_traverse.push_back((
+                                child.max - descendant.max, 
+                                descendant.min - child.min, 
+                                &descendant
+                        ));
+                    }
+                }
+            }
+        }
+
+        println!("");
+        let nodemap = IndexedBitMap::from(nodemap);
+        Snapshot {
+            nodemap,
+            max, 
+            min,
+            k, 
+            nan,
+        }
+    }
+}
+
+// Temporary tree structure for building K^2 raster
+struct K2TreeNode<T> 
+where
+    T: Num + Copy + PartialOrd + Debug,
+{
+    max: T,
+    min: T,
+    children: Vec<K2TreeNode<T>>,
+}
+
+impl<T> K2TreeNode<T>
+where 
+    T: Num + Copy + PartialOrd + Debug,
+{
+    fn from_array(data: ArrayView2<T>, k: usize) -> Self {
+        let side_len = data.shape()[0];
+
+        // Leaf node
+        if side_len == 1 {
+            return K2TreeNode {
+                max: data[[0, 0]],
+                min: data[[0, 0]],
+                children: vec![],
+            }
+        }
+
+        // Branch
+        let mut children: Vec<K2TreeNode<T>> = vec![];
+        let step = side_len / k;
+        for row in 0..k {
+            for col in 0..k {
+                let branch = data.slice(
+                    s![row * step .. (row + 1) * step, col * step .. (col + 1) * step]
+                );
+                children.push(K2TreeNode::from_array(branch, k));
+            }
+        }
+
+        let mut max = children[0].max;
+        let mut min = children[0].min;
+        for child in &children[1..] {
+            if child.max > max {
+                max = child.max;
+            }
+            if child.min < min {
+                min = child.min;
+            }
+        }
+
+        K2TreeNode {
+            min,
+            max,
+            children,
+        }
+    }
+}
+
+pub fn encode_snapshot<T>(data: ArrayView2<T>) -> Vec<u8> {
+    b"booty".iter().cloned().collect()
 }
 
 /// Returns n / m with remainder rounded up to nearest integer
