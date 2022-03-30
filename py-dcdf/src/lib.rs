@@ -1,5 +1,5 @@
-use pyo3::prelude::*;
 use numpy::PyReadonlyArray2;
+use pyo3::prelude::*;
 
 use dcdf;
 

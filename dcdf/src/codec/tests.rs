@@ -353,9 +353,17 @@ mod snapshot {
 
         let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2, 0);
         assert_eq!(snapshot.nodemap.length, 17);
-        assert_eq!(snapshot.nodemap.bitmap, vec![0b11110101001001011000000000000000]);
-        assert_eq!(snapshot.max, vec![9, 0, 3, 4, 5, 0, 2, 3, 3, 0, 3, 3, 3, 0, 0, 1, 0, 
-                   0, 1, 2, 2, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 2, 2, 1, 1, 0, 0, 2, 0, 2, 1]);
+        assert_eq!(
+            snapshot.nodemap.bitmap,
+            vec![0b11110101001001011000000000000000]
+        );
+        assert_eq!(
+            snapshot.max,
+            vec![
+                9, 0, 3, 4, 5, 0, 2, 3, 3, 0, 3, 3, 3, 0, 0, 1, 0, 0, 1, 2, 2, 0, 0, 1, 1, 0, 1, 0,
+                0, 1, 0, 2, 2, 1, 1, 0, 0, 2, 0, 2, 1
+            ]
+        );
         assert_eq!(snapshot.min, vec![2, 3, 0, 1, 2, 0, 0, 0, 0, 0]);
     }
 }

@@ -5,8 +5,8 @@
 //!
 //! See: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
 
+use ndarray::{s, ArrayView2};
 use num::{one, zero, Integer, Num};
-use ndarray::{ArrayView2, s};
 use std::collections::VecDeque;
 use std::fmt::Debug;
 
@@ -309,7 +309,7 @@ impl IndexedBitMap {
 }
 
 /// K^2 raster encoded Snapshot
-pub struct Snapshot<T> 
+pub struct Snapshot<T>
 where
     T: Num + Copy + PartialOrd + Debug,
 {
@@ -329,7 +329,7 @@ where
     nan: T,
 }
 
-impl<T> Snapshot<T> 
+impl<T> Snapshot<T>
 where
     T: Num + Copy + PartialOrd + Debug,
 {
@@ -354,9 +354,9 @@ where
                     min.push(local_min);
                     for descendant in &child.children {
                         to_traverse.push_back((
-                                child.max - descendant.max, 
-                                descendant.min - child.min, 
-                                &descendant
+                            child.max - descendant.max,
+                            descendant.min - child.min,
+                            &descendant,
                         ));
                     }
                 }
@@ -367,16 +367,16 @@ where
         let nodemap = IndexedBitMap::from(nodemap);
         Snapshot {
             nodemap,
-            max, 
+            max,
             min,
-            k, 
+            k,
             nan,
         }
     }
 }
 
 // Temporary tree structure for building K^2 raster
-struct K2TreeNode<T> 
+struct K2TreeNode<T>
 where
     T: Num + Copy + PartialOrd + Debug,
 {
@@ -386,7 +386,7 @@ where
 }
 
 impl<T> K2TreeNode<T>
-where 
+where
     T: Num + Copy + PartialOrd + Debug,
 {
     fn from_array(data: ArrayView2<T>, k: usize) -> Self {
@@ -398,7 +398,7 @@ where
                 max: data[[0, 0]],
                 min: data[[0, 0]],
                 children: vec![],
-            }
+            };
         }
 
         // Branch
@@ -406,9 +406,10 @@ where
         let step = side_len / k;
         for row in 0..k {
             for col in 0..k {
-                let branch = data.slice(
-                    s![row * step .. (row + 1) * step, col * step .. (col + 1) * step]
-                );
+                let branch = data.slice(s![
+                    row * step..(row + 1) * step,
+                    col * step..(col + 1) * step
+                ]);
                 children.push(K2TreeNode::from_array(branch, k));
             }
         }
@@ -424,11 +425,7 @@ where
             }
         }
 
-        K2TreeNode {
-            min,
-            max,
-            children,
-        }
+        K2TreeNode { min, max, children }
     }
 }
 
