@@ -180,6 +180,16 @@ impl From<BitMap> for IndexedBitMap {
 }
 
 impl IndexedBitMap {
+    /// Get the bit at position i
+    pub fn get(&self, i: usize) -> bool {
+        let word_index = i / 32;
+        let bit_index = i % 32;
+        let shift = 31 - bit_index;
+        let word = self.bitmap[word_index];
+
+        (word >> shift) & 1 > 0
+    }
+
     /// Count occurences of 1 in BitMap[0...i]
     pub fn rank(&self, i: usize) -> usize {
         if i > self.length {
@@ -327,6 +337,10 @@ where
 
     /// Value used to indicate missing value in this snapshot
     nan: T,
+
+    /// Length of one side of logical matrix, ie number of rows, number of columns, which are equal
+    /// since it is a square
+    sidelen: usize,
 }
 
 impl<T> Snapshot<T>
@@ -338,6 +352,7 @@ where
         let mut max: Vec<T> = vec![];
         let mut min: Vec<T> = vec![];
 
+        let sidelen = data.shape()[0];
         let root = K2TreeNode::from_array(data, k);
         let mut to_traverse = VecDeque::new();
         to_traverse.push_back((root.max, root.min, &root));
@@ -347,6 +362,7 @@ where
             max.push(diff_max);
 
             if !child.children.is_empty() {
+                // Non-leaf node
                 let elide = child.min == child.max;
                 nodemap.push(!elide);
                 if !elide {
@@ -362,7 +378,6 @@ where
             }
         }
 
-        println!("");
         let nodemap = IndexedBitMap::from(nodemap);
         Snapshot {
             nodemap,
@@ -370,6 +385,36 @@ where
             min,
             k,
             nan,
+            sidelen,
+        }
+    }
+
+    /// Get a cell value.
+    ///
+    /// See: Algorithm 2 in "Scalable and queryable compressed storage structure for raster data" by
+    /// Susana Ladra, José R. Paramá, Fernando Silva-Coira, Information Systems 72 (2017) 179-204
+    ///
+    fn get(&self, row: usize, col: usize) -> T {
+        if !self.nodemap.get(0) {
+            // Special case, single node tree
+            return self.max[0];
+        } else {
+            self._get(self.sidelen, row, col, 0, self.max[0])
+        }
+    }
+
+    fn _get(&self, sidelen: usize, row: usize, col: usize, index: usize, max_value: T) -> T {
+        let sidelen = sidelen / self.k;
+        let index = 1 + self.nodemap.rank(index) * self.k * self.k;
+        let index = index + row / sidelen * self.k + col / sidelen;
+        let max_value = max_value - self.max[index];
+
+        if index >= self.nodemap.length || !self.nodemap.get(index) {
+            // Leaf node
+            max_value
+        } else {
+            // Branch
+            self._get(sidelen, row % sidelen, col % sidelen, index, max_value)
         }
     }
 }
@@ -389,10 +434,10 @@ where
     T: Num + Copy + PartialOrd + Debug,
 {
     fn from_array(data: ArrayView2<T>, k: usize) -> Self {
-        let side_len = data.shape()[0];
+        let sidelen = data.shape()[0];
 
         // Leaf node
-        if side_len == 1 {
+        if sidelen == 1 {
             return K2TreeNode {
                 max: data[[0, 0]],
                 min: data[[0, 0]],
@@ -402,7 +447,7 @@ where
 
         // Branch
         let mut children: Vec<K2TreeNode<T>> = vec![];
-        let step = side_len / k;
+        let step = sidelen / k;
         for row in 0..k {
             for col in 0..k {
                 let branch = data.slice(s![

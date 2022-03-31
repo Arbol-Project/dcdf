@@ -183,6 +183,23 @@ mod indexed_bitmap {
     }
 
     #[test]
+    fn get() {
+        let answers = [
+            true, false, true, false, true, false, true, false, false, false, true,
+        ];
+        let mut bitmap = BitMap::new();
+
+        for answer in answers {
+            bitmap.push(answer);
+        }
+
+        let bitmap = IndexedBitMap::from(bitmap);
+        for (index, answer) in answers.iter().enumerate() {
+            assert_eq!(bitmap.get(index), *answer);
+        }
+    }
+
+    #[test]
     fn rank() {
         // 1010101001
         let bitmap = BitMap {
@@ -336,11 +353,10 @@ mod indexed_bitmap {
 
 mod snapshot {
     use super::*;
-    use ndarray::arr2;
+    use ndarray::{arr2, Array2};
 
-    #[test]
-    fn from_array() {
-        let data = arr2(&[
+    fn array8() -> Array2<i32> {
+        arr2(&[
             [9, 8, 7, 7, 6, 6, 3, 2],
             [7, 7, 7, 7, 6, 6, 3, 3],
             [6, 6, 6, 6, 3, 3, 3, 3],
@@ -349,9 +365,14 @@ mod snapshot {
             [3, 3, 5, 5, 4, 4, 4, 4],
             [3, 3, 3, 5, 4, 4, 4, 4],
             [4, 4, 3, 4, 4, 4, 4, 4],
-        ]);
+        ])
+    }
 
+    #[test]
+    fn from_array() {
+        let data = array8();
         let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2, 0);
+
         assert_eq!(snapshot.nodemap.length, 17);
         assert_eq!(
             snapshot.nodemap.bitmap,
@@ -365,5 +386,17 @@ mod snapshot {
             ]
         );
         assert_eq!(snapshot.min, vec![2, 3, 0, 1, 2, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn get() {
+        let data = array8();
+        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2, 0);
+
+        for row in 0..8 {
+            for col in 0..8 {
+                assert_eq!(snapshot.get(row, col), data[[row, col]]);
+            }
+        }
     }
 }
