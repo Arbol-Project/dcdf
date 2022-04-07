@@ -410,4 +410,13 @@ mod snapshot {
             arr2(&[[7, 7, 7], [6, 6, 6], [5, 6, 6], [5, 5, 5], [3, 5, 5],])
         );
     }
+
+    #[test]
+    fn search_window() {
+        let data = array8();
+        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2, 0);
+
+        let expected: Vec<(usize, usize)> = vec![(2, 1), (3, 1), (2, 2), (3, 2), (4, 1), (4, 2)];
+        assert_eq!(snapshot.search_window(1, 5, 1, 3, 4, 6), expected);
+    }
 }

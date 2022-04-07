@@ -511,6 +511,117 @@ where
             }
         }
     }
+
+    /// Search the window for cells with values in a given range
+    ///
+    /// See: Algorithm 4 in "Scalable and queryable compressed storage structure for raster data"
+    /// by Susana Ladra, José R. Paramá, Fernando Silva-Coira, Information Systems 72 (2017)
+    /// 179-204
+    ///
+    fn search_window(
+        &self,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        lower: T,
+        upper: T,
+    ) -> Vec<(usize, usize)> {
+        let mut cells: Vec<(usize, usize)> = vec![];
+
+        self._search_window(
+            self.sidelen,
+            top,
+            bottom - 1,
+            left,
+            right - 1,
+            lower,
+            upper,
+            0,
+            self.min[0],
+            self.max[0],
+            &mut cells,
+            0,
+            0,
+        );
+
+        cells
+    }
+
+    fn _search_window(
+        &self,
+        sidelen: usize,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        lower: T,
+        upper: T,
+        index: usize,
+        min_value: T,
+        max_value: T,
+        cells: &mut Vec<(usize, usize)>,
+        top_offset: usize,
+        left_offset: usize,
+    ) {
+        let sidelen = sidelen / self.k;
+        let index = 1 + self.nodemap.rank(index) * self.k * self.k;
+
+        for i in top / sidelen..=bottom / sidelen {
+            let top_ = top.saturating_sub(i * sidelen);
+            let bottom_ = min((i + 1) * sidelen - 1, bottom - i * sidelen);
+            let top_offset_ = top_offset + i * sidelen;
+
+            for j in left / sidelen..=right / sidelen {
+                let left_ = left.saturating_sub(j * sidelen);
+                let right_ = min((j + 1) * sidelen - 1, right - j * sidelen);
+                let left_offset_ = left_offset + j * sidelen;
+
+                let index_ = index + i * self.k + j;
+                let max_value_ = max_value - self.max[index_];
+
+                if index_ >= self.nodemap.length || !self.nodemap.get(index_) {
+                    // Leaf node
+                    if lower <= max_value_ && max_value_ <= upper {
+                        for row in top_..=bottom_ {
+                            for col in left_..=right_ {
+                                cells.push((top_offset_ + row, left_offset_ + col));
+                            }
+                        }
+                    }
+                } else {
+                    // Branch
+                    let min_value_ = min_value + self.min[self.nodemap.rank(index_)];
+                    if lower <= min_value && max_value_ <= upper {
+                        // All values in branch are within bounds
+                        for row in top_..=bottom_ {
+                            for col in left_..=right_ {
+                                cells.push((top_offset_ + row, left_offset_ + col));
+                            }
+                        }
+                    } else if upper >= min_value_ || lower <= max_value_ {
+                        // Some, but not all, values in branch are within bounds.
+                        // Recurse into branch
+                        self._search_window(
+                            sidelen,
+                            top_,
+                            bottom_,
+                            left_,
+                            right_,
+                            lower,
+                            upper,
+                            index_,
+                            min_value_,
+                            max_value_,
+                            cells,
+                            top_offset_,
+                            left_offset_,
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 // Temporary tree structure for building K^2 raster
