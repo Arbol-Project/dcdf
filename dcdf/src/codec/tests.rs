@@ -399,4 +399,15 @@ mod snapshot {
             }
         }
     }
+
+    #[test]
+    fn get_window() {
+        let data = array8();
+        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2, 0);
+
+        assert_eq!(
+            snapshot.get_window(1, 6, 1, 4),
+            arr2(&[[7, 7, 7], [6, 6, 6], [5, 6, 6], [5, 5, 5], [3, 5, 5],])
+        );
+    }
 }

@@ -5,8 +5,9 @@
 //!
 //! See: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
 
-use ndarray::{s, ArrayView2};
-use num::{one, zero, Integer, Num};
+use ndarray::{s, Array2, ArrayView2};
+use num::{one, zero, Integer, Num, Zero};
+use std::cmp::min;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 
@@ -321,7 +322,7 @@ impl IndexedBitMap {
 /// K^2 raster encoded Snapshot
 pub struct Snapshot<T>
 where
-    T: Num + Copy + PartialOrd + Debug,
+    T: Num + Copy + PartialOrd + Zero + Debug,
 {
     /// Bitmap of tree structure, known as T in Silva-Coira paper
     nodemap: IndexedBitMap,
@@ -345,7 +346,7 @@ where
 
 impl<T> Snapshot<T>
 where
-    T: Num + Copy + PartialOrd + Debug,
+    T: Num + Copy + PartialOrd + Zero + Debug,
 {
     fn from_array(data: ArrayView2<T>, k: usize, nan: T) -> Self {
         let mut nodemap = BitMap::new();
@@ -417,12 +418,105 @@ where
             self._get(sidelen, row % sidelen, col % sidelen, index, max_value)
         }
     }
+
+    /// Get a subarray of Snapshot
+    ///
+    /// See: Algorithm 3 in "Scalable and queryable compressed storage structure for raster data"
+    /// by Susana Ladra, José R. Paramá, Fernando Silva-Coira, Information Systems 72 (2017)
+    /// 179-204
+    ///
+    /// This is based on that algorithm, but has been modified to return a submatrix rather than an
+    /// unordered sequence of values.
+    ///
+    fn get_window(&self, top: usize, bottom: usize, left: usize, right: usize) -> Array2<T> {
+        let rows = bottom - top;
+        let cols = right - left;
+        let mut window = Array2::zeros([rows, cols]);
+        self._get_window(
+            self.sidelen,
+            top,
+            bottom - 1,
+            left,
+            right - 1,
+            0,
+            self.max[0],
+            &mut window,
+            top,
+            left,
+            0,
+            0,
+        );
+
+        window
+    }
+
+    fn _get_window(
+        &self,
+        sidelen: usize,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        index: usize,
+        max_value: T,
+        window: &mut Array2<T>,
+        window_top: usize,
+        window_left: usize,
+        top_offset: usize,
+        left_offset: usize,
+    ) {
+        let sidelen = sidelen / self.k;
+        let index = 1 + self.nodemap.rank(index) * self.k * self.k;
+
+        for i in top / sidelen..=bottom / sidelen {
+            let top_ = top.saturating_sub(i * sidelen);
+            let bottom_ = min((i + 1) * sidelen - 1, bottom - i * sidelen);
+            let top_offset_ = top_offset + i * sidelen;
+
+            for j in left / sidelen..=right / sidelen {
+                let left_ = left.saturating_sub(j * sidelen);
+                let right_ = min((j + 1) * sidelen - 1, right - j * sidelen);
+                let left_offset_ = left_offset + j * sidelen;
+
+                let index_ = index + i * self.k + j;
+                let max_value_ = max_value - self.max[index_];
+
+                if index_ >= self.nodemap.length || !self.nodemap.get(index_) {
+                    // Leaf node
+                    for row in top_..=bottom_ {
+                        for col in left_..=right_ {
+                            window[[
+                                top_offset_ + row - window_top,
+                                left_offset_ + col - window_left,
+                            ]] = max_value_;
+                        }
+                    }
+                } else {
+                    // Branch
+                    self._get_window(
+                        sidelen,
+                        top_,
+                        bottom_,
+                        left_,
+                        right_,
+                        index_,
+                        max_value_,
+                        window,
+                        window_top,
+                        window_left,
+                        top_offset_,
+                        left_offset_,
+                    );
+                }
+            }
+        }
+    }
 }
 
 // Temporary tree structure for building K^2 raster
 struct K2TreeNode<T>
 where
-    T: Num + Copy + PartialOrd + Debug,
+    T: Num + Copy + PartialOrd + Zero + Debug,
 {
     max: T,
     min: T,
@@ -431,7 +525,7 @@ where
 
 impl<T> K2TreeNode<T>
 where
-    T: Num + Copy + PartialOrd + Debug,
+    T: Num + Copy + PartialOrd + Zero + Debug,
 {
     fn from_array(data: ArrayView2<T>, k: usize) -> Self {
         let sidelen = data.shape()[0];
