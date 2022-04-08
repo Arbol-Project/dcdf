@@ -5,7 +5,7 @@
 //!
 //! See: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
 
-use ndarray::{s, Array2, ArrayView2};
+use ndarray::{Array2, ArrayView2};
 use num::{one, zero, Integer, Num, Zero};
 use std::cmp::min;
 use std::collections::VecDeque;
@@ -118,8 +118,8 @@ impl From<BitMap> for IndexedBitMap {
 
         IndexedBitMap {
             length: bitmap.length,
-            k: k,
-            index: index,
+            k,
+            index,
             bitmap: bitmap32,
         }
     }
@@ -279,10 +279,12 @@ where
     min: Vec<T>,
 
     /// The K in K^2 raster.
-    k: usize,
+    k: i32,
 
-    /// Value used to indicate missing value in this snapshot
-    nan: T,
+    /// Shape of the encoded raster. Since K^2 matrix is grown to a square with sides whose length
+    /// are a power of K, we need to keep track of the dimensions of the original raster so we can
+    /// perform range checking.
+    shape: [usize; 2],
 
     /// Length of one side of logical matrix, ie number of rows, number of columns, which are equal
     /// since it is a square
@@ -293,13 +295,18 @@ impl<T> Snapshot<T>
 where
     T: Num + Copy + PartialOrd + Zero + Debug,
 {
-    fn from_array(data: ArrayView2<T>, k: usize, nan: T) -> Self {
+    fn from_array(data: ArrayView2<T>, k: i32) -> Self {
         let mut nodemap = BitMap::new();
         let mut max: Vec<T> = vec![];
         let mut min: Vec<T> = vec![];
 
-        let sidelen = data.shape()[0];
-        let root = K2TreeNode::from_array(data, k);
+        // Compute the smallest square with sides whose length is a power of K that will contain
+        // the passed in data.
+        let shape = data.shape();
+        let sidelen = *shape.iter().max().unwrap() as f64;
+        let sidelen = sidelen.log(k as f64).ceil().powi(k) as usize;
+
+        let root = K2TreeNode::from_array(data, k, sidelen);
         let mut to_traverse = VecDeque::new();
         to_traverse.push_back((root.max, root.min, &root));
 
@@ -330,7 +337,7 @@ where
             max,
             min,
             k,
-            nan,
+            shape: [shape[0], shape[1]],
             sidelen,
         }
     }
@@ -341,6 +348,8 @@ where
     /// Susana Ladra, José R. Paramá, Fernando Silva-Coira, Information Systems 72 (2017) 179-204
     ///
     fn get(&self, row: usize, col: usize) -> T {
+        self.check_bounds(row, col);
+
         if !self.nodemap.get(0) {
             // Special case, single node tree
             return self.max[0];
@@ -350,9 +359,10 @@ where
     }
 
     fn _get(&self, sidelen: usize, row: usize, col: usize, index: usize, max_value: T) -> T {
-        let sidelen = sidelen / self.k;
-        let index = 1 + self.nodemap.rank(index) * self.k * self.k;
-        let index = index + row / sidelen * self.k + col / sidelen;
+        let k = self.k as usize;
+        let sidelen = sidelen / k;
+        let index = 1 + self.nodemap.rank(index) * k * k;
+        let index = index + row / sidelen * k + col / sidelen;
         let max_value = max_value - self.max[index];
 
         if index >= self.nodemap.length || !self.nodemap.get(index) {
@@ -374,6 +384,10 @@ where
     /// unordered sequence of values.
     ///
     fn get_window(&self, top: usize, bottom: usize, left: usize, right: usize) -> Array2<T> {
+        let (left, right) = self.rearrange(left, right);
+        let (top, bottom) = self.rearrange(top, bottom);
+        self.check_bounds(bottom, right);
+
         let rows = bottom - top;
         let cols = right - left;
         let mut window = Array2::zeros([rows, cols]);
@@ -410,8 +424,9 @@ where
         top_offset: usize,
         left_offset: usize,
     ) {
-        let sidelen = sidelen / self.k;
-        let index = 1 + self.nodemap.rank(index) * self.k * self.k;
+        let k = self.k as usize;
+        let sidelen = sidelen / k;
+        let index = 1 + self.nodemap.rank(index) * k * k;
 
         for i in top / sidelen..=bottom / sidelen {
             let top_ = top.saturating_sub(i * sidelen);
@@ -423,7 +438,7 @@ where
                 let right_ = min((j + 1) * sidelen - 1, right - j * sidelen);
                 let left_offset_ = left_offset + j * sidelen;
 
-                let index_ = index + i * self.k + j;
+                let index_ = index + i * k + j;
                 let max_value_ = max_value - self.max[index_];
 
                 if index_ >= self.nodemap.length || !self.nodemap.get(index_) {
@@ -472,8 +487,11 @@ where
         lower: T,
         upper: T,
     ) -> Vec<(usize, usize)> {
-        let mut cells: Vec<(usize, usize)> = vec![];
+        let (left, right) = self.rearrange(left, right);
+        let (top, bottom) = self.rearrange(top, bottom);
+        self.check_bounds(bottom, right);
 
+        let mut cells: Vec<(usize, usize)> = vec![];
         self._search_window(
             self.sidelen,
             top,
@@ -509,8 +527,9 @@ where
         top_offset: usize,
         left_offset: usize,
     ) {
-        let sidelen = sidelen / self.k;
-        let index = 1 + self.nodemap.rank(index) * self.k * self.k;
+        let k = self.k as usize;
+        let sidelen = sidelen / k;
+        let index = 1 + self.nodemap.rank(index) * k * k;
 
         for i in top / sidelen..=bottom / sidelen {
             let top_ = top.saturating_sub(i * sidelen);
@@ -522,7 +541,7 @@ where
                 let right_ = min((j + 1) * sidelen - 1, right - j * sidelen);
                 let left_offset_ = left_offset + j * sidelen;
 
-                let index_ = index + i * self.k + j;
+                let index_ = index + i * k + j;
                 let max_value_ = max_value - self.max[index_];
 
                 if index_ >= self.nodemap.length || !self.nodemap.get(index_) {
@@ -567,6 +586,26 @@ where
             }
         }
     }
+
+    /// Panics if given point is out of bounds for this snapshot
+    fn check_bounds(&self, row: usize, col: usize) {
+        if row >= self.shape[0] || col >= self.shape[1] {
+            panic!(
+                "dcdf::Snapshot: index[{}, {}] is out of bounds for array of shape {:?}",
+                row, col, self.shape
+            );
+        }
+    }
+
+    /// Make sure bounds are ordered correctly, eg right is to the right of left, top is above
+    /// bottom.
+    fn rearrange(&self, lower: usize, upper: usize) -> (usize, usize) {
+        if lower > upper {
+            (upper, lower)
+        } else {
+            (lower, upper)
+        }
+    }
 }
 
 // Temporary tree structure for building K^2 raster
@@ -583,28 +622,37 @@ impl<T> K2TreeNode<T>
 where
     T: Num + Copy + PartialOrd + Zero + Debug,
 {
-    fn from_array(data: ArrayView2<T>, k: usize) -> Self {
-        let sidelen = data.shape()[0];
+    fn from_array(data: ArrayView2<T>, k: i32, sidelen: usize) -> Self {
+        Self::_from_array(data, k as usize, sidelen, 0, 0)
+    }
 
+    fn _from_array(data: ArrayView2<T>, k: usize, sidelen: usize, row: usize, col: usize) -> Self {
         // Leaf node
         if sidelen == 1 {
+            // Fill cells that lay outside of original raster with 0s
+            let shape = data.shape();
+            let rows = shape[0];
+            let cols = shape[1];
+            let value = if row < rows && col < cols {
+                data[[row, col]]
+            } else {
+                zero()
+            };
             return K2TreeNode {
-                max: data[[0, 0]],
-                min: data[[0, 0]],
+                max: value,
+                min: value,
                 children: vec![],
             };
         }
 
         // Branch
         let mut children: Vec<K2TreeNode<T>> = vec![];
-        let step = sidelen / k;
-        for row in 0..k {
-            for col in 0..k {
-                let branch = data.slice(s![
-                    row * step..(row + 1) * step,
-                    col * step..(col + 1) * step
-                ]);
-                children.push(K2TreeNode::from_array(branch, k));
+        let sidelen = sidelen / k;
+        for i in 0..k {
+            let row_ = row + i * sidelen;
+            for j in 0..k {
+                let col_ = col + j * sidelen;
+                children.push(K2TreeNode::_from_array(data, k, sidelen, row_, col_));
             }
         }
 
