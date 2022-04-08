@@ -60,61 +60,6 @@ impl BitMap {
 
         self.length += 1;
     }
-
-    /// Count occurences of 1 in BitMap[0...i]
-    ///
-    /// Naive brute force implementation that is only used to double check the indexed
-    /// implementation in tests.
-    pub fn rank(&self, i: usize) -> usize {
-        if i > self.length {
-            // Can only happen if there is a programming error in this module
-            panic!("index out of bounds. length: {}, i: {}", self.length, i);
-        }
-
-        let mut count = 0;
-        for word in self.bitmap.iter().take(i / 8) {
-            count += word.count_ones();
-        }
-
-        let leftover_bits = i % 8;
-        if leftover_bits > 0 {
-            let shift = 8 - leftover_bits;
-            let word = self.bitmap[i / 8];
-            count += (word >> shift).count_ones();
-        }
-
-        count.try_into().unwrap()
-    }
-
-    /// Get the index of the nth occurence of 1 in BitMap
-    ///
-    /// Naive brute force implementation that is only used to double check the indexed
-    /// implementation in tests.
-    pub fn select(&self, n: usize) -> Option<usize> {
-        if n == 0 {
-            panic!("select(0)");
-        }
-
-        let mut count = 0;
-        for (word_index, word) in self.bitmap.iter().enumerate() {
-            let popcount: usize = word.count_ones().try_into().unwrap();
-            if popcount + count >= n {
-                // It's in this word somewhere
-                let mut position = word_index * 8;
-                let mut mask = 1 << 7;
-                while count < n {
-                    if word & mask > 0 {
-                        count += 1;
-                    }
-                    mask >>= 1;
-                    position += 1;
-                }
-                return Some(position);
-            }
-            count += popcount;
-        }
-        None
-    }
 }
 
 /// An array of bits with a single level index for making fast rank and select queries.

@@ -3,6 +3,63 @@ use super::*;
 mod bitmap {
     use super::*;
 
+    impl BitMap {
+        /// Count occurences of 1 in BitMap[0...i]
+        ///
+        /// Naive brute force implementation that is only used to double check the indexed
+        /// implementation in tests.
+        pub fn rank(&self, i: usize) -> usize {
+            if i > self.length {
+                // Can only happen if there is a programming error in this module
+                panic!("index out of bounds. length: {}, i: {}", self.length, i);
+            }
+
+            let mut count = 0;
+            for word in self.bitmap.iter().take(i / 8) {
+                count += word.count_ones();
+            }
+
+            let leftover_bits = i % 8;
+            if leftover_bits > 0 {
+                let shift = 8 - leftover_bits;
+                let word = self.bitmap[i / 8];
+                count += (word >> shift).count_ones();
+            }
+
+            count.try_into().unwrap()
+        }
+
+        /// Get the index of the nth occurence of 1 in BitMap
+        ///
+        /// Naive brute force implementation that is only used to double check the indexed
+        /// implementation in tests.
+        pub fn select(&self, n: usize) -> Option<usize> {
+            if n == 0 {
+                panic!("select(0)");
+            }
+
+            let mut count = 0;
+            for (word_index, word) in self.bitmap.iter().enumerate() {
+                let popcount: usize = word.count_ones().try_into().unwrap();
+                if popcount + count >= n {
+                    // It's in this word somewhere
+                    let mut position = word_index * 8;
+                    let mut mask = 1 << 7;
+                    while count < n {
+                        if word & mask > 0 {
+                            count += 1;
+                        }
+                        mask >>= 1;
+                        position += 1;
+                    }
+                    return Some(position);
+                }
+                count += popcount;
+            }
+            None
+        }
+    }
+
     #[test]
     fn new() {
         let bitmap = BitMap::new();
@@ -353,7 +410,8 @@ mod indexed_bitmap {
 
 mod snapshot {
     use super::*;
-    use ndarray::{arr2, Array2};
+    use ndarray::{arr2, s, Array2};
+    use std::collections::HashSet;
 
     fn array8() -> Array2<i32> {
         arr2(&[
@@ -401,14 +459,60 @@ mod snapshot {
     }
 
     #[test]
+    fn get_single_node_tree() {
+        let data = Array2::zeros([16, 16]) + 42;
+        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2, 0);
+        assert_eq!(snapshot.nodemap.bitmap.len(), 1);
+        assert_eq!(snapshot.max.len(), 1);
+        assert_eq!(snapshot.min.len(), 0);
+
+        for row in 0..16 {
+            for col in 0..16 {
+                assert_eq!(snapshot.get(row, col), 42);
+            }
+        }
+    }
+
+    #[test]
     fn get_window() {
         let data = array8();
         let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2, 0);
 
-        assert_eq!(
-            snapshot.get_window(1, 6, 1, 4),
-            arr2(&[[7, 7, 7], [6, 6, 6], [5, 6, 6], [5, 5, 5], [3, 5, 5],])
-        );
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        let window = snapshot.get_window(top, bottom, left, right);
+                        let expected = data.slice(s![top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reference implementation for search_window that works on an ndarray::Array2, for comparison
+    /// to the snapshot implementation.
+    fn array_search_window(
+        data: &Array2<i32>,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        lower: i32,
+        upper: i32,
+    ) -> Vec<(usize, usize)> {
+        let mut coords: Vec<(usize, usize)> = vec![];
+        for row in top..bottom {
+            for col in left..right {
+                let cell_value = data[[row, col]];
+                if lower <= cell_value && cell_value <= upper {
+                    coords.push((row, col));
+                }
+            }
+        }
+
+        coords
     }
 
     #[test]
@@ -416,7 +520,28 @@ mod snapshot {
         let data = array8();
         let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2, 0);
 
-        let expected: Vec<(usize, usize)> = vec![(2, 1), (3, 1), (2, 2), (3, 2), (4, 1), (4, 2)];
-        assert_eq!(snapshot.search_window(1, 5, 1, 3, 4, 6), expected);
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    &data, top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords =
+                                    snapshot.search_window(top, bottom, left, right, lower, upper);
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
