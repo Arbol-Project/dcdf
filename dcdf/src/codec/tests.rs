@@ -509,6 +509,18 @@ mod snapshot {
     }
 
     #[test]
+    fn get_array9_k3() {
+        let data = array9();
+        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 3);
+
+        for row in 0..9 {
+            for col in 0..9 {
+                assert_eq!(snapshot.get(row, col), data[[row, col]]);
+            }
+        }
+    }
+
+    #[test]
     #[should_panic]
     fn get_array9_out_of_bounds() {
         let data = array9();
@@ -548,6 +560,24 @@ mod snapshot {
     fn get_window_array9() {
         let data = array9();
         let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);
+
+        for top in 0..9 {
+            for bottom in top + 1..9 {
+                for left in 0..9 {
+                    for right in left + 1..9 {
+                        let window = snapshot.get_window(top, bottom, left, right);
+                        let expected = data.slice(s![top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn get_window_array9_k3() {
+        let data = array9();
+        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 3);
 
         for top in 0..9 {
             for bottom in top + 1..9 {

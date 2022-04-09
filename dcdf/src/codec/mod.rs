@@ -304,7 +304,7 @@ where
         // the passed in data.
         let shape = data.shape();
         let sidelen = *shape.iter().max().unwrap() as f64;
-        let sidelen = sidelen.log(k as f64).ceil().powi(k) as usize;
+        let sidelen = k.pow(sidelen.log(k as f64).ceil() as u32) as usize;
 
         let root = K2TreeNode::from_array(data, k, sidelen);
         let mut to_traverse = VecDeque::new();
