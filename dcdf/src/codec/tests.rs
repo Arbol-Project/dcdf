@@ -695,6 +695,40 @@ mod snapshot {
     }
 
     #[test]
+    fn search_window_array9_k3() {
+        let data = array9();
+        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 3);
+
+        for top in 0..9 {
+            for bottom in top + 1..9 {
+                for left in 0..9 {
+                    for right in left + 1..9 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    &data, top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords =
+                                    snapshot.search_window(top, bottom, left, right, lower, upper);
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                println!(
+                                    "top: {} bottom: {} left: {} right: {} {}..{}",
+                                    top, bottom, left, right, lower, upper
+                                );
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn search_window_rearrange_bounds() {
         let data = array8();
         let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);

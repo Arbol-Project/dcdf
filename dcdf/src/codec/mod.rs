@@ -430,12 +430,12 @@ where
 
         for i in top / sidelen..=bottom / sidelen {
             let top_ = top.saturating_sub(i * sidelen);
-            let bottom_ = min((i + 1) * sidelen - 1, bottom - i * sidelen);
+            let bottom_ = min(sidelen - 1, bottom - i * sidelen);
             let top_offset_ = top_offset + i * sidelen;
 
             for j in left / sidelen..=right / sidelen {
                 let left_ = left.saturating_sub(j * sidelen);
-                let right_ = min((j + 1) * sidelen - 1, right - j * sidelen);
+                let right_ = min(sidelen - 1, right - j * sidelen);
                 let left_offset_ = left_offset + j * sidelen;
 
                 let index_ = index + i * k + j;
@@ -533,12 +533,12 @@ where
 
         for i in top / sidelen..=bottom / sidelen {
             let top_ = top.saturating_sub(i * sidelen);
-            let bottom_ = min((i + 1) * sidelen - 1, bottom - i * sidelen);
+            let bottom_ = min(sidelen - 1, bottom - i * sidelen);
             let top_offset_ = top_offset + i * sidelen;
 
             for j in left / sidelen..=right / sidelen {
                 let left_ = left.saturating_sub(j * sidelen);
-                let right_ = min((j + 1) * sidelen - 1, right - j * sidelen);
+                let right_ = min(sidelen - 1, right - j * sidelen);
                 let left_offset_ = left_offset + j * sidelen;
 
                 let index_ = index + i * k + j;
