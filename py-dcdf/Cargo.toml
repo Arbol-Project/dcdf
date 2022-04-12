@@ -11,6 +11,7 @@ name = "dcdf"   # Python package name
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.16.1", features = ["extension-module"] }
-numpy = "0.16"
 dcdf = { path = "../dcdf"}
+ndarray = "0.15"
+numpy = "0.16"
+pyo3 = { version = "0.16", features = ["extension-module"] }

@@ -26,14 +26,14 @@ use std::fmt::Debug;
 ///
 /// let mut bitmap = IndexedBitMap::from(builder);
 ///
-pub struct BitMap {
+struct BitMap {
     length: usize,
     bitmap: Vec<u8>,
 }
 
 impl BitMap {
     /// Initialize an empty BitMap
-    pub fn new() -> BitMap {
+    fn new() -> BitMap {
         BitMap {
             length: 0,
             bitmap: vec![],
@@ -41,7 +41,7 @@ impl BitMap {
     }
 
     /// Push a bit onto the BitMap
-    pub fn push(&mut self, bit: bool) {
+    fn push(&mut self, bit: bool) {
         // Which bit do we need to set in the relevant byte?
         let position = self.length % 8;
 
@@ -64,7 +64,7 @@ impl BitMap {
 
 /// An array of bits with a single level index for making fast rank and select queries.
 ///
-pub struct IndexedBitMap {
+struct IndexedBitMap {
     length: usize,
     k: usize,
     index: Vec<u32>,
@@ -127,7 +127,7 @@ impl From<BitMap> for IndexedBitMap {
 
 impl IndexedBitMap {
     /// Get the bit at position i
-    pub fn get(&self, i: usize) -> bool {
+    fn get(&self, i: usize) -> bool {
         let word_index = i / 32;
         let bit_index = i % 32;
         let shift = 31 - bit_index;
@@ -137,7 +137,7 @@ impl IndexedBitMap {
     }
 
     /// Count occurences of 1 in BitMap[0...i]
-    pub fn rank(&self, i: usize) -> usize {
+    fn rank(&self, i: usize) -> usize {
         if i > self.length {
             // Can only happen if there is a programming error in this module
             panic!("index out of bounds. length: {}, i: {}", self.length, i);
@@ -166,7 +166,7 @@ impl IndexedBitMap {
     }
 
     /// Get the index of the nth occurence of 1 in BitMap
-    pub fn select(&self, n: usize) -> Option<usize> {
+    fn select(&self, n: usize) -> Option<usize> {
         if n == 0 {
             panic!("select(0)");
         }
@@ -295,7 +295,7 @@ impl<T> Snapshot<T>
 where
     T: Num + Copy + PartialOrd + Zero + Debug,
 {
-    fn from_array(data: ArrayView2<T>, k: i32) -> Self {
+    pub fn from_array(data: ArrayView2<T>, k: i32) -> Self {
         let mut nodemap = BitMap::new();
         let mut max: Vec<T> = vec![];
         let mut min: Vec<T> = vec![];
@@ -347,7 +347,7 @@ where
     /// See: Algorithm 2 in "Scalable and queryable compressed storage structure for raster data" by
     /// Susana Ladra, José R. Paramá, Fernando Silva-Coira, Information Systems 72 (2017) 179-204
     ///
-    fn get(&self, row: usize, col: usize) -> T {
+    pub fn get(&self, row: usize, col: usize) -> T {
         self.check_bounds(row, col);
 
         if !self.nodemap.get(0) {
@@ -383,7 +383,7 @@ where
     /// This is based on that algorithm, but has been modified to return a submatrix rather than an
     /// unordered sequence of values.
     ///
-    fn get_window(&self, top: usize, bottom: usize, left: usize, right: usize) -> Array2<T> {
+    pub fn get_window(&self, top: usize, bottom: usize, left: usize, right: usize) -> Array2<T> {
         let (left, right) = self.rearrange(left, right);
         let (top, bottom) = self.rearrange(top, bottom);
         self.check_bounds(bottom, right);
@@ -478,7 +478,7 @@ where
     /// by Susana Ladra, José R. Paramá, Fernando Silva-Coira, Information Systems 72 (2017)
     /// 179-204
     ///
-    fn search_window(
+    pub fn search_window(
         &self,
         top: usize,
         bottom: usize,
@@ -669,10 +669,6 @@ where
 
         K2TreeNode { min, max, children }
     }
-}
-
-pub fn encode_snapshot<T>(data: ArrayView2<T>) -> Vec<u8> {
-    b"booty".iter().cloned().collect()
 }
 
 /// Returns n / m with remainder rounded up to nearest integer
