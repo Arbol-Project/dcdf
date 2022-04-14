@@ -5,7 +5,7 @@ use dcdf;
 
 #[pyclass]
 struct PySnapshot32 {
-    inner: dcdf::Snapshot<i32>,
+    inner: dcdf::Snapshot,
 }
 
 #[pymethods]
@@ -51,7 +51,7 @@ impl PySnapshot32 {
 
 #[pyclass]
 struct PySnapshotU32 {
-    inner: dcdf::Snapshot<u32>,
+    inner: dcdf::Snapshot,
 }
 
 #[pymethods]
@@ -97,7 +97,7 @@ impl PySnapshotU32 {
 
 #[pyclass]
 struct PySnapshot64 {
-    inner: dcdf::Snapshot<i64>,
+    inner: dcdf::Snapshot,
 }
 
 #[pymethods]
@@ -143,7 +143,7 @@ impl PySnapshot64 {
 
 #[pyclass]
 struct PySnapshotU64 {
-    inner: dcdf::Snapshot<u64>,
+    inner: dcdf::Snapshot,
 }
 
 #[pymethods]

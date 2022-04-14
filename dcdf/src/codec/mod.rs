@@ -6,10 +6,10 @@
 //! See: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
 
 use ndarray::{Array2, ArrayView2};
-use num::{one, zero, Integer, Num, Zero};
+use num_traits::PrimInt;
 use std::cmp::min;
 use std::collections::VecDeque;
-use std::fmt::Debug;
+use std::mem::size_of;
 
 /// An array of bits.
 ///
@@ -264,19 +264,121 @@ impl IndexedBitMap {
     }
 }
 
-/// K^2 raster encoded Snapshot
-pub struct Snapshot<T>
+/// Compact storage for integers (Directly Addressable Codes
+struct Dacs {
+    levels: Vec<(IndexedBitMap, Vec<u8>)>,
+}
+
+impl Dacs {
+    fn get<T>(&self, index: usize) -> T
+    where
+        T: PrimInt,
+    {
+        let mut index = index;
+        let mut n = T::zero();
+        for (i, (bitmap, bytes)) in self.levels.iter().enumerate() {
+            set_byte(&mut n, i, bytes[index]);
+            if bitmap.get(index) {
+                index = bitmap.rank(index);
+            } else {
+                break;
+            }
+        }
+        n
+    }
+}
+
+#[cfg(target_endian = "little")]
+fn set_byte<T>(n: &mut T, i: usize, byte: u8) {
+    let a = n as *mut T as *mut u8;
+    unsafe {
+        let a = a.add(i);
+        *a = byte;
+    }
+}
+
+#[cfg(target_endian = "big")]
+fn set_byte<T>(n: &mut T, i: usize, byte: u8) {
+    // Big endian version tested on a small endian (Intel) system by swapping the big and little
+    // implementations for both set_byte and push_lsb, so that the byte order cancelled out. (This
+    // "works" for testing purposes but doesn't result in a compact representation.)
+    let size = size_of::<T>();
+    let a = n as *mut T as *mut u8;
+    unsafe {
+        let a = a.add(size - i - 1);
+        *a = byte;
+    }
+}
+
+impl<T> From<Vec<T>> for Dacs
 where
-    T: Num + Copy + PartialOrd + Zero + Debug,
+    T: PrimInt,
 {
+    fn from(data: Vec<T>) -> Self {
+        let mut levels = vec![];
+        let mut current = data;
+        while !current.is_empty() {
+            let mut next: Vec<T> = vec![];
+            let mut bitmap = BitMap::new();
+            let mut bytes: Vec<u8> = vec![];
+            for mut datum in current {
+                bytes.push(pop_lsb(&mut datum));
+                if datum != T::zero() {
+                    bitmap.push(true);
+                    next.push(datum);
+                } else {
+                    bitmap.push(false);
+                }
+            }
+            levels.push((IndexedBitMap::from(bitmap), bytes));
+            current = next;
+        }
+
+        Dacs { levels }
+    }
+}
+
+#[cfg(target_endian = "little")]
+fn pop_lsb<T>(n: &mut T) -> u8 {
+    let size = size_of::<T>();
+    let a = n as *mut T as *mut u8;
+    unsafe {
+        let byte = *a;
+        for i in 0..size - 1 {
+            *a.add(i) = *a.add(i + 1);
+        }
+        *a.add(size - 1) = 0_u8;
+        byte
+    }
+}
+
+#[cfg(target_endian = "big")]
+fn pop_lsb<T>(n: &mut T) -> u8 {
+    // Big endian version tested on a small endian (Intel) system by swapping the big and little
+    // implementations for both set_byte and push_lsb, so that the byte order cancelled out. (This
+    // "works" for testing purposes but doesn't result in a compact representation.)
+    let size = size_of::<T>();
+    let a = n as *mut T as *mut u8;
+    unsafe {
+        let byte = *a.add(size - 1);
+        for i in (0..size - 1).rev() {
+            *a.add(i + 1) = *a.add(i);
+        }
+        *a = 0_u8;
+        byte
+    }
+}
+
+/// K^2 raster encoded Snapshot
+pub struct Snapshot {
     /// Bitmap of tree structure, known as T in Silva-Coira paper
     nodemap: IndexedBitMap,
 
     /// Tree node maximum values, known as Lmax in Silva-Coira paper
-    max: Vec<T>,
+    max: Dacs,
 
     /// Tree node minimum values, known as Lmin in Silva-Coira paper
-    min: Vec<T>,
+    min: Dacs,
 
     /// The K in K^2 raster.
     k: i32,
@@ -291,11 +393,11 @@ where
     sidelen: usize,
 }
 
-impl<T> Snapshot<T>
-where
-    T: Num + Copy + PartialOrd + Zero + Debug,
-{
-    pub fn from_array(data: ArrayView2<T>, k: i32) -> Self {
+impl Snapshot {
+    pub fn from_array<T>(data: ArrayView2<T>, k: i32) -> Self
+    where
+        T: PrimInt,
+    {
         let mut nodemap = BitMap::new();
         let mut max: Vec<T> = vec![];
         let mut min: Vec<T> = vec![];
@@ -331,11 +433,10 @@ where
             }
         }
 
-        let nodemap = IndexedBitMap::from(nodemap);
         Snapshot {
-            nodemap,
-            max,
-            min,
+            nodemap: IndexedBitMap::from(nodemap),
+            max: Dacs::from(max),
+            min: Dacs::from(min),
             k,
             shape: [shape[0], shape[1]],
             sidelen,
@@ -347,23 +448,29 @@ where
     /// See: Algorithm 2 in "Scalable and queryable compressed storage structure for raster data" by
     /// Susana Ladra, José R. Paramá, Fernando Silva-Coira, Information Systems 72 (2017) 179-204
     ///
-    pub fn get(&self, row: usize, col: usize) -> T {
+    pub fn get<T>(&self, row: usize, col: usize) -> T
+    where
+        T: PrimInt,
+    {
         self.check_bounds(row, col);
 
         if !self.nodemap.get(0) {
             // Special case, single node tree
-            return self.max[0];
+            return self.max.get(0);
         } else {
-            self._get(self.sidelen, row, col, 0, self.max[0])
+            self._get(self.sidelen, row, col, 0, self.max.get(0))
         }
     }
 
-    fn _get(&self, sidelen: usize, row: usize, col: usize, index: usize, max_value: T) -> T {
+    fn _get<T>(&self, sidelen: usize, row: usize, col: usize, index: usize, max_value: T) -> T
+    where
+        T: PrimInt,
+    {
         let k = self.k as usize;
         let sidelen = sidelen / k;
         let index = 1 + self.nodemap.rank(index) * k * k;
         let index = index + row / sidelen * k + col / sidelen;
-        let max_value = max_value - self.max[index];
+        let max_value = max_value - self.max.get(index);
 
         if index >= self.nodemap.length || !self.nodemap.get(index) {
             // Leaf node
@@ -383,7 +490,10 @@ where
     /// This is based on that algorithm, but has been modified to return a submatrix rather than an
     /// unordered sequence of values.
     ///
-    pub fn get_window(&self, top: usize, bottom: usize, left: usize, right: usize) -> Array2<T> {
+    pub fn get_window<T>(&self, top: usize, bottom: usize, left: usize, right: usize) -> Array2<T>
+    where
+        T: PrimInt,
+    {
         let (left, right) = self.rearrange(left, right);
         let (top, bottom) = self.rearrange(top, bottom);
         self.check_bounds(bottom, right);
@@ -398,7 +508,7 @@ where
             left,
             right - 1,
             0,
-            self.max[0],
+            self.max.get(0),
             &mut window,
             top,
             left,
@@ -409,7 +519,7 @@ where
         window
     }
 
-    fn _get_window(
+    fn _get_window<T>(
         &self,
         sidelen: usize,
         top: usize,
@@ -423,7 +533,9 @@ where
         window_left: usize,
         top_offset: usize,
         left_offset: usize,
-    ) {
+    ) where
+        T: PrimInt,
+    {
         let k = self.k as usize;
         let sidelen = sidelen / k;
         let index = 1 + self.nodemap.rank(index) * k * k;
@@ -439,7 +551,7 @@ where
                 let left_offset_ = left_offset + j * sidelen;
 
                 let index_ = index + i * k + j;
-                let max_value_ = max_value - self.max[index_];
+                let max_value_ = max_value - self.max.get(index_);
 
                 if index_ >= self.nodemap.length || !self.nodemap.get(index_) {
                     // Leaf node
@@ -478,7 +590,7 @@ where
     /// by Susana Ladra, José R. Paramá, Fernando Silva-Coira, Information Systems 72 (2017)
     /// 179-204
     ///
-    pub fn search_window(
+    pub fn search_window<T>(
         &self,
         top: usize,
         bottom: usize,
@@ -486,7 +598,10 @@ where
         right: usize,
         lower: T,
         upper: T,
-    ) -> Vec<(usize, usize)> {
+    ) -> Vec<(usize, usize)>
+    where
+        T: PrimInt,
+    {
         let (left, right) = self.rearrange(left, right);
         let (top, bottom) = self.rearrange(top, bottom);
         self.check_bounds(bottom, right);
@@ -501,8 +616,8 @@ where
             lower,
             upper,
             0,
-            self.min[0],
-            self.max[0],
+            self.min.get(0),
+            self.max.get(0),
             &mut cells,
             0,
             0,
@@ -511,7 +626,7 @@ where
         cells
     }
 
-    fn _search_window(
+    fn _search_window<T>(
         &self,
         sidelen: usize,
         top: usize,
@@ -526,7 +641,9 @@ where
         cells: &mut Vec<(usize, usize)>,
         top_offset: usize,
         left_offset: usize,
-    ) {
+    ) where
+        T: PrimInt,
+    {
         let k = self.k as usize;
         let sidelen = sidelen / k;
         let index = 1 + self.nodemap.rank(index) * k * k;
@@ -542,7 +659,7 @@ where
                 let left_offset_ = left_offset + j * sidelen;
 
                 let index_ = index + i * k + j;
-                let max_value_ = max_value - self.max[index_];
+                let max_value_ = max_value - self.max.get(index_);
 
                 if index_ >= self.nodemap.length || !self.nodemap.get(index_) {
                     // Leaf node
@@ -555,7 +672,7 @@ where
                     }
                 } else {
                     // Branch
-                    let min_value_ = min_value + self.min[self.nodemap.rank(index_)];
+                    let min_value_ = min_value + self.min.get(self.nodemap.rank(index_));
                     if lower <= min_value && max_value_ <= upper {
                         // All values in branch are within bounds
                         for row in top_..=bottom_ {
@@ -611,7 +728,7 @@ where
 // Temporary tree structure for building K^2 raster
 struct K2TreeNode<T>
 where
-    T: Num + Copy + PartialOrd + Zero + Debug,
+    T: PrimInt,
 {
     max: T,
     min: T,
@@ -620,7 +737,7 @@ where
 
 impl<T> K2TreeNode<T>
 where
-    T: Num + Copy + PartialOrd + Zero + Debug,
+    T: PrimInt,
 {
     fn from_array(data: ArrayView2<T>, k: i32, sidelen: usize) -> Self {
         Self::_from_array(data, k as usize, sidelen, 0, 0)
@@ -636,7 +753,7 @@ where
             let value = if row < rows && col < cols {
                 data[[row, col]]
             } else {
-                zero()
+                T::zero()
             };
             return K2TreeNode {
                 max: value,
@@ -674,11 +791,11 @@ where
 /// Returns n / m with remainder rounded up to nearest integer
 fn div_ceil<T>(m: T, n: T) -> T
 where
-    T: Integer + Copy,
+    T: PrimInt,
 {
     let a = m / n;
-    if m % n > zero() {
-        a + one()
+    if m % n > T::zero() {
+        a + T::one()
     } else {
         a
     }

@@ -408,6 +408,19 @@ mod indexed_bitmap {
     }
 }
 
+mod dacs {
+    use super::*;
+
+    #[test]
+    fn get_i32() {
+        let data = vec![0, 2, -2.pow(9), 2.pow(17) + 1, -2.pow(30) - 42];
+        let dacs = Dacs::from(data.clone());
+        for i in 0..data.len() {
+            assert_eq!(dacs.get::<i32>(i), data[i]);
+        }
+    }
+}
+
 mod snapshot {
     use super::*;
     use ndarray::{arr2, s, Array2};
@@ -443,31 +456,23 @@ mod snapshot {
     #[test]
     fn from_array() {
         let data = array8();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);
+        let snapshot = Snapshot::from_array(data.view(), 2);
 
         assert_eq!(snapshot.nodemap.length, 17);
         assert_eq!(
             snapshot.nodemap.bitmap,
             vec![0b11110101001001011000000000000000]
         );
-        assert_eq!(
-            snapshot.max,
-            vec![
-                9, 0, 3, 4, 5, 0, 2, 3, 3, 0, 3, 3, 3, 0, 0, 1, 0, 0, 1, 2, 2, 0, 0, 1, 1, 0, 1, 0,
-                0, 1, 0, 2, 2, 1, 1, 0, 0, 2, 0, 2, 1
-            ]
-        );
-        assert_eq!(snapshot.min, vec![2, 3, 0, 1, 2, 0, 0, 0, 0, 0]);
     }
 
     #[test]
     fn get() {
         let data = array8();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);
+        let snapshot = Snapshot::from_array(data.view(), 2);
 
         for row in 0..8 {
             for col in 0..8 {
-                assert_eq!(snapshot.get(row, col), data[[row, col]]);
+                assert_eq!(snapshot.get::<i32>(row, col), data[[row, col]]);
             }
         }
     }
@@ -476,22 +481,22 @@ mod snapshot {
     #[should_panic]
     fn get_out_of_bounds() {
         let data = array8();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);
+        let snapshot = Snapshot::from_array(data.view(), 2);
 
-        assert_eq!(snapshot.get(0, 9), 1);
+        assert_eq!(snapshot.get::<i32>(0, 9), 1);
     }
 
     #[test]
     fn get_single_node_tree() {
-        let data = Array2::zeros([16, 16]) + 42;
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);
+        let data: Array2<i32> = Array2::zeros([16, 16]) + 42;
+        let snapshot = Snapshot::from_array(data.view(), 2);
         assert_eq!(snapshot.nodemap.bitmap.len(), 1);
-        assert_eq!(snapshot.max.len(), 1);
-        assert_eq!(snapshot.min.len(), 0);
+        assert_eq!(snapshot.max.levels[0].1.len(), 1);
+        assert!(snapshot.min.levels.is_empty());
 
         for row in 0..16 {
             for col in 0..16 {
-                assert_eq!(snapshot.get(row, col), 42);
+                assert_eq!(snapshot.get::<i32>(row, col), 42);
             }
         }
     }
@@ -499,11 +504,11 @@ mod snapshot {
     #[test]
     fn get_array9() {
         let data = array9();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);
+        let snapshot = Snapshot::from_array(data.view(), 2);
 
         for row in 0..9 {
             for col in 0..9 {
-                assert_eq!(snapshot.get(row, col), data[[row, col]]);
+                assert_eq!(snapshot.get::<i32>(row, col), data[[row, col]]);
             }
         }
     }
@@ -511,11 +516,11 @@ mod snapshot {
     #[test]
     fn get_array9_k3() {
         let data = array9();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 3);
+        let snapshot = Snapshot::from_array(data.view(), 3);
 
         for row in 0..9 {
             for col in 0..9 {
-                assert_eq!(snapshot.get(row, col), data[[row, col]]);
+                assert_eq!(snapshot.get::<i32>(row, col), data[[row, col]]);
             }
         }
     }
@@ -524,21 +529,21 @@ mod snapshot {
     #[should_panic]
     fn get_array9_out_of_bounds() {
         let data = array9();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);
+        let snapshot = Snapshot::from_array(data.view(), 2);
 
-        assert_eq!(snapshot.get(0, 9), 1);
+        assert_eq!(snapshot.get::<i32>(0, 9), 1);
     }
 
     #[test]
     fn get_window() {
         let data = array8();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);
+        let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..8 {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        let window = snapshot.get_window(top, bottom, left, right);
+                        let window = snapshot.get_window::<i32>(top, bottom, left, right);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -551,21 +556,21 @@ mod snapshot {
     #[should_panic]
     fn get_window_lower_right_out_of_bounds() {
         let data = array8();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);
+        let snapshot = Snapshot::from_array(data.view(), 2);
 
-        snapshot.get_window(0, 9, 0, 5);
+        snapshot.get_window::<i32>(0, 9, 0, 5);
     }
 
     #[test]
     fn get_window_array9() {
         let data = array9();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);
+        let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..9 {
             for bottom in top + 1..9 {
                 for left in 0..9 {
                     for right in left + 1..9 {
-                        let window = snapshot.get_window(top, bottom, left, right);
+                        let window = snapshot.get_window::<i32>(top, bottom, left, right);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -577,13 +582,13 @@ mod snapshot {
     #[test]
     fn get_window_array9_k3() {
         let data = array9();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 3);
+        let snapshot = Snapshot::from_array(data.view(), 3);
 
         for top in 0..9 {
             for bottom in top + 1..9 {
                 for left in 0..9 {
                     for right in left + 1..9 {
-                        let window = snapshot.get_window(top, bottom, left, right);
+                        let window = snapshot.get_window::<i32>(top, bottom, left, right);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -595,13 +600,13 @@ mod snapshot {
     #[test]
     fn get_window_rearrange_bounds() {
         let data = array8();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);
+        let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..8 {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        let window = snapshot.get_window(bottom, top, right, left);
+                        let window = snapshot.get_window::<i32>(bottom, top, right, left);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -637,7 +642,7 @@ mod snapshot {
     #[test]
     fn search_window() {
         let data = array8();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);
+        let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..8 {
             for bottom in top + 1..8 {
@@ -667,7 +672,7 @@ mod snapshot {
     #[test]
     fn search_window_array9() {
         let data = array9();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);
+        let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..9 {
             for bottom in top + 1..9 {
@@ -697,7 +702,7 @@ mod snapshot {
     #[test]
     fn search_window_array9_k3() {
         let data = array9();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 3);
+        let snapshot = Snapshot::from_array(data.view(), 3);
 
         for top in 0..9 {
             for bottom in top + 1..9 {
@@ -731,7 +736,7 @@ mod snapshot {
     #[test]
     fn search_window_rearrange_bounds() {
         let data = array8();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);
+        let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..8 {
             for bottom in top + 1..8 {
@@ -762,7 +767,7 @@ mod snapshot {
     #[should_panic]
     fn search_window_out_of_bounds() {
         let data = array8();
-        let snapshot: Snapshot<i32> = Snapshot::from_array(data.view(), 2);
+        let snapshot = Snapshot::from_array(data.view(), 2);
 
         snapshot.search_window(0, 9, 0, 5, 4, 6);
     }
