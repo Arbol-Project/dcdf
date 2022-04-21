@@ -413,11 +413,23 @@ mod dacs {
 
     #[test]
     fn get_i32() {
-        let data = vec![0, 2, -2.pow(9), 2.pow(17) + 1, -2.pow(30) - 42];
+        let data = vec![0, 2, -3, -2.pow(9), 2.pow(17) + 1, -2.pow(30) - 42];
         let dacs = Dacs::from(data.clone());
         for i in 0..data.len() {
             assert_eq!(dacs.get::<i32>(i), data[i]);
         }
+        assert_eq!(dacs.levels[0].0.get(2), false);
+    }
+
+    #[test]
+    fn this_one() {
+        let data: Vec<i32> = vec![-512];
+        let dacs = Dacs::from(data.clone());
+        println!("{}", zigzag_encode(-512));
+        println!("{:?}", dacs.levels[0].1);
+        println!("{:?}", dacs.levels[1].1);
+        assert_eq!(zigzag_decode(zigzag_encode(-512)), -512);
+        assert_eq!(dacs.get::<i32>(0), data[0]);
     }
 }
 

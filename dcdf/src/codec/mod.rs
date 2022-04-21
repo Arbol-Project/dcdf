@@ -6,7 +6,7 @@
 //! See: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
 
 use ndarray::{Array2, ArrayView2};
-use num_traits::PrimInt;
+use num_traits::{PrimInt, AsPrimitive};
 use std::cmp::min;
 use std::collections::VecDeque;
 use std::mem::size_of;
@@ -264,49 +264,30 @@ impl IndexedBitMap {
     }
 }
 
-/// Compact storage for integers (Directly Addressable Codes
+/// Compact storage for integers (Directly Addressable Codes)
 struct Dacs {
     levels: Vec<(IndexedBitMap, Vec<u8>)>,
 }
 
 impl Dacs {
     fn get<T>(&self, index: usize) -> T
-    where
+    where 
         T: PrimInt,
     {
         let mut index = index;
-        let mut n = T::zero();
+        let mut n: u64 = 0;
         for (i, (bitmap, bytes)) in self.levels.iter().enumerate() {
-            set_byte(&mut n, i, bytes[index]);
+            n |= (bytes[index] as u64) << i * 8;
             if bitmap.get(index) {
                 index = bitmap.rank(index);
-            } else {
+            }
+            else {
                 break;
             }
         }
+
+        let n: T = T::from(zigzag_decode(n)).unwrap();
         n
-    }
-}
-
-#[cfg(target_endian = "little")]
-fn set_byte<T>(n: &mut T, i: usize, byte: u8) {
-    let a = n as *mut T as *mut u8;
-    unsafe {
-        let a = a.add(i);
-        *a = byte;
-    }
-}
-
-#[cfg(target_endian = "big")]
-fn set_byte<T>(n: &mut T, i: usize, byte: u8) {
-    // Big endian version tested on a small endian (Intel) system by swapping the big and little
-    // implementations for both set_byte and push_lsb, so that the byte order cancelled out. (This
-    // "works" for testing purposes but doesn't result in a compact representation.)
-    let size = size_of::<T>();
-    let a = n as *mut T as *mut u8;
-    unsafe {
-        let a = a.add(size - i - 1);
-        *a = byte;
     }
 }
 
@@ -315,58 +296,50 @@ where
     T: PrimInt,
 {
     fn from(data: Vec<T>) -> Self {
-        let mut levels = vec![];
-        let mut current = data;
-        while !current.is_empty() {
-            let mut next: Vec<T> = vec![];
-            let mut bitmap = BitMap::new();
-            let mut bytes: Vec<u8> = vec![];
-            for mut datum in current {
-                bytes.push(pop_lsb(&mut datum));
-                if datum != T::zero() {
-                    bitmap.push(true);
-                    next.push(datum);
-                } else {
+        // Set up levels. Probably won't need all of them
+        let mut levels = Vec::with_capacity(8);
+        for _ in 0..8 {
+            levels.push((BitMap::new(), Vec::new()));
+        }
+
+        // Chunk each datum into bytes, one per level, stopping when only 0s are left
+        for datum in data {
+            let mut datum = zigzag_encode(datum.to_i64().unwrap());
+            for (bitmap, bytes) in &mut levels {
+                bytes.push((datum & 0xff) as u8);
+                datum >>= 8;
+                if datum == 0 {
                     bitmap.push(false);
+                    break;
+                }
+                else {
+                    bitmap.push(true);
                 }
             }
-            levels.push((IndexedBitMap::from(bitmap), bytes));
-            current = next;
         }
+
+        // Remove any unused levels
+        while ! levels.is_empty() && levels.last().unwrap().1.len() == 0 {
+            levels.pop();
+        }
+
+        // Index bitmaps and return
+        let levels = levels.into_iter().map(|(bitmap, bytes)| {
+            (IndexedBitMap::from(bitmap), bytes)
+        }).collect();
 
         Dacs { levels }
     }
 }
 
-#[cfg(target_endian = "little")]
-fn pop_lsb<T>(n: &mut T) -> u8 {
-    let size = size_of::<T>();
-    let a = n as *mut T as *mut u8;
-    unsafe {
-        let byte = *a;
-        for i in 0..size - 1 {
-            *a.add(i) = *a.add(i + 1);
-        }
-        *a.add(size - 1) = 0_u8;
-        byte
-    }
+fn zigzag_encode(n: i64) -> u64 {
+    let zz = (n >> 63) ^ (n << 1);
+    zz as u64
 }
 
-#[cfg(target_endian = "big")]
-fn pop_lsb<T>(n: &mut T) -> u8 {
-    // Big endian version tested on a small endian (Intel) system by swapping the big and little
-    // implementations for both set_byte and push_lsb, so that the byte order cancelled out. (This
-    // "works" for testing purposes but doesn't result in a compact representation.)
-    let size = size_of::<T>();
-    let a = n as *mut T as *mut u8;
-    unsafe {
-        let byte = *a.add(size - 1);
-        for i in (0..size - 1).rev() {
-            *a.add(i + 1) = *a.add(i);
-        }
-        *a = 0_u8;
-        byte
-    }
+fn zigzag_decode(zz: u64) -> i64 {
+    let n = (zz >> 1) ^ if zz & 1 == 1 {0xffffffffffffffff} else {0};
+    n as i64
 }
 
 /// K^2 raster encoded Snapshot
