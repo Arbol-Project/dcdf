@@ -792,8 +792,8 @@ impl Log {
     {
         let mut nodemap = BitMap::new();
         let mut equal = BitMap::new();
-        let mut max: Vec<T> = vec![];
-        let mut min: Vec<T> = vec![];
+        let mut max: Vec<i64> = vec![];
+        let mut min: Vec<i64> = vec![];
 
         // Compute the smallest square with sides whose length is a power of K that will contain
         // the passed in data.
@@ -807,7 +807,9 @@ impl Log {
 
         // Breadth first traversal
         while let Some(node) = to_traverse.pop_front() {
-            max.push(node.max_t - node.max_s);
+            let max_t = node.max_t.to_i64().unwrap();
+            let max_s = node.max_s.to_i64().unwrap();
+            max.push(max_t - max_s);
 
             if !node.children.is_empty() {
                 // Non-leaf node
@@ -822,7 +824,9 @@ impl Log {
                 } else {
                     // Regular old internal node, keep going
                     nodemap.push(true);
-                    min.push(node.min_t - node.min_s);
+                    let min_t = node.min_t.to_i64().unwrap();
+                    let min_s = node.min_s.to_i64().unwrap();
+                    min.push(min_t - min_s);
                     for child in &node.children {
                         to_traverse.push_back(child);
                     }
@@ -851,7 +855,7 @@ where
     min_t: T,
     max_s: T,
     min_s: T,
-    diff: T,
+    diff: i64,
     equal: bool,
     children: Vec<K2PTreeNode<T>>,
 }
@@ -888,12 +892,13 @@ where
             } else {
                 T::zero()
             };
+            let diff = value_t.to_i64().unwrap() - value_s.to_i64().unwrap();
             return K2PTreeNode {
                 max_t: value_t,
                 min_t: value_t,
                 max_s: value_s,
                 min_s: value_s,
-                diff: value_t - value_s,
+                diff: diff,
                 equal: true,
                 children: vec![],
             };

@@ -826,8 +826,8 @@ mod log {
                 [4, 4, 3, 4, 4, 4, 4, 4],
             ],
             [
-                [9, 8, 7, 7, 7, 7, 4, 4],
-                [7, 7, 7, 7, 7, 7, 4, 4],
+                [9, 8, 7, 7, 7, 7, 2, 2],
+                [7, 7, 7, 7, 7, 7, 2, 2],
                 [6, 6, 6, 6, 4, 3, 3, 3],
                 [5, 5, 6, 6, 3, 3, 3, 3],
                 [4, 5, 5, 5, 4, 4, 4, 4],
@@ -860,12 +860,48 @@ mod log {
         assert_eq!(
             log.max.collect::<i32>(),
             vec![
-                0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0,
-                0
+                0, 0, 1, 0, 1, 1, -1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0,
+                0, 0
             ]
         );
 
-        assert_eq!(log.min.collect::<i32>(), vec![1, 1, 0, 0, 0, 1, 0,]);
+        assert_eq!(log.min.collect::<i32>(), vec![0, 0, 0, 0, 0, 1, 0,]);
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
+        assert_eq!(log.nodemap.length, 21);
+        assert_eq!(log.nodemap.bitmap, vec![0b11111000010100001001000000000000]);
+        assert_eq!(log.equal.length, 12);
+        assert_eq!(log.equal.bitmap, vec![0b10100010100000000000000000000000]);
+
+        assert_eq!(
+            log.max.collect::<i32>(),
+            vec![
+                0, 0, 2, 0, 2, 0, 0, 1, 0, 2, 2, 1, 1, 0, 0, 0, 0, 0, 0, 2, 0, 2, 1, 1, 1, 1, 0, 1,
+                1, 1, 0, 1, 0, 2, 0, 1, 0,
+            ]
+        );
+
+        assert_eq!(log.min.collect::<i32>(), vec![1, 1, 1, 0, 0, 1, 0, 1, 0,]);
+    }
+
+    #[test]
+    fn from_arrays_unsigned() {
+        let data = array8().mapv(|x| x as u32);
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
+        assert_eq!(log.nodemap.length, 17);
+        assert_eq!(log.nodemap.bitmap, vec![0b10111001000010010000000000000000]);
+        assert_eq!(log.equal.length, 10);
+        assert_eq!(log.equal.bitmap, vec![0b10001010000000000000000000000000]);
+
+        assert_eq!(
+            log.max.collect::<i32>(),
+            vec![
+                0, 0, 1, 0, 1, 1, -1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0,
+                0, 0
+            ]
+        );
+
+        assert_eq!(log.min.collect::<i32>(), vec![0, 0, 0, 0, 0, 1, 0,]);
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
         assert_eq!(log.nodemap.length, 21);
