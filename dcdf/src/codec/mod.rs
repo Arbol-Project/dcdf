@@ -6,9 +6,10 @@
 //! See: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
 
 use ndarray::{Array2, ArrayView2};
-use num_traits::{PrimInt, AsPrimitive};
+use num_traits::{AsPrimitive, PrimInt};
 use std::cmp::min;
 use std::collections::VecDeque;
+use std::fmt::Debug;
 use std::mem::size_of;
 
 /// An array of bits.
@@ -271,8 +272,8 @@ struct Dacs {
 
 impl Dacs {
     fn get<T>(&self, index: usize) -> T
-    where 
-        T: PrimInt,
+    where
+        T: PrimInt + Debug,
     {
         let mut index = index;
         let mut n: u64 = 0;
@@ -280,8 +281,7 @@ impl Dacs {
             n |= (bytes[index] as u64) << i * 8;
             if bitmap.get(index) {
                 index = bitmap.rank(index);
-            }
-            else {
+            } else {
                 break;
             }
         }
@@ -293,7 +293,7 @@ impl Dacs {
 
 impl<T> From<Vec<T>> for Dacs
 where
-    T: PrimInt,
+    T: PrimInt + Debug,
 {
     fn from(data: Vec<T>) -> Self {
         // Set up levels. Probably won't need all of them
@@ -311,22 +311,18 @@ where
                 if datum == 0 {
                     bitmap.push(false);
                     break;
-                }
-                else {
+                } else {
                     bitmap.push(true);
                 }
             }
         }
 
-        // Remove any unused levels
-        while ! levels.is_empty() && levels.last().unwrap().1.len() == 0 {
-            levels.pop();
-        }
-
-        // Index bitmaps and return
-        let levels = levels.into_iter().map(|(bitmap, bytes)| {
-            (IndexedBitMap::from(bitmap), bytes)
-        }).collect();
+        // Index bitmaps and prepare to return, stopping as soon as an empty level is encountered
+        let levels = levels
+            .into_iter()
+            .take_while(|(bitmap, bytes)| bitmap.length > 0)
+            .map(|(bitmap, bytes)| (IndexedBitMap::from(bitmap), bytes))
+            .collect();
 
         Dacs { levels }
     }
@@ -338,7 +334,7 @@ fn zigzag_encode(n: i64) -> u64 {
 }
 
 fn zigzag_decode(zz: u64) -> i64 {
-    let n = (zz >> 1) ^ if zz & 1 == 1 {0xffffffffffffffff} else {0};
+    let n = (zz >> 1) ^ if zz & 1 == 1 { 0xffffffffffffffff } else { 0 };
     n as i64
 }
 
@@ -369,7 +365,7 @@ pub struct Snapshot {
 impl Snapshot {
     pub fn from_array<T>(data: ArrayView2<T>, k: i32) -> Self
     where
-        T: PrimInt,
+        T: PrimInt + Debug,
     {
         let mut nodemap = BitMap::new();
         let mut max: Vec<T> = vec![];
@@ -423,7 +419,7 @@ impl Snapshot {
     ///
     pub fn get<T>(&self, row: usize, col: usize) -> T
     where
-        T: PrimInt,
+        T: PrimInt + Debug,
     {
         self.check_bounds(row, col);
 
@@ -437,7 +433,7 @@ impl Snapshot {
 
     fn _get<T>(&self, sidelen: usize, row: usize, col: usize, index: usize, max_value: T) -> T
     where
-        T: PrimInt,
+        T: PrimInt + Debug,
     {
         let k = self.k as usize;
         let sidelen = sidelen / k;
@@ -465,7 +461,7 @@ impl Snapshot {
     ///
     pub fn get_window<T>(&self, top: usize, bottom: usize, left: usize, right: usize) -> Array2<T>
     where
-        T: PrimInt,
+        T: PrimInt + Debug,
     {
         let (left, right) = self.rearrange(left, right);
         let (top, bottom) = self.rearrange(top, bottom);
@@ -507,7 +503,7 @@ impl Snapshot {
         top_offset: usize,
         left_offset: usize,
     ) where
-        T: PrimInt,
+        T: PrimInt + Debug,
     {
         let k = self.k as usize;
         let sidelen = sidelen / k;
@@ -573,7 +569,7 @@ impl Snapshot {
         upper: T,
     ) -> Vec<(usize, usize)>
     where
-        T: PrimInt,
+        T: PrimInt + Debug,
     {
         let (left, right) = self.rearrange(left, right);
         let (top, bottom) = self.rearrange(top, bottom);
@@ -615,7 +611,7 @@ impl Snapshot {
         top_offset: usize,
         left_offset: usize,
     ) where
-        T: PrimInt,
+        T: PrimInt + Debug,
     {
         let k = self.k as usize;
         let sidelen = sidelen / k;
@@ -701,7 +697,7 @@ impl Snapshot {
 // Temporary tree structure for building K^2 raster
 struct K2TreeNode<T>
 where
-    T: PrimInt,
+    T: PrimInt + Debug,
 {
     max: T,
     min: T,
@@ -710,7 +706,7 @@ where
 
 impl<T> K2TreeNode<T>
 where
-    T: PrimInt,
+    T: PrimInt + Debug,
 {
     fn from_array(data: ArrayView2<T>, k: i32, sidelen: usize) -> Self {
         Self::_from_array(data, k as usize, sidelen, 0, 0)
@@ -761,10 +757,199 @@ where
     }
 }
 
+/// T - K^2 Raster Log
+struct Log {
+    /// Bitmap of tree structure, known as T in Silva-Coira paper
+    nodemap: IndexedBitMap,
+
+    /// Bit map of tree nodes that match referenced snapshot, or have cells that all differ by the
+    /// same amount, known as eqB in Silva-Coira paper
+    equal: IndexedBitMap,
+
+    /// Tree node maximum values, known as Lmax in Silva-Coira paper
+    max: Dacs,
+
+    /// Tree node minimum values, known as Lmin in Silva-Coira paper
+    min: Dacs,
+
+    /// The K in K^2 raster.
+    k: i32,
+
+    /// Shape of the encoded raster. Since K^2 matrix is grown to a square with sides whose length
+    /// are a power of K, we need to keep track of the dimensions of the original raster so we can
+    /// perform range checking.
+    shape: [usize; 2],
+
+    /// Length of one side of logical matrix, ie number of rows, number of columns, which are equal
+    /// since it is a square
+    sidelen: usize,
+}
+
+impl Log {
+    fn from_arrays<T>(snapshot: ArrayView2<T>, log: ArrayView2<T>, k: i32) -> Self
+    where
+        T: PrimInt + Debug,
+    {
+        let mut nodemap = BitMap::new();
+        let mut equal = BitMap::new();
+        let mut max: Vec<T> = vec![];
+        let mut min: Vec<T> = vec![];
+
+        // Compute the smallest square with sides whose length is a power of K that will contain
+        // the passed in data.
+        let shape = snapshot.shape();
+        let sidelen = *shape.iter().max().unwrap() as f64;
+        let sidelen = k.pow(sidelen.log(k as f64).ceil() as u32) as usize;
+
+        let root = K2PTreeNode::from_arrays(snapshot, log, k, sidelen);
+        let mut to_traverse = VecDeque::new();
+        to_traverse.push_back(&root);
+
+        // Breadth first traversal
+        while let Some(node) = to_traverse.pop_front() {
+            max.push(node.max_t - node.max_s);
+
+            if !node.children.is_empty() {
+                // Non-leaf node
+                if node.min_t == node.max_t {
+                    // Log quadbox is uniform, terminate here
+                    nodemap.push(false);
+                    equal.push(false);
+                } else if node.equal {
+                    // Difference of log and snapshot quadboxes is uniform, terminate here
+                    nodemap.push(false);
+                    equal.push(true);
+                } else {
+                    // Regular old internal node, keep going
+                    nodemap.push(true);
+                    min.push(node.min_t - node.min_s);
+                    for child in &node.children {
+                        to_traverse.push_back(child);
+                    }
+                }
+            }
+        }
+
+        Log {
+            nodemap: IndexedBitMap::from(nodemap),
+            equal: IndexedBitMap::from(equal),
+            max: Dacs::from(max),
+            min: Dacs::from(min),
+            k,
+            shape: [shape[0], shape[1]],
+            sidelen,
+        }
+    }
+}
+
+// Temporary tree structure for building T - K^2 raster
+struct K2PTreeNode<T>
+where
+    T: PrimInt + Debug,
+{
+    max_t: T,
+    min_t: T,
+    max_s: T,
+    min_s: T,
+    diff: T,
+    equal: bool,
+    children: Vec<K2PTreeNode<T>>,
+}
+
+impl<T> K2PTreeNode<T>
+where
+    T: PrimInt + Debug,
+{
+    fn from_arrays(snapshot: ArrayView2<T>, log: ArrayView2<T>, k: i32, sidelen: usize) -> Self {
+        Self::_from_arrays(snapshot, log, k as usize, sidelen, 0, 0)
+    }
+
+    fn _from_arrays(
+        snapshot: ArrayView2<T>,
+        log: ArrayView2<T>,
+        k: usize,
+        sidelen: usize,
+        row: usize,
+        col: usize,
+    ) -> Self {
+        // Leaf node
+        if sidelen == 1 {
+            // Fill cells that lay outside of original raster with 0s
+            let shape = snapshot.shape();
+            let rows = shape[0];
+            let cols = shape[1];
+            let value_s = if row < rows && col < cols {
+                snapshot[[row, col]]
+            } else {
+                T::zero()
+            };
+            let value_t = if row < rows && col < cols {
+                log[[row, col]]
+            } else {
+                T::zero()
+            };
+            return K2PTreeNode {
+                max_t: value_t,
+                min_t: value_t,
+                max_s: value_s,
+                min_s: value_s,
+                diff: value_t - value_s,
+                equal: true,
+                children: vec![],
+            };
+        }
+
+        // Branch
+        let mut children: Vec<K2PTreeNode<T>> = vec![];
+        let sidelen = sidelen / k;
+        for i in 0..k {
+            let row_ = row + i * sidelen;
+            for j in 0..k {
+                let col_ = col + j * sidelen;
+                children.push(K2PTreeNode::_from_arrays(
+                    snapshot, log, k, sidelen, row_, col_,
+                ));
+            }
+        }
+
+        let mut max_t = children[0].max_t;
+        let mut min_t = children[0].min_t;
+        let mut max_s = children[0].max_s;
+        let mut min_s = children[0].min_s;
+        let mut equal = children[0].equal;
+        let diff = children[0].diff;
+        for child in &children[1..] {
+            if child.max_t > max_t {
+                max_t = child.max_t;
+            }
+            if child.min_t < min_t {
+                min_t = child.min_t;
+            }
+            if child.max_s > max_s {
+                max_s = child.max_s;
+            }
+            if child.min_s < min_s {
+                min_s = child.min_s;
+            }
+            equal = equal && child.diff == diff;
+        }
+
+        K2PTreeNode {
+            min_t,
+            max_t,
+            min_s,
+            max_s,
+            diff,
+            equal,
+            children,
+        }
+    }
+}
+
 /// Returns n / m with remainder rounded up to nearest integer
 fn div_ceil<T>(m: T, n: T) -> T
 where
-    T: PrimInt,
+    T: PrimInt + Debug,
 {
     let a = m / n;
     if m % n > T::zero() {
