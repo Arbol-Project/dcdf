@@ -166,6 +166,11 @@ impl IndexedBitMap {
         count.try_into().unwrap()
     }
 
+    /// Count occurences of 0 in BitMap[0...i]
+    fn rank0(&self, i: usize) -> usize {
+        i - self.rank(i)
+    }
+
     /// Get the index of the nth occurence of 1 in BitMap
     fn select(&self, n: usize) -> Option<usize> {
         if n == 0 {
@@ -844,6 +849,135 @@ impl Log {
             sidelen,
         }
     }
+
+    /// Get a cell value
+    ///
+    /// See: Algorithm 3 in Silva-Coira paper
+    ///
+    pub fn get<T>(&self, snapshot: &Snapshot, row: usize, col: usize) -> T
+    where
+        T: PrimInt + Debug,
+    {
+        let max_t: T = self.max.get(0);
+        let max_s: T = snapshot.max.get(0);
+        let single_t = !self.nodemap.get(0);
+        let single_s = !snapshot.nodemap.get(0);
+        if single_t && single_s {
+            // Both trees have single node
+            max_t + max_s
+        } else if single_t && !self.equal.get(0) {
+            // Log has single node but it contains a uniform value for all cells
+            max_t + max_s
+        } else {
+            let index_t = if single_t { None } else { Some(0) };
+            let index_s = if single_s { None } else { Some(0) };
+            self._get(
+                snapshot,
+                self.sidelen,
+                row,
+                col,
+                index_t,
+                index_s,
+                max_t,
+                max_s,
+            )
+        }
+    }
+
+    fn _get<T>(
+        &self,
+        snapshot: &Snapshot,
+        sidelen: usize,
+        row: usize,
+        col: usize,
+        index_t: Option<usize>,
+        index_s: Option<usize>,
+        max_t: T,
+        max_s: T,
+    ) -> T
+    where
+        T: PrimInt + Debug,
+    {
+        let k = self.k as usize;
+        let sidelen = sidelen / k;
+        let mut max_s = max_s;
+        let mut max_t = max_t;
+
+        let index_s = if let Some(index) = index_s {
+            let index = 1 + snapshot.nodemap.rank(index) * k * k;
+            let index = index + row / sidelen * k + col / sidelen;
+            max_s = max_s - snapshot.max.get(index);
+            Some(index)
+        } else {
+            None
+        };
+
+        let index_t = if let Some(index) = index_t {
+            let index = 1 + self.nodemap.rank(index) * k * k;
+            let index = index + row / sidelen * k + col / sidelen;
+            max_t = self.max.get(index);
+            Some(index)
+        } else {
+            None
+        };
+
+        let leaf_t = if let Some(index) = index_t {
+            index > self.nodemap.length || !self.nodemap.get(index)
+        } else {
+            true
+        };
+
+        let leaf_s = if let Some(index) = index_s {
+            index > snapshot.nodemap.length || !snapshot.nodemap.get(index)
+        } else {
+            true
+        };
+
+        if leaf_t && leaf_s {
+            max_t + max_s
+        } else if leaf_s {
+            self._get(
+                snapshot,
+                sidelen,
+                row % sidelen,
+                col % sidelen,
+                index_t,
+                None,
+                max_t,
+                max_s,
+            )
+        } else if leaf_t {
+            if let Some(index_t) = index_t {
+                if index_t < self.nodemap.length {
+                    let equal = self.equal.get(self.nodemap.rank0(index_t + 1) - 1);
+                    if !equal {
+                        return max_t + max_s;
+                    }
+                }
+            }
+            self._get(
+                snapshot,
+                sidelen,
+                row % sidelen,
+                col % sidelen,
+                None,
+                index_s,
+                max_t,
+                max_s,
+            )
+        } else {
+            self._get(
+                snapshot,
+                sidelen,
+                row % sidelen,
+                col % sidelen,
+                index_t,
+                index_s,
+                max_t,
+                max_s,
+            )
+        }
+    }
 }
 
 // Temporary tree structure for building T - K^2 raster
@@ -921,7 +1055,7 @@ where
         let mut min_t = children[0].min_t;
         let mut max_s = children[0].max_s;
         let mut min_s = children[0].min_s;
-        let mut equal = children[0].equal;
+        let mut equal = children.iter().all(|child| child.equal);
         let diff = children[0].diff;
         for child in &children[1..] {
             if child.max_t > max_t {

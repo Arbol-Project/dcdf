@@ -519,7 +519,7 @@ mod snapshot {
         let data = array8();
         let snapshot = Snapshot::from_array(data.view(), 2);
 
-        assert_eq!(snapshot.get::<i32>(0, 9), 1);
+        snapshot.get::<i32>(0, 9);
     }
 
     #[test]
@@ -567,7 +567,7 @@ mod snapshot {
         let data = array9();
         let snapshot = Snapshot::from_array(data.view(), 2);
 
-        assert_eq!(snapshot.get::<i32>(0, 9), 1);
+        snapshot.get::<i32>(0, 9);
     }
 
     #[test]
@@ -848,6 +848,44 @@ mod log {
         ])
     }
 
+    fn array9() -> Array3<i32> {
+        arr3(&[
+            [
+                [9, 8, 7, 7, 6, 6, 3, 2, 1],
+                [7, 7, 7, 7, 6, 6, 3, 3, 3],
+                [6, 6, 6, 6, 3, 3, 3, 3, 3],
+                [5, 5, 6, 6, 3, 3, 3, 3, 2],
+                [4, 5, 5, 5, 4, 4, 4, 4, 4],
+                [3, 3, 5, 5, 4, 4, 4, 4, 4],
+                [3, 3, 3, 5, 4, 4, 4, 4, 4],
+                [4, 4, 3, 4, 4, 4, 4, 4, 4],
+                [4, 4, 3, 4, 4, 4, 4, 4, 4],
+            ],
+            [
+                [9, 8, 7, 7, 7, 7, 2, 2, 2],
+                [7, 7, 7, 7, 7, 7, 2, 2, 2],
+                [6, 6, 6, 6, 4, 3, 3, 3, 3],
+                [5, 5, 6, 6, 3, 3, 3, 3, 2],
+                [4, 5, 5, 5, 4, 4, 4, 4, 4],
+                [3, 3, 5, 5, 4, 4, 4, 4, 4],
+                [3, 3, 4, 5, 5, 4, 4, 4, 4],
+                [4, 4, 4, 4, 4, 4, 4, 4, 5],
+                [4, 4, 4, 4, 5, 4, 4, 4, 1],
+            ],
+            [
+                [9, 8, 7, 7, 8, 7, 5, 5, 2],
+                [7, 7, 7, 7, 7, 7, 5, 5, 2],
+                [7, 7, 6, 6, 4, 3, 4, 4, 3],
+                [6, 6, 6, 6, 4, 4, 4, 4, 2],
+                [4, 5, 5, 5, 4, 4, 4, 4, 4],
+                [3, 3, 5, 5, 4, 4, 4, 4, 4],
+                [3, 3, 4, 5, 6, 4, 4, 4, 4],
+                [4, 4, 4, 4, 5, 4, 4, 4, 4],
+                [5, 4, 4, 4, 5, 5, 5, 5, 10],
+            ],
+        ])
+    }
+
     #[test]
     fn from_arrays() {
         let data = array8();
@@ -918,5 +956,146 @@ mod log {
         );
 
         assert_eq!(log.min.collect::<i32>(), vec![1, 1, 1, 0, 0, 1, 0, 1, 0,]);
+    }
+
+    #[test]
+    fn get() {
+        let data = array8();
+        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
+        for row in 0..8 {
+            for col in 0..8 {
+                assert_eq!(log.get::<i32>(&snapshot, row, col), data[[1, row, col]]);
+            }
+        }
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
+        for row in 0..8 {
+            for col in 0..8 {
+                assert_eq!(log.get::<i32>(&snapshot, row, col), data[[2, row, col]]);
+            }
+        }
+    }
+
+    #[test]
+    fn get_single_node_trees() {
+        let data_s: Array2<i32> = Array2::zeros([8, 8]) + 20;
+        let data_t: Array2<i32> = Array2::zeros([8, 8]) + 42;
+        let snapshot = Snapshot::from_array(data_s.view(), 2);
+        let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
+
+        for row in 0..8 {
+            for col in 0..8 {
+                assert_eq!(log.get::<i32>(&snapshot, row, col), 42);
+            }
+        }
+    }
+
+    #[test]
+    fn get_single_node_snapshot() {
+        let data = array8();
+        let data_s: Array2<i32> = Array2::zeros([8, 8]) + 20;
+        let data_t = data.slice(s![0, .., ..]);
+
+        let snapshot = Snapshot::from_array(data_s.view(), 2);
+        let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
+
+        for row in 0..8 {
+            for col in 0..8 {
+                assert_eq!(log.get::<i32>(&snapshot, row, col), data_t[[row, col]]);
+            }
+        }
+    }
+
+    #[test]
+    fn get_single_node_log() {
+        let data = array8();
+        let data_t: Array2<i32> = Array2::zeros([8, 8]) + 20;
+        let data_s = data.slice(s![0, .., ..]);
+
+        let snapshot = Snapshot::from_array(data_s.view(), 2);
+        let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
+
+        for row in 0..8 {
+            for col in 1..8 {
+                assert_eq!(log.get::<i32>(&snapshot, row, col), data_t[[row, col]]);
+            }
+        }
+    }
+
+    #[test]
+    fn get_equal_snapshot_and_log() {
+        let data = array8();
+        let data_s = data.slice(s![0, .., ..]);
+
+        let snapshot = Snapshot::from_array(data_s.view(), 2);
+        let log = Log::from_arrays(data_s.view(), data_s.view(), 2);
+
+        for row in 0..8 {
+            for col in 1..8 {
+                assert_eq!(log.get::<i32>(&snapshot, row, col), data_s[[row, col]]);
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn get_out_of_bounds() {
+        let data = array8();
+        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
+
+        snapshot.get::<i32>(0, 9);
+    }
+
+    #[test]
+    fn get_array9() {
+        let data = array9();
+        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
+        for row in 0..9 {
+            for col in 0..9 {
+                assert_eq!(log.get::<i32>(&snapshot, row, col), data[[1, row, col]]);
+            }
+        }
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
+        for row in 0..9 {
+            for col in 0..9 {
+                assert_eq!(log.get::<i32>(&snapshot, row, col), data[[2, row, col]]);
+            }
+        }
+    }
+
+    #[test]
+    fn get_array9_k3() {
+        let data = array9();
+        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 3);
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 3);
+        for row in 0..9 {
+            for col in 0..9 {
+                assert_eq!(log.get::<i32>(&snapshot, row, col), data[[1, row, col]]);
+            }
+        }
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 3);
+        for row in 0..9 {
+            for col in 0..9 {
+                assert_eq!(log.get::<i32>(&snapshot, row, col), data[[2, row, col]]);
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn get_array9_out_of_bounds() {
+        let data = array9();
+        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
+
+        snapshot.get::<i32>(0, 9);
     }
 }
