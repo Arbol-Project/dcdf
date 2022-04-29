@@ -468,8 +468,8 @@ impl Snapshot {
     where
         T: PrimInt + Debug,
     {
-        let (left, right) = self.rearrange(left, right);
-        let (top, bottom) = self.rearrange(top, bottom);
+        let (left, right) = rearrange(left, right);
+        let (top, bottom) = rearrange(top, bottom);
         self.check_bounds(bottom, right);
 
         let rows = bottom - top;
@@ -576,8 +576,8 @@ impl Snapshot {
     where
         T: PrimInt + Debug,
     {
-        let (left, right) = self.rearrange(left, right);
-        let (top, bottom) = self.rearrange(top, bottom);
+        let (left, right) = rearrange(left, right);
+        let (top, bottom) = rearrange(top, bottom);
         self.check_bounds(bottom, right);
 
         let mut cells: Vec<(usize, usize)> = vec![];
@@ -685,16 +685,6 @@ impl Snapshot {
                 "dcdf::Snapshot: index[{}, {}] is out of bounds for array of shape {:?}",
                 row, col, self.shape
             );
-        }
-    }
-
-    /// Make sure bounds are ordered correctly, eg right is to the right of left, top is above
-    /// bottom.
-    fn rearrange(&self, lower: usize, upper: usize) -> (usize, usize) {
-        if lower > upper {
-            (upper, lower)
-        } else {
-            (lower, upper)
         }
     }
 }
@@ -858,6 +848,8 @@ impl Log {
     where
         T: PrimInt + Debug,
     {
+        self.check_bounds(row, col);
+
         let max_t: T = self.max.get(0);
         let max_s: T = snapshot.max.get(0);
         let single_t = !self.nodemap.get(0);
@@ -978,6 +970,253 @@ impl Log {
             )
         }
     }
+
+    /// Get a subarray of log
+    ///
+    /// See: Algorithm 3 in "Scalable and queryable compressed storage structure for raster data"
+    /// by Susana Ladra, José R. Paramá, Fernando Silva-Coira, Information Systems 72 (2017)
+    /// 179-204
+    ///
+    /// This is based on that algorithm, but has been modified to return a submatrix rather than an
+    /// unordered sequence of values.
+    ///
+    pub fn get_window<T>(
+        &self,
+        snapshot: &Snapshot,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+    ) -> Array2<T>
+    where
+        T: PrimInt + Debug,
+    {
+        let (left, right) = rearrange(left, right);
+        let (top, bottom) = rearrange(top, bottom);
+        self.check_bounds(bottom, right);
+
+        let rows = bottom - top;
+        let cols = right - left;
+        let mut window = Array2::zeros([rows, cols]);
+
+        self._get_window(
+            snapshot,
+            self.sidelen,
+            top,
+            bottom - 1,
+            left,
+            right - 1,
+            Some(0),
+            Some(0),
+            self.max.get(0),
+            snapshot.max.get(0),
+            &mut window,
+            top,
+            left,
+            0,
+            0,
+            0,
+        );
+
+        window
+    }
+
+    fn _get_window<T>(
+        &self,
+        snapshot: &Snapshot,
+        sidelen: usize,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        index_t: Option<usize>,
+        index_s: Option<usize>,
+        max_t: T,
+        max_s: T,
+        window: &mut Array2<T>,
+        window_top: usize,
+        window_left: usize,
+        top_offset: usize,
+        left_offset: usize,
+        level: usize,
+    ) where
+        T: PrimInt + Debug,
+    {
+        let mut indent = String::new();
+        for _ in 0..level {
+            indent.push_str("    ");
+        }
+
+        println!(
+            "{indent}himom: {sidelen} {top}..{bottom} {left}..{right} {top_offset} {left_offset}"
+        );
+        let k = self.k as usize;
+        let sidelen = sidelen / k;
+
+        let index_t = match index_t {
+            Some(index) => Some(1 + self.nodemap.rank(index) * k * k),
+            None => None,
+        };
+
+        let index_s = match index_s {
+            Some(index) => Some(1 + snapshot.nodemap.rank(index) * k * k),
+            None => None,
+        };
+
+        for i in top / sidelen..=bottom / sidelen {
+            let top_ = top.saturating_sub(i * sidelen);
+            let bottom_ = min(sidelen - 1, bottom - i * sidelen);
+            let top_offset_ = top_offset + i * sidelen;
+
+            for j in left / sidelen..=right / sidelen {
+                let left_ = left.saturating_sub(j * sidelen);
+                let right_ = min(sidelen - 1, right - j * sidelen);
+                let left_offset_ = left_offset + j * sidelen;
+
+                println!("{indent}i={i}, j={j}");
+                let index_t_ = match index_t {
+                    Some(index) => Some(index + i * k + j),
+                    None => None,
+                };
+
+                let max_t_ = match index_t_ {
+                    Some(index) => self.max.get(index),
+                    None => max_t,
+                };
+
+                let leaf_t = match index_t_ {
+                    Some(index) => index > self.nodemap.length || !self.nodemap.get(index),
+                    None => true,
+                };
+
+                let index_s_ = match index_s {
+                    Some(index) => Some(index + i * k + j),
+                    None => None,
+                };
+
+                let max_s_ = match index_s_ {
+                    Some(index) => max_s - snapshot.max.get(index),
+                    None => max_s,
+                };
+
+                let leaf_s = match index_s_ {
+                    Some(index) => index > snapshot.nodemap.length || !snapshot.nodemap.get(index),
+                    None => true,
+                };
+
+                if leaf_t && leaf_s {
+                    let value = max_t_ + max_s_;
+                    println!("{indent}two leaves: {value:?}");
+                    for row in top_..=bottom_ {
+                        for col in left_..=right_ {
+                            println!(
+                                "{indent}set ({}, {})",
+                                top_offset_ + row,
+                                left_offset_ + col
+                            );
+                            window[[
+                                top_offset_ + row - window_top,
+                                left_offset_ + col - window_left,
+                            ]] = value;
+                        }
+                    }
+                } else if leaf_s {
+                    println!("{indent}leaf s");
+                    self._get_window(
+                        snapshot,
+                        sidelen,
+                        top_,
+                        bottom_,
+                        left_,
+                        right_,
+                        index_t_,
+                        None,
+                        max_t_,
+                        max_s_,
+                        window,
+                        window_top,
+                        window_left,
+                        top_offset_,
+                        left_offset_,
+                        level + 1,
+                    );
+                } else if leaf_t {
+                    println!("{indent}leaf t");
+                    if let Some(index) = index_t_ {
+                        if !self.nodemap.get(index) {
+                            let equal = self.equal.get(self.nodemap.rank0(index + 1) - 1);
+                            if !equal {
+                                let value = max_t_ + max_s_;
+                                println!("{indent}uniform: {value:?}");
+                                for row in top_..=bottom_ {
+                                    for col in left_..=right_ {
+                                        println!(
+                                            "{indent}set ({}, {})",
+                                            top_offset_ + row,
+                                            left_offset_ + col
+                                        );
+                                        window[[
+                                            top_offset_ + row - window_top,
+                                            left_offset_ + col - window_left,
+                                        ]] = value;
+                                    }
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    self._get_window(
+                        snapshot,
+                        sidelen,
+                        top_,
+                        bottom_,
+                        left_,
+                        right_,
+                        None,
+                        index_s_,
+                        max_t_,
+                        max_s_,
+                        window,
+                        window_top,
+                        window_left,
+                        top_offset_,
+                        left_offset_,
+                        level + 1,
+                    );
+                } else {
+                    println!("{indent}no leaves");
+                    self._get_window(
+                        snapshot,
+                        sidelen,
+                        top_,
+                        bottom_,
+                        left_,
+                        right_,
+                        index_t_,
+                        index_s_,
+                        max_t_,
+                        max_s_,
+                        window,
+                        window_top,
+                        window_left,
+                        top_offset_,
+                        left_offset_,
+                        level + 1,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Panics if given point is out of bounds for this log
+    fn check_bounds(&self, row: usize, col: usize) {
+        if row >= self.shape[0] || col >= self.shape[1] {
+            panic!(
+                "dcdf::Log: index[{}, {}] is out of bounds for array of shape {:?}",
+                row, col, self.shape
+            );
+        }
+    }
 }
 
 // Temporary tree structure for building T - K^2 raster
@@ -1095,6 +1334,16 @@ where
         a + T::one()
     } else {
         a
+    }
+}
+
+/// Make sure bounds are ordered correctly, eg right is to the right of left, top is above
+/// bottom.
+fn rearrange(lower: usize, upper: usize) -> (usize, usize) {
+    if lower > upper {
+        (upper, lower)
+    } else {
+        (lower, upper)
     }
 }
 

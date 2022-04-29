@@ -1046,7 +1046,7 @@ mod log {
         let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
 
-        snapshot.get::<i32>(0, 9);
+        log.get::<i32>(&snapshot, 0, 9);
     }
 
     #[test]
@@ -1096,6 +1096,96 @@ mod log {
         let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
 
-        snapshot.get::<i32>(0, 9);
+        log.get::<i32>(&snapshot, 0, 9);
+    }
+
+    #[test]
+    fn get_window() {
+        let data = array8();
+        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
+
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        println!("{top}..{bottom} {left}..{right}");
+                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let expected = data.slice(s![1, top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn get_window_lower_right_out_of_bounds() {
+        let data = array8();
+        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
+
+        log.get_window::<i32>(&snapshot, 0, 9, 0, 5);
+    }
+
+    #[test]
+    fn get_window_array9() {
+        let data = array9();
+        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
+
+        for top in 0..9 {
+            for bottom in top + 1..9 {
+                for left in 0..9 {
+                    for right in left + 1..9 {
+                        println!("{top}..{bottom} {left}..{right}");
+                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let expected = data.slice(s![1, top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn get_window_array9_k3() {
+        let data = array9();
+        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 3);
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 3);
+
+        for top in 0..9 {
+            for bottom in top + 1..9 {
+                for left in 0..9 {
+                    for right in left + 1..9 {
+                        println!("{top}..{bottom} {left}..{right}");
+                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let expected = data.slice(s![1, top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn get_window_rearrange_bounds() {
+        let data = array8();
+        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
+
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        println!("{top}..{bottom} {left}..{right}");
+                        let window = log.get_window::<i32>(&snapshot, bottom, top, right, left);
+                        let expected = data.slice(s![1, top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
     }
 }
