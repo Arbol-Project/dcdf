@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::*;
 
 impl Dacs {
@@ -11,6 +13,30 @@ impl Dacs {
     {
         (0..self.len()).into_iter().map(|i| self.get(i)).collect()
     }
+}
+
+/// Reference implementation for search_window that works on an ndarray::Array2, for comparison
+/// to the K^2 raster implementations.
+fn array_search_window(
+    data: ArrayView2<i32>,
+    top: usize,
+    bottom: usize,
+    left: usize,
+    right: usize,
+    lower: i32,
+    upper: i32,
+) -> Vec<(usize, usize)> {
+    let mut coords: Vec<(usize, usize)> = vec![];
+    for row in top..bottom {
+        for col in left..right {
+            let cell_value = data[[row, col]];
+            if lower <= cell_value && cell_value <= upper {
+                coords.push((row, col));
+            }
+        }
+    }
+
+    coords
 }
 
 mod bitmap {
@@ -438,9 +464,6 @@ mod dacs {
     fn this_one() {
         let data: Vec<i32> = vec![-512];
         let dacs = Dacs::from(data.clone());
-        println!("{}", zigzag_encode(-512));
-        println!("{:?}", dacs.levels[0].1);
-        println!("{:?}", dacs.levels[1].1);
         assert_eq!(zigzag_decode(zigzag_encode(-512)), -512);
         assert_eq!(dacs.get::<i32>(0), data[0]);
     }
@@ -449,7 +472,6 @@ mod dacs {
 mod snapshot {
     use super::*;
     use ndarray::{arr2, s, Array2};
-    use std::collections::HashSet;
 
     fn array8() -> Array2<i32> {
         arr2(&[
@@ -651,30 +673,6 @@ mod snapshot {
         }
     }
 
-    /// Reference implementation for search_window that works on an ndarray::Array2, for comparison
-    /// to the snapshot implementation.
-    fn array_search_window(
-        data: &Array2<i32>,
-        top: usize,
-        bottom: usize,
-        left: usize,
-        right: usize,
-        lower: i32,
-        upper: i32,
-    ) -> Vec<(usize, usize)> {
-        let mut coords: Vec<(usize, usize)> = vec![];
-        for row in top..bottom {
-            for col in left..right {
-                let cell_value = data[[row, col]];
-                if lower <= cell_value && cell_value <= upper {
-                    coords.push((row, col));
-                }
-            }
-        }
-
-        coords
-    }
-
     #[test]
     fn search_window() {
         let data = array8();
@@ -687,7 +685,13 @@ mod snapshot {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
-                                    &data, top, bottom, left, right, lower, upper,
+                                    data.view(),
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    lower,
+                                    upper,
                                 );
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
@@ -717,7 +721,13 @@ mod snapshot {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
-                                    &data, top, bottom, left, right, lower, upper,
+                                    data.view(),
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    lower,
+                                    upper,
                                 );
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
@@ -747,7 +757,13 @@ mod snapshot {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
-                                    &data, top, bottom, left, right, lower, upper,
+                                    data.view(),
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    lower,
+                                    upper,
                                 );
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
@@ -756,10 +772,6 @@ mod snapshot {
                                     snapshot.search_window(top, bottom, left, right, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
-                                println!(
-                                    "top: {} bottom: {} left: {} right: {} {}..{}",
-                                    top, bottom, left, right, lower, upper
-                                );
                                 assert_eq!(coords, expected);
                             }
                         }
@@ -781,13 +793,19 @@ mod snapshot {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
-                                    &data, top, bottom, left, right, lower, upper,
+                                    data.view(),
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    lower,
+                                    upper,
                                 );
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
                                 let coords =
-                                    snapshot.search_window(bottom, top, right, left, lower, upper);
+                                    snapshot.search_window(bottom, top, right, left, upper, lower);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -1103,15 +1121,27 @@ mod log {
     fn get_window() {
         let data = array8();
         let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
 
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
         for top in 0..8 {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        println!("{top}..{bottom} {left}..{right}");
                         let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![1, top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
                 }
@@ -1133,15 +1163,27 @@ mod log {
     fn get_window_array9() {
         let data = array9();
         let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
 
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
         for top in 0..9 {
             for bottom in top + 1..9 {
                 for left in 0..9 {
                     for right in left + 1..9 {
-                        println!("{top}..{bottom} {left}..{right}");
                         let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![1, top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
+        for top in 0..9 {
+            for bottom in top + 1..9 {
+                for left in 0..9 {
+                    for right in left + 1..9 {
+                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
                 }
@@ -1153,15 +1195,27 @@ mod log {
     fn get_window_array9_k3() {
         let data = array9();
         let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 3);
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 3);
 
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 3);
         for top in 0..9 {
             for bottom in top + 1..9 {
                 for left in 0..9 {
                     for right in left + 1..9 {
-                        println!("{top}..{bottom} {left}..{right}");
                         let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![1, top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 3);
+        for top in 0..9 {
+            for bottom in top + 1..9 {
+                for left in 0..9 {
+                    for right in left + 1..9 {
+                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
                 }
@@ -1173,13 +1227,12 @@ mod log {
     fn get_window_rearrange_bounds() {
         let data = array8();
         let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
 
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
         for top in 0..8 {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        println!("{top}..{bottom} {left}..{right}");
                         let window = log.get_window::<i32>(&snapshot, bottom, top, right, left);
                         let expected = data.slice(s![1, top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -1187,5 +1240,275 @@ mod log {
                 }
             }
         }
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        let window = log.get_window::<i32>(&snapshot, bottom, top, right, left);
+                        let expected = data.slice(s![2, top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn search_window() {
+        let data = array8();
+        let data0 = data.slice(s![0, .., ..]);
+        let snapshot = Snapshot::from_array(data0, 2);
+
+        let data1 = data.slice(s![1, .., ..]);
+        let log = Log::from_arrays(data0, data1, 2);
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    data1, top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords = log.search_window(
+                                    &snapshot, top, bottom, left, right, lower, upper,
+                                );
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let data2 = data.slice(s![2, .., ..]);
+        let log = Log::from_arrays(data0, data2, 2);
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    data2, top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords = log.search_window(
+                                    &snapshot, top, bottom, left, right, lower, upper,
+                                );
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn search_window_array9() {
+        let data = array9();
+        let data0 = data.slice(s![0, .., ..]);
+        let snapshot = Snapshot::from_array(data0, 2);
+
+        let data1 = data.slice(s![1, .., ..]);
+        let log = Log::from_arrays(data0, data1, 2);
+        for top in 0..9 {
+            for bottom in top + 1..9 {
+                for left in 0..9 {
+                    for right in left + 1..9 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    data1, top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords = log.search_window(
+                                    &snapshot, top, bottom, left, right, lower, upper,
+                                );
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let data2 = data.slice(s![2, .., ..]);
+        let log = Log::from_arrays(data0, data2, 2);
+        for top in 0..9 {
+            for bottom in top + 1..9 {
+                for left in 0..9 {
+                    for right in left + 1..9 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    data2, top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords = log.search_window(
+                                    &snapshot, top, bottom, left, right, lower, upper,
+                                );
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn search_window_array9_k3() {
+        let data = array9();
+        let data0 = data.slice(s![0, .., ..]);
+        let snapshot = Snapshot::from_array(data0, 3);
+
+        let data1 = data.slice(s![1, .., ..]);
+        let log = Log::from_arrays(data0, data1, 3);
+        for top in 0..9 {
+            for bottom in top + 1..9 {
+                for left in 0..9 {
+                    for right in left + 1..9 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    data1, top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords = log.search_window(
+                                    &snapshot, top, bottom, left, right, lower, upper,
+                                );
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let data2 = data.slice(s![2, .., ..]);
+        let log = Log::from_arrays(data0, data2, 3);
+        for top in 0..9 {
+            for bottom in top + 1..9 {
+                for left in 0..9 {
+                    for right in left + 1..9 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    data2, top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords = log.search_window(
+                                    &snapshot, top, bottom, left, right, lower, upper,
+                                );
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn search_window_rearrange_bounds() {
+        let data = array8();
+        let data0 = data.slice(s![0, .., ..]);
+        let snapshot = Snapshot::from_array(data0, 2);
+
+        let data1 = data.slice(s![1, .., ..]);
+        let log = Log::from_arrays(data0, data1, 2);
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    data1, top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords = log.search_window(
+                                    &snapshot, bottom, top, right, left, upper, lower,
+                                );
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let data2 = data.slice(s![1, .., ..]);
+        let log = Log::from_arrays(data0, data2, 2);
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    data2, top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords = log.search_window(
+                                    &snapshot, bottom, top, right, left, upper, lower,
+                                );
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn search_window_out_of_bounds() {
+        let data = array8();
+        let data0 = data.slice(s![0, .., ..]);
+        let snapshot = Snapshot::from_array(data0, 2);
+
+        let data1 = data.slice(s![1, .., ..]);
+        let log = Log::from_arrays(data0, data1, 2);
+
+        log.search_window(&snapshot, 0, 9, 0, 5, 4, 6);
     }
 }

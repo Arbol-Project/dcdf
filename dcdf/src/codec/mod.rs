@@ -578,6 +578,7 @@ impl Snapshot {
     {
         let (left, right) = rearrange(left, right);
         let (top, bottom) = rearrange(top, bottom);
+        let (lower, upper) = rearrange(lower, upper);
         self.check_bounds(bottom, right);
 
         let mut cells: Vec<(usize, usize)> = vec![];
@@ -973,9 +974,7 @@ impl Log {
 
     /// Get a subarray of log
     ///
-    /// See: Algorithm 3 in "Scalable and queryable compressed storage structure for raster data"
-    /// by Susana Ladra, José R. Paramá, Fernando Silva-Coira, Information Systems 72 (2017)
-    /// 179-204
+    /// See: Algorithm 5 in Silva-Coira paper.
     ///
     /// This is based on that algorithm, but has been modified to return a submatrix rather than an
     /// unordered sequence of values.
@@ -1015,7 +1014,6 @@ impl Log {
             left,
             0,
             0,
-            0,
         );
 
         window
@@ -1038,18 +1036,9 @@ impl Log {
         window_left: usize,
         top_offset: usize,
         left_offset: usize,
-        level: usize,
     ) where
         T: PrimInt + Debug,
     {
-        let mut indent = String::new();
-        for _ in 0..level {
-            indent.push_str("    ");
-        }
-
-        println!(
-            "{indent}himom: {sidelen} {top}..{bottom} {left}..{right} {top_offset} {left_offset}"
-        );
         let k = self.k as usize;
         let sidelen = sidelen / k;
 
@@ -1073,7 +1062,6 @@ impl Log {
                 let right_ = min(sidelen - 1, right - j * sidelen);
                 let left_offset_ = left_offset + j * sidelen;
 
-                println!("{indent}i={i}, j={j}");
                 let index_t_ = match index_t {
                     Some(index) => Some(index + i * k + j),
                     None => None,
@@ -1106,14 +1094,8 @@ impl Log {
 
                 if leaf_t && leaf_s {
                     let value = max_t_ + max_s_;
-                    println!("{indent}two leaves: {value:?}");
                     for row in top_..=bottom_ {
                         for col in left_..=right_ {
-                            println!(
-                                "{indent}set ({}, {})",
-                                top_offset_ + row,
-                                left_offset_ + col
-                            );
                             window[[
                                 top_offset_ + row - window_top,
                                 left_offset_ + col - window_left,
@@ -1121,7 +1103,6 @@ impl Log {
                         }
                     }
                 } else if leaf_s {
-                    println!("{indent}leaf s");
                     self._get_window(
                         snapshot,
                         sidelen,
@@ -1138,23 +1119,15 @@ impl Log {
                         window_left,
                         top_offset_,
                         left_offset_,
-                        level + 1,
                     );
                 } else if leaf_t {
-                    println!("{indent}leaf t");
                     if let Some(index) = index_t_ {
                         if !self.nodemap.get(index) {
                             let equal = self.equal.get(self.nodemap.rank0(index + 1) - 1);
                             if !equal {
                                 let value = max_t_ + max_s_;
-                                println!("{indent}uniform: {value:?}");
                                 for row in top_..=bottom_ {
                                     for col in left_..=right_ {
-                                        println!(
-                                            "{indent}set ({}, {})",
-                                            top_offset_ + row,
-                                            left_offset_ + col
-                                        );
                                         window[[
                                             top_offset_ + row - window_top,
                                             left_offset_ + col - window_left,
@@ -1181,10 +1154,8 @@ impl Log {
                         window_left,
                         top_offset_,
                         left_offset_,
-                        level + 1,
                     );
                 } else {
-                    println!("{indent}no leaves");
                     self._get_window(
                         snapshot,
                         sidelen,
@@ -1201,9 +1172,207 @@ impl Log {
                         window_left,
                         top_offset_,
                         left_offset_,
-                        level + 1,
                     );
                 }
+            }
+        }
+    }
+
+    /// Search the window for cells with values in a given range
+    ///
+    /// See: Algorithm 7 in Silva-Coira paper
+    ///
+    fn search_window<T>(
+        &self,
+        snapshot: &Snapshot,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        lower: T,
+        upper: T,
+    ) -> Vec<(usize, usize)>
+    where
+        T: PrimInt + Debug,
+    {
+        let (left, right) = rearrange(left, right);
+        let (top, bottom) = rearrange(top, bottom);
+        let (lower, upper) = rearrange(lower, upper);
+        self.check_bounds(bottom, right);
+
+        let mut cells: Vec<(usize, usize)> = vec![];
+        self._search_window(
+            snapshot,
+            self.sidelen,
+            top,
+            bottom - 1,
+            left,
+            right - 1,
+            lower,
+            upper,
+            Some(0),
+            Some(0),
+            self.min.get(0),
+            snapshot.min.get(0),
+            self.max.get(0),
+            snapshot.max.get(0),
+            &mut cells,
+            0,
+            0,
+        );
+
+        cells
+    }
+
+    fn _search_window<T>(
+        &self,
+        snapshot: &Snapshot,
+        sidelen: usize,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        lower: T,
+        upper: T,
+        index_t: Option<usize>,
+        index_s: Option<usize>,
+        min_t: T,
+        min_s: T,
+        max_t: T,
+        max_s: T,
+        cells: &mut Vec<(usize, usize)>,
+        top_offset: usize,
+        left_offset: usize,
+    ) where
+        T: PrimInt + Debug,
+    {
+        let max_value = max_s + max_t;
+        let min_value = min_s + min_t;
+
+        if min_value >= lower && max_value <= upper {
+            // Branch meets condition, output all cells
+            for row in top..=bottom {
+                for col in left..=right {
+                    cells.push((top_offset + row, left_offset + col));
+                }
+            }
+            return;
+        } else if min_value > upper || max_value < lower {
+            // No cells in this branch meet the condition
+            return;
+        }
+
+        let k = self.k as usize;
+        let sidelen = sidelen / k;
+
+        let index_t = match index_t {
+            Some(index) => Some(1 + self.nodemap.rank(index) * k * k),
+            None => None,
+        };
+
+        let index_s = match index_s {
+            Some(index) => Some(1 + snapshot.nodemap.rank(index) * k * k),
+            None => None,
+        };
+
+        for i in top / sidelen..=bottom / sidelen {
+            let top_ = top.saturating_sub(i * sidelen);
+            let bottom_ = min(sidelen - 1, bottom - i * sidelen);
+            let top_offset_ = top_offset + i * sidelen;
+
+            for j in left / sidelen..=right / sidelen {
+                let left_ = left.saturating_sub(j * sidelen);
+                let right_ = min(sidelen - 1, right - j * sidelen);
+                let left_offset_ = left_offset + j * sidelen;
+
+                let mut index_t_ = match index_t {
+                    Some(index) => Some(index + i * k + j),
+                    None => None,
+                };
+
+                let mut index_s_ = match index_s {
+                    Some(index) => Some(index + i * k + j),
+                    None => None,
+                };
+
+                let mut max_t_ = match index_t_ {
+                    Some(index) => self.max.get(index),
+                    None => max_t,
+                };
+
+                let mut max_s_ = match index_s_ {
+                    Some(index) => max_s - snapshot.max.get(index),
+                    None => max_s,
+                };
+
+                let leaf_t = match index_t_ {
+                    Some(index) => index >= self.nodemap.length || !self.nodemap.get(index),
+                    None => true,
+                };
+
+                let leaf_s = match index_s_ {
+                    Some(index) => index >= snapshot.nodemap.length || !snapshot.nodemap.get(index),
+                    None => true,
+                };
+
+                let mut min_t_ = match index_t_ {
+                    Some(index) => {
+                        if leaf_t {
+                            min_t
+                        } else {
+                            self.min.get(self.nodemap.rank(index))
+                        }
+                    }
+                    None => min_t,
+                };
+
+                let mut min_s_ = match index_s_ {
+                    Some(index) => {
+                        if leaf_s {
+                            min_s
+                        } else {
+                            min_s + snapshot.min.get(snapshot.nodemap.rank(index))
+                        }
+                    }
+                    None => min_s,
+                };
+
+                if leaf_s {
+                    min_s_ = max_s_;
+                    index_s_ = None;
+                }
+
+                if leaf_t {
+                    min_t_ = max_t_;
+                    if let Some(index) = index_t_ {
+                        if index < self.nodemap.length
+                            && !self.equal.get(self.nodemap.rank0(index + 1) - 1)
+                        {
+                            min_t_ = max_s_ + max_t_ - min_s_;
+                        }
+                    }
+                    index_t_ = None;
+                }
+
+                self._search_window(
+                    snapshot,
+                    sidelen,
+                    top_,
+                    bottom_,
+                    left_,
+                    right_,
+                    lower,
+                    upper,
+                    index_t_,
+                    index_s_,
+                    min_t_,
+                    min_s_,
+                    max_t_,
+                    max_s_,
+                    cells,
+                    top_offset_,
+                    left_offset_,
+                );
             }
         }
     }
@@ -1339,7 +1508,10 @@ where
 
 /// Make sure bounds are ordered correctly, eg right is to the right of left, top is above
 /// bottom.
-fn rearrange(lower: usize, upper: usize) -> (usize, usize) {
+fn rearrange<T>(lower: T, upper: T) -> (T, T)
+where
+    T: PrimInt + Debug,
+{
     if lower > upper {
         (upper, lower)
     } else {
