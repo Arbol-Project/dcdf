@@ -70,36 +70,6 @@ mod bitmap {
 
             count.try_into().unwrap()
         }
-
-        /// Get the index of the nth occurence of 1 in BitMap
-        ///
-        /// Naive brute force implementation that is only used to double check the indexed
-        /// implementation in tests.
-        pub fn select(&self, n: usize) -> Option<usize> {
-            if n == 0 {
-                panic!("select(0)");
-            }
-
-            let mut count = 0;
-            for (word_index, word) in self.bitmap.iter().enumerate() {
-                let popcount: usize = word.count_ones().try_into().unwrap();
-                if popcount + count >= n {
-                    // It's in this word somewhere
-                    let mut position = word_index * 8;
-                    let mut mask = 1 << 7;
-                    while count < n {
-                        if word & mask > 0 {
-                            count += 1;
-                        }
-                        mask >>= 1;
-                        position += 1;
-                    }
-                    return Some(position);
-                }
-                count += popcount;
-            }
-            None
-        }
     }
 
     #[test]
@@ -186,34 +156,6 @@ mod bitmap {
         };
 
         bitmap.rank(11);
-    }
-
-    #[test]
-    fn select() {
-        // 1010101001
-        let bitmap = BitMap {
-            length: 10,
-            bitmap: vec![170, 64],
-        };
-
-        assert_eq!(bitmap.select(1).unwrap(), 1);
-        assert_eq!(bitmap.select(2).unwrap(), 3);
-        assert_eq!(bitmap.select(3).unwrap(), 5);
-        assert_eq!(bitmap.select(4).unwrap(), 7);
-        assert_eq!(bitmap.select(5).unwrap(), 10);
-        assert_eq!(bitmap.select(6), None);
-    }
-
-    #[test]
-    #[should_panic]
-    fn select_zeroth() {
-        // 1010101001
-        let bitmap = BitMap {
-            length: 10,
-            bitmap: vec![170, 64],
-        };
-
-        bitmap.select(0);
     }
 }
 
@@ -362,91 +304,6 @@ mod indexed_bitmap {
         let bitmap = make_bitmap(1 << 30);
         let indexes: Vec<usize> = RandomRange(1 << 30).take(1000).collect();
         test_rank(bitmap, &indexes);
-    }
-
-    fn test_select(bitmap: BitMap, counts: &[usize]) {
-        // Gather answers using the naive, reference implementation
-        println!(
-            "Test select: {} bits, {}/{} lookups",
-            bitmap.length,
-            counts.len(),
-            counts.len() * 1000,
-        );
-
-        let timer = time::Instant::now();
-        let mut answers: Vec<Option<usize>> = Vec::with_capacity(counts.len());
-        for count in counts {
-            answers.push(bitmap.select(*count));
-        }
-        let reference_impl = timer.elapsed().as_millis();
-
-        // Compare our answers with the reference implementation
-        let timer = time::Instant::now();
-        let bitmap = IndexedBitMap::from(bitmap);
-        let make_index = timer.elapsed().as_millis();
-
-        let timer = time::Instant::now();
-        for _ in 0..1000 {
-            for (count, answer) in counts.iter().zip(answers.iter()) {
-                assert_eq!(*answer, bitmap.select(*count));
-            }
-        }
-        let our_impl = timer.elapsed().as_millis();
-
-        println!("time to build index: {}", make_index);
-        println!("reference impl: {}, our impl: {}", reference_impl, our_impl);
-    }
-
-    #[test]
-    fn select() {
-        // 1010101001
-        let bitmap = BitMap {
-            length: 10,
-            bitmap: vec![170, 64],
-        };
-        test_select(bitmap, &vec![1, 2, 3, 4, 5]);
-    }
-
-    #[test]
-    #[should_panic]
-    fn select_zeroth() {
-        // 1010101001
-        let bitmap = BitMap {
-            length: 10,
-            bitmap: vec![170, 64],
-        };
-
-        let bitmap = IndexedBitMap::from(bitmap);
-        bitmap.select(0);
-    }
-
-    #[test]
-    fn select_first_at_end_of_block() {
-        let mut bitmap = make_bitmap(1 << 20);
-
-        // Contrivance to exercise select_first_at_end_of_block
-        // Go to the end of the 200th block and zero out the last word of that block
-        let addr = 200 * 4 * 4; // 4 words per block, 4 bytes per word
-        for i in addr - 5..addr {
-            bitmap.bitmap[i] = 0;
-        }
-        let rank_200 = bitmap.rank(200 * 4 * 4 * 8);
-        test_select(bitmap, &vec![rank_200]);
-    }
-
-    #[test]
-    fn select_megabit() {
-        let bitmap = make_bitmap(1 << 20);
-        let indexes: Vec<usize> = RandomRange(1 << 20).take(100).collect();
-        test_select(bitmap, &indexes);
-    }
-
-    #[test]
-    #[ignore]
-    fn select_gigabit() {
-        let bitmap = make_bitmap(1 << 30);
-        let indexes: Vec<usize> = RandomRange(1 << 30).take(1000).collect();
-        test_select(bitmap, &indexes);
     }
 }
 

@@ -14,7 +14,7 @@ use std::fmt::Debug;
 /// An array of bits.
 ///
 /// This unindexed version is used to build up a BitMap using the `push` method. Once a BitMap is
-/// built, it should be converted to an indexed type for performant rank and select queries.
+/// built, it should be converted to an indexed type for performant rank queries.
 ///
 /// Typical usage:
 ///
@@ -62,7 +62,7 @@ impl BitMap {
     }
 }
 
-/// An array of bits with a single level index for making fast rank and select queries.
+/// An array of bits with a single level index for making fast rank queries.
 ///
 struct IndexedBitMap {
     length: usize,
@@ -168,104 +168,6 @@ impl IndexedBitMap {
     /// Count occurences of 0 in BitMap[0...i]
     fn rank0(&self, i: usize) -> usize {
         i - self.rank(i)
-    }
-
-    /// Get the index of the nth occurence of 1 in BitMap
-    fn select(&self, n: usize) -> Option<usize> {
-        if n == 0 {
-            panic!("select(0)");
-        }
-
-        // Use binary search to find block containing nth bit set to 1
-        // We can set a lower bound by considering which block would contain n if every bit were
-        // set to 1
-        let mut low_bound = n / 32 / self.k;
-        let mut high_bound = self.index.len();
-
-        if high_bound == 0 {
-            // Special case. This bitmap isn't large enough to have an index, so go straight to
-            // counting
-            return self.select_from_block(0, n);
-        }
-
-        let mut block = low_bound + (high_bound - low_bound) / 2;
-        loop {
-            let count: usize = self.index[block].try_into().unwrap();
-            if n == count {
-                // Special case. Count at this block is exactly i, so it's in this block, towards
-                // the end, so count backwards from the end
-                return Some(self.select_first_from_end_of_block(block));
-            }
-
-            if n < count {
-                // Search earlier blocks
-                high_bound = block;
-            } else if n > count {
-                // Search later blocks
-                low_bound = block;
-            }
-            if high_bound - low_bound == 1 {
-                // Search this block
-                return self.select_from_block(low_bound, n);
-            }
-            block = low_bound + (high_bound - low_bound) / 2;
-        }
-    }
-
-    /// Starting from the end of the given block, search in reverse for the first 1 in the block
-    /// and return its position within the BitMap
-    fn select_first_from_end_of_block(&self, block_index: usize) -> usize {
-        let mut word_index = (block_index + 1) * self.k - 1;
-        let mut position = (word_index + 1) * 32;
-        let mut word = self.bitmap[word_index];
-        let mut mask: u32 = 1;
-        while word & mask == 0 {
-            if mask == 1 << 31 {
-                word_index -= 1;
-                word = self.bitmap[word_index];
-                mask = 1;
-            } else {
-                mask <<= 1;
-            }
-            position -= 1;
-        }
-
-        position
-    }
-
-    /// Perform a sequential search in the given block for the nth 1 in the array
-    fn select_from_block(&self, block_index: usize, n: usize) -> Option<usize> {
-        let mut word_index = block_index * self.k;
-        let mut position = word_index * 32;
-        let mut word = self.bitmap[word_index];
-        let mut mask: u32 = 1 << 31;
-
-        let mut count: usize = if block_index > 0 {
-            self.index[block_index - 1].try_into().unwrap()
-        } else {
-            0
-        };
-
-        loop {
-            if word & mask != 0 {
-                count += 1;
-                if count == n {
-                    return Some(position + 1);
-                }
-            }
-
-            if mask == 1 {
-                word_index += 1;
-                if word_index == self.bitmap.len() {
-                    return None;
-                }
-                word = self.bitmap[word_index];
-                mask = 1 << 31;
-            } else {
-                mask >>= 1;
-            }
-            position += 1;
-        }
     }
 }
 
