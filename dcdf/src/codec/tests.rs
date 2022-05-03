@@ -17,15 +17,18 @@ impl Dacs {
 
 /// Reference implementation for search_window that works on an ndarray::Array2, for comparison
 /// to the K^2 raster implementations.
-fn array_search_window(
-    data: ArrayView2<i32>,
+fn array_search_window<T>(
+    data: ArrayView2<T>,
     top: usize,
     bottom: usize,
     left: usize,
     right: usize,
-    lower: i32,
-    upper: i32,
-) -> Vec<(usize, usize)> {
+    lower: T,
+    upper: T,
+) -> Vec<(usize, usize)>
+where
+    T: PrimInt + Debug,
+{
     let mut coords: Vec<(usize, usize)> = vec![];
     for row in top..bottom {
         for col in left..right {
@@ -866,6 +869,10 @@ mod log {
         ])
     }
 
+    fn array8_unsigned() -> Array3<u32> {
+        array8().mapv(|x| x as u32)
+    }
+
     fn array9() -> Array3<i32> {
         arr3(&[
             [
@@ -942,7 +949,7 @@ mod log {
 
     #[test]
     fn from_arrays_unsigned() {
-        let data = array8().mapv(|x| x as u32);
+        let data = array8_unsigned();
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
         assert_eq!(log.nodemap.length, 17);
         assert_eq!(log.nodemap.bitmap, vec![0b10111001000010010000000000000000]);
@@ -992,6 +999,26 @@ mod log {
         for row in 0..8 {
             for col in 0..8 {
                 assert_eq!(log.get::<i32>(&snapshot, row, col), data[[2, row, col]]);
+            }
+        }
+    }
+
+    #[test]
+    fn get_unsigned() {
+        let data = array8_unsigned();
+        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
+        for row in 0..8 {
+            for col in 0..8 {
+                assert_eq!(log.get::<u32>(&snapshot, row, col), data[[1, row, col]]);
+            }
+        }
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
+        for row in 0..8 {
+            for col in 0..8 {
+                assert_eq!(log.get::<u32>(&snapshot, row, col), data[[2, row, col]]);
             }
         }
     }
@@ -1150,6 +1177,38 @@ mod log {
     }
 
     #[test]
+    fn get_window_unsigned() {
+        let data = array8_unsigned();
+        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        let window = log.get_window::<u32>(&snapshot, top, bottom, left, right);
+                        let expected = data.slice(s![1, top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        let window = log.get_window::<u32>(&snapshot, top, bottom, left, right);
+                        let expected = data.slice(s![2, top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     #[should_panic]
     fn get_window_lower_right_out_of_bounds() {
         let data = array8();
@@ -1258,6 +1317,67 @@ mod log {
     #[test]
     fn search_window() {
         let data = array8();
+        let data0 = data.slice(s![0, .., ..]);
+        let snapshot = Snapshot::from_array(data0, 2);
+
+        let data1 = data.slice(s![1, .., ..]);
+        let log = Log::from_arrays(data0, data1, 2);
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    data1, top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords = log.search_window(
+                                    &snapshot, top, bottom, left, right, lower, upper,
+                                );
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let data2 = data.slice(s![2, .., ..]);
+        let log = Log::from_arrays(data0, data2, 2);
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    data2, top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords = log.search_window(
+                                    &snapshot, top, bottom, left, right, lower, upper,
+                                );
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn search_window_unsigned() {
+        let data = array8_unsigned();
         let data0 = data.slice(s![0, .., ..]);
         let snapshot = Snapshot::from_array(data0, 2);
 

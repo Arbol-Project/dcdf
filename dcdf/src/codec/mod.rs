@@ -6,11 +6,10 @@
 //! See: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
 
 use ndarray::{Array2, ArrayView2};
-use num_traits::{AsPrimitive, PrimInt};
+use num_traits::PrimInt;
 use std::cmp::min;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::mem::size_of;
 
 /// An array of bits.
 ///
@@ -291,8 +290,8 @@ impl Dacs {
             }
         }
 
-        let n: T = T::from(zigzag_decode(n)).unwrap();
-        n
+        let n = zigzag_decode(n);
+        T::from(n).unwrap()
     }
 }
 
@@ -325,7 +324,7 @@ where
         // Index bitmaps and prepare to return, stopping as soon as an empty level is encountered
         let levels = levels
             .into_iter()
-            .take_while(|(bitmap, bytes)| bitmap.length > 0)
+            .take_while(|(bitmap, _)| bitmap.length > 0)
             .map(|(bitmap, bytes)| (IndexedBitMap::from(bitmap), bytes))
             .collect();
 
@@ -754,7 +753,7 @@ where
 }
 
 /// T - K^2 Raster Log
-struct Log {
+pub struct Log {
     /// Bitmap of tree structure, known as T in Silva-Coira paper
     nodemap: IndexedBitMap,
 
@@ -782,7 +781,7 @@ struct Log {
 }
 
 impl Log {
-    fn from_arrays<T>(snapshot: ArrayView2<T>, log: ArrayView2<T>, k: i32) -> Self
+    pub fn from_arrays<T>(snapshot: ArrayView2<T>, log: ArrayView2<T>, k: i32) -> Self
     where
         T: PrimInt + Debug,
     {
@@ -864,20 +863,22 @@ impl Log {
         } else {
             let index_t = if single_t { None } else { Some(0) };
             let index_s = if single_s { None } else { Some(0) };
-            self._get(
+            let value = self._get(
                 snapshot,
                 self.sidelen,
                 row,
                 col,
                 index_t,
                 index_s,
-                max_t,
-                max_s,
-            )
+                max_t.to_i64().unwrap(),
+                max_s.to_i64().unwrap(),
+            );
+
+            T::from(value).unwrap()
         }
     }
 
-    fn _get<T>(
+    fn _get(
         &self,
         snapshot: &Snapshot,
         sidelen: usize,
@@ -885,12 +886,9 @@ impl Log {
         col: usize,
         index_t: Option<usize>,
         index_s: Option<usize>,
-        max_t: T,
-        max_s: T,
-    ) -> T
-    where
-        T: PrimInt + Debug,
-    {
+        max_t: i64,
+        max_s: i64,
+    ) -> i64 {
         let k = self.k as usize;
         let sidelen = sidelen / k;
         let mut max_s = max_s;
@@ -899,7 +897,7 @@ impl Log {
         let index_s = if let Some(index) = index_s {
             let index = 1 + snapshot.nodemap.rank(index) * k * k;
             let index = index + row / sidelen * k + col / sidelen;
-            max_s = max_s - snapshot.max.get(index);
+            max_s = max_s - snapshot.max.get::<i64>(index);
             Some(index)
         } else {
             None
@@ -1029,8 +1027,8 @@ impl Log {
         right: usize,
         index_t: Option<usize>,
         index_s: Option<usize>,
-        max_t: T,
-        max_s: T,
+        max_t: i64,
+        max_s: i64,
         window: &mut Array2<T>,
         window_top: usize,
         window_left: usize,
@@ -1083,7 +1081,7 @@ impl Log {
                 };
 
                 let max_s_ = match index_s_ {
-                    Some(index) => max_s - snapshot.max.get(index),
+                    Some(index) => max_s - snapshot.max.get::<i64>(index),
                     None => max_s,
                 };
 
@@ -1099,7 +1097,7 @@ impl Log {
                             window[[
                                 top_offset_ + row - window_top,
                                 left_offset_ + col - window_left,
-                            ]] = value;
+                            ]] = T::from(value).unwrap();
                         }
                     }
                 } else if leaf_s {
@@ -1131,7 +1129,7 @@ impl Log {
                                         window[[
                                             top_offset_ + row - window_top,
                                             left_offset_ + col - window_left,
-                                        ]] = value;
+                                        ]] = T::from(value).unwrap();
                                     }
                                 }
                                 continue;
@@ -1182,7 +1180,7 @@ impl Log {
     ///
     /// See: Algorithm 7 in Silva-Coira paper
     ///
-    fn search_window<T>(
+    pub fn search_window<T>(
         &self,
         snapshot: &Snapshot,
         top: usize,
@@ -1208,8 +1206,8 @@ impl Log {
             bottom - 1,
             left,
             right - 1,
-            lower,
-            upper,
+            lower.to_i64().unwrap(),
+            upper.to_i64().unwrap(),
             Some(0),
             Some(0),
             self.min.get(0),
@@ -1224,7 +1222,7 @@ impl Log {
         cells
     }
 
-    fn _search_window<T>(
+    fn _search_window(
         &self,
         snapshot: &Snapshot,
         sidelen: usize,
@@ -1232,20 +1230,18 @@ impl Log {
         bottom: usize,
         left: usize,
         right: usize,
-        lower: T,
-        upper: T,
+        lower: i64,
+        upper: i64,
         index_t: Option<usize>,
         index_s: Option<usize>,
-        min_t: T,
-        min_s: T,
-        max_t: T,
-        max_s: T,
+        min_t: i64,
+        min_s: i64,
+        max_t: i64,
+        max_s: i64,
         cells: &mut Vec<(usize, usize)>,
         top_offset: usize,
         left_offset: usize,
-    ) where
-        T: PrimInt + Debug,
-    {
+    ) {
         let max_value = max_s + max_t;
         let min_value = min_s + min_t;
 
@@ -1295,13 +1291,13 @@ impl Log {
                     None => None,
                 };
 
-                let mut max_t_ = match index_t_ {
+                let max_t_ = match index_t_ {
                     Some(index) => self.max.get(index),
                     None => max_t,
                 };
 
-                let mut max_s_ = match index_s_ {
-                    Some(index) => max_s - snapshot.max.get(index),
+                let max_s_ = match index_s_ {
+                    Some(index) => max_s - snapshot.max.get::<i64>(index),
                     None => max_s,
                 };
 
@@ -1331,7 +1327,7 @@ impl Log {
                         if leaf_s {
                             min_s
                         } else {
-                            min_s + snapshot.min.get(snapshot.nodemap.rank(index))
+                            min_s + snapshot.min.get::<i64>(snapshot.nodemap.rank(index))
                         }
                     }
                     None => min_s,
