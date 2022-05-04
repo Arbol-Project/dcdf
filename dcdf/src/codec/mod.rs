@@ -1,9 +1,27 @@
-//! Encode/Decode Heuristic K^2 Raster
+//! Encode/Decode Heuristic K²-Raster
 //!
-//! An implementation of the algorithm proposed by Silva-Coira, Paramá, de Bernardo, and Seco in
-//! their paper, "Space-efficient representations of raster time series".
+//! An implementation of the compact data structure proposed by Silva-Coira, et al.[^bib1],
+//! which, in turn, is based on work by Ladra[^bib2] and González[^bib3].
 //!
-//! See: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
+//! The data structures here provide a means of storing raster data compactly while still being
+//! able to run queries in-place on the stored data. A separate decompression step is not required
+//! in order to read the data.
+//!
+//! For insight into how this data structure works, please see the literature in footnotes.
+//! Reproducing the literature is outside of the scope for this documentation.
+//!
+//! [^bib1]: [F. Silva-Coira, J.R. Paramá, G. de Bernardo, D. Seco, Space-efficient representations
+//!     of raster time series, Information Sciences 566 (2021) 300-325.][1]
+//!
+//! [^bib2]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
+//!     structure for raster data, Information Systems 72 (2017) 179-204.
+//!
+//! [^bib3]: [F. González, S. Grabowski, V. Mäkinen, G. Navarro, Practical implementations of rank
+//!     and select queries, in: Poster Proc. of 4th Workshop on Efficient and Experimental 
+//!     Algorithms (WEA) Greece, 2005, pp. 27-38.][2] 
+//!
+//! [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
+//! [2]: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.69.9548&rep=rep1&type=pdf
 
 use ndarray::{Array2, ArrayView2};
 use num_traits::PrimInt;
@@ -11,254 +29,26 @@ use std::cmp::min;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 
-/// An array of bits.
+/// K²-Raster encoded Snapshot
 ///
-/// This unindexed version is used to build up a BitMap using the `push` method. Once a BitMap is
-/// built, it should be converted to an indexed type for performant rank queries.
-///
-/// Typical usage:
-///
-/// let builder = BitMap::new();
-///
-/// builder.push(...)
-/// builder.push(...)
-/// etc...
-///
-/// let mut bitmap = IndexedBitMap::from(builder);
-///
-struct BitMap {
-    length: usize,
-    bitmap: Vec<u8>,
-}
-
-impl BitMap {
-    /// Initialize an empty BitMap
-    fn new() -> BitMap {
-        BitMap {
-            length: 0,
-            bitmap: vec![],
-        }
-    }
-
-    /// Push a bit onto the BitMap
-    fn push(&mut self, bit: bool) {
-        // Which bit do we need to set in the relevant byte?
-        let position = self.length % 8;
-
-        // How much do we need to shift to the left to get to that position?
-        let shift = 7 - position;
-
-        // If position == 0, we start a new byte
-        if position == 0 {
-            self.bitmap.push(if bit { 1 << shift } else { 0 });
-        }
-        // Otherwise add bit to currently started byte
-        else if bit {
-            let last = self.bitmap.len() - 1;
-            self.bitmap[last] += 1 << shift;
-        }
-
-        self.length += 1;
-    }
-}
-
-/// An array of bits with a single level index for making fast rank queries.
-///
-struct IndexedBitMap {
-    length: usize,
-    k: usize,
-    index: Vec<u32>,
-    bitmap: Vec<u32>,
-}
-
-impl From<BitMap> for IndexedBitMap {
-    /// Generate an indexed bitmap from an unindexed one.
-    ///
-    /// Index is an array of bit counts for every k words in the bitmap, such that
-    /// rank(i) = index[i / k / wordlen] if i is an even multiple of k * wordlen. wordlen is 32 for
-    /// this implementation which uses 32 bit unsigned integers.
-    fn from(bitmap: BitMap) -> Self {
-        // Value of k is more or less arbitrary. Could be tuned via benchmarking.
-        // Index will add bitmap.length / k extra space to store the index
-        let k = 4; // 25% extra space to store the index
-        let blocks = bitmap.length / 32 / k;
-        let mut index: Vec<u32> = Vec::with_capacity(blocks);
-
-        // Convert vector of u8 to vector of u32
-        let words = div_ceil(bitmap.bitmap.len(), 4);
-        let mut bitmap32: Vec<u32> = Vec::with_capacity(words);
-        if words > 0 {
-            let mut shift = 24;
-            let mut word_index = 0;
-
-            bitmap32.push(0);
-            for byte in bitmap.bitmap {
-                let mut word: u32 = byte.into();
-                word <<= shift;
-                bitmap32[word_index] |= word;
-
-                if shift == 0 {
-                    bitmap32.push(0);
-                    word_index += 1;
-                    shift = 24;
-                } else {
-                    shift -= 8;
-                }
-            }
-        }
-
-        // Generate index
-        let mut count = 0;
-        for i in 0..blocks {
-            for j in 0..k {
-                count += bitmap32[i * k + j].count_ones();
-            }
-            index.push(count);
-        }
-
-        IndexedBitMap {
-            length: bitmap.length,
-            k,
-            index,
-            bitmap: bitmap32,
-        }
-    }
-}
-
-impl IndexedBitMap {
-    /// Get the bit at position i
-    fn get(&self, i: usize) -> bool {
-        let word_index = i / 32;
-        let bit_index = i % 32;
-        let shift = 31 - bit_index;
-        let word = self.bitmap[word_index];
-
-        (word >> shift) & 1 > 0
-    }
-
-    /// Count occurences of 1 in BitMap[0...i]
-    fn rank(&self, i: usize) -> usize {
-        if i > self.length {
-            // Can only happen if there is a programming error in this module
-            panic!("index out of bounds. length: {}, i: {}", self.length, i);
-        }
-
-        // Use the index
-        let block = i / 32 / self.k;
-        let mut count = if block > 0 { self.index[block - 1] } else { 0 };
-
-        // Use popcount/count_ones on any whole words not included in index
-        let start = block * self.k;
-        let end = i / 32;
-        for word in &self.bitmap[start..end] {
-            count += word.count_ones();
-        }
-
-        // Count last bits in remaining fraction of a word
-        let leftover_bits = i - end * 32;
-        if leftover_bits > 0 {
-            let word = &self.bitmap[end];
-            let shift = 32 - leftover_bits;
-            count += (word >> shift).count_ones();
-        }
-
-        count.try_into().unwrap()
-    }
-
-    /// Count occurences of 0 in BitMap[0...i]
-    fn rank0(&self, i: usize) -> usize {
-        i - self.rank(i)
-    }
-}
-
-/// Compact storage for integers (Directly Addressable Codes)
-struct Dacs {
-    levels: Vec<(IndexedBitMap, Vec<u8>)>,
-}
-
-impl Dacs {
-    fn get<T>(&self, index: usize) -> T
-    where
-        T: PrimInt + Debug,
-    {
-        let mut index = index;
-        let mut n: u64 = 0;
-        for (i, (bitmap, bytes)) in self.levels.iter().enumerate() {
-            n |= (bytes[index] as u64) << i * 8;
-            if bitmap.get(index) {
-                index = bitmap.rank(index);
-            } else {
-                break;
-            }
-        }
-
-        let n = zigzag_decode(n);
-        T::from(n).unwrap()
-    }
-}
-
-impl<T> From<Vec<T>> for Dacs
-where
-    T: PrimInt + Debug,
-{
-    fn from(data: Vec<T>) -> Self {
-        // Set up levels. Probably won't need all of them
-        let mut levels = Vec::with_capacity(8);
-        for _ in 0..8 {
-            levels.push((BitMap::new(), Vec::new()));
-        }
-
-        // Chunk each datum into bytes, one per level, stopping when only 0s are left
-        for datum in data {
-            let mut datum = zigzag_encode(datum.to_i64().unwrap());
-            for (bitmap, bytes) in &mut levels {
-                bytes.push((datum & 0xff) as u8);
-                datum >>= 8;
-                if datum == 0 {
-                    bitmap.push(false);
-                    break;
-                } else {
-                    bitmap.push(true);
-                }
-            }
-        }
-
-        // Index bitmaps and prepare to return, stopping as soon as an empty level is encountered
-        let levels = levels
-            .into_iter()
-            .take_while(|(bitmap, _)| bitmap.length > 0)
-            .map(|(bitmap, bytes)| (IndexedBitMap::from(bitmap), bytes))
-            .collect();
-
-        Dacs { levels }
-    }
-}
-
-fn zigzag_encode(n: i64) -> u64 {
-    let zz = (n >> 63) ^ (n << 1);
-    zz as u64
-}
-
-fn zigzag_decode(zz: u64) -> i64 {
-    let n = (zz >> 1) ^ if zz & 1 == 1 { 0xffffffffffffffff } else { 0 };
-    n as i64
-}
-
-/// K^2 raster encoded Snapshot
+/// A Snapshot stores raster data for a particular time instant in a raster time series. Data is
+/// stored standalone without reference to any other time instant.
+/// 
 pub struct Snapshot {
-    /// Bitmap of tree structure, known as T in Silva-Coira paper
-    nodemap: IndexedBitMap,
+    /// Bitmap of tree structure, known as T in Silva-Coira
+    nodemap: BitMap,
 
-    /// Tree node maximum values, known as Lmax in Silva-Coira paper
+    /// Tree node maximum values, known as Lmax in Silva-Coira
     max: Dacs,
 
-    /// Tree node minimum values, known as Lmin in Silva-Coira paper
+    /// Tree node minimum values, known as Lmin in Silva-Coira
     min: Dacs,
 
-    /// The K in K^2 raster.
+    /// The K in K²-Raster. Each level of the tree structure is divided into k² subtrees.
+    /// In practice, this will almost always be 2.
     k: i32,
 
-    /// Shape of the encoded raster. Since K^2 matrix is grown to a square with sides whose length
+    /// Shape of the encoded raster. Since K² matrix is grown to a square with sides whose length
     /// are a power of K, we need to keep track of the dimensions of the original raster so we can
     /// perform range checking.
     shape: [usize; 2],
@@ -269,11 +59,13 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// Build a snapshot from a two-dimensional array. 
+    ///
     pub fn from_array<T>(data: ArrayView2<T>, k: i32) -> Self
     where
         T: PrimInt + Debug,
     {
-        let mut nodemap = BitMap::new();
+        let mut nodemap = BitMapBuilder::new();
         let mut max: Vec<T> = vec![];
         let mut min: Vec<T> = vec![];
 
@@ -309,7 +101,7 @@ impl Snapshot {
         }
 
         Snapshot {
-            nodemap: IndexedBitMap::from(nodemap),
+            nodemap: BitMap::from(nodemap),
             max: Dacs::from(max),
             min: Dacs::from(min),
             k,
@@ -320,8 +112,10 @@ impl Snapshot {
 
     /// Get a cell value.
     ///
-    /// See: Algorithm 2 in "Scalable and queryable compressed storage structure for raster data" by
-    /// Susana Ladra, José R. Paramá, Fernando Silva-Coira, Information Systems 72 (2017) 179-204
+    /// See: Algorithm 2 in Ladra[^note]
+    ///
+    /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
+    ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
     pub fn get<T>(&self, row: usize, col: usize) -> T
     where
@@ -358,12 +152,11 @@ impl Snapshot {
 
     /// Get a subarray of Snapshot
     ///
-    /// See: Algorithm 3 in "Scalable and queryable compressed storage structure for raster data"
-    /// by Susana Ladra, José R. Paramá, Fernando Silva-Coira, Information Systems 72 (2017)
-    /// 179-204
+    /// This is based on Algorithm 3 in Ladra[^note], but has been modified to return a submatrix
+    /// rather than an unordered sequence of values.
     ///
-    /// This is based on that algorithm, but has been modified to return a submatrix rather than an
-    /// unordered sequence of values.
+    /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
+    ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
     pub fn get_window<T>(&self, top: usize, bottom: usize, left: usize, right: usize) -> Array2<T>
     where
@@ -461,9 +254,10 @@ impl Snapshot {
 
     /// Search the window for cells with values in a given range
     ///
-    /// See: Algorithm 4 in "Scalable and queryable compressed storage structure for raster data"
-    /// by Susana Ladra, José R. Paramá, Fernando Silva-Coira, Information Systems 72 (2017)
-    /// 179-204
+    /// See: Algorithm 4 in Ladra[^note]
+    ///
+    /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
+    ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
     pub fn search_window<T>(
         &self,
@@ -591,7 +385,7 @@ impl Snapshot {
     }
 }
 
-// Temporary tree structure for building K^2 raster
+/// Temporary tree structure for building K^2 raster
 struct K2TreeNode<T>
 where
     T: PrimInt + Debug,
@@ -654,25 +448,30 @@ where
     }
 }
 
-/// T - K^2 Raster Log
+/// K²-Raster encoded Log
+///
+/// A Log stores raster data for a particular time instant in a raster time series as the
+/// difference between this time instant and a reference Snapshot.
+///
 pub struct Log {
-    /// Bitmap of tree structure, known as T in Silva-Coira paper
-    nodemap: IndexedBitMap,
+    /// Bitmap of tree structure, known as T in Silva-Coira
+    nodemap: BitMap,
 
-    /// Bit map of tree nodes that match referenced snapshot, or have cells that all differ by the
+    /// Bitmap of tree nodes that match referenced snapshot, or have cells that all differ by the
     /// same amount, known as eqB in Silva-Coira paper
-    equal: IndexedBitMap,
+    equal: BitMap,
 
-    /// Tree node maximum values, known as Lmax in Silva-Coira paper
+    /// Tree node maximum values, known as Lmax in Silva-Coira
     max: Dacs,
 
-    /// Tree node minimum values, known as Lmin in Silva-Coira paper
+    /// Tree node minimum values, known as Lmin in Silva-Coira
     min: Dacs,
 
-    /// The K in K^2 raster.
+    /// The K in K²-Raster. Each level of the tree structure is divided into k² subtrees.
+    /// In practice, this will almost always be 2.
     k: i32,
 
-    /// Shape of the encoded raster. Since K^2 matrix is grown to a square with sides whose length
+    /// Shape of the encoded raster. Since K² matrix is grown to a square with sides whose length
     /// are a power of K, we need to keep track of the dimensions of the original raster so we can
     /// perform range checking.
     shape: [usize; 2],
@@ -683,12 +482,14 @@ pub struct Log {
 }
 
 impl Log {
+    /// Build a snapshot from a pair of two-dimensional arrays.
+    ///
     pub fn from_arrays<T>(snapshot: ArrayView2<T>, log: ArrayView2<T>, k: i32) -> Self
     where
         T: PrimInt + Debug,
     {
-        let mut nodemap = BitMap::new();
-        let mut equal = BitMap::new();
+        let mut nodemap = BitMapBuilder::new();
+        let mut equal = BitMapBuilder::new();
         let mut max: Vec<i64> = vec![];
         let mut min: Vec<i64> = vec![];
 
@@ -732,8 +533,8 @@ impl Log {
         }
 
         Log {
-            nodemap: IndexedBitMap::from(nodemap),
-            equal: IndexedBitMap::from(equal),
+            nodemap: BitMap::from(nodemap),
+            equal: BitMap::from(equal),
             max: Dacs::from(max),
             min: Dacs::from(min),
             k,
@@ -744,7 +545,12 @@ impl Log {
 
     /// Get a cell value
     ///
-    /// See: Algorithm 3 in Silva-Coira paper
+    /// See: Algorithm 3 in Silva-Coira[^note]
+    ///
+    /// [^note]: [F. Silva-Coira, J.R. Paramá, G. de Bernardo, D. Seco, Space-efficient 
+    ///     representations of raster time series, Information Sciences 566 (2021) 300-325.][1]
+    ///
+    /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
     pub fn get<T>(&self, snapshot: &Snapshot, row: usize, col: usize) -> T
     where
@@ -874,10 +680,13 @@ impl Log {
 
     /// Get a subarray of log
     ///
-    /// See: Algorithm 5 in Silva-Coira paper.
+    /// This is based on Algorithm 5 in Silva-Coira[^note], but has been modified to return a
+    /// submatrix rather than an unordered sequence of values.
     ///
-    /// This is based on that algorithm, but has been modified to return a submatrix rather than an
-    /// unordered sequence of values.
+    /// [^note]: [F. Silva-Coira, J.R. Paramá, G. de Bernardo, D. Seco, Space-efficient 
+    ///     representations of raster time series, Information Sciences 566 (2021) 300-325.][1]
+    ///
+    /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
     pub fn get_window<T>(
         &self,
@@ -1080,7 +889,12 @@ impl Log {
 
     /// Search the window for cells with values in a given range
     ///
-    /// See: Algorithm 7 in Silva-Coira paper
+    /// See: Algorithm 7 in Silva-Coira[^note]
+    /// 
+    /// [^note]: [F. Silva-Coira, J.R. Paramá, G. de Bernardo, D. Seco, Space-efficient 
+    ///     representations of raster time series, Information Sciences 566 (2021) 300-325.][1]
+    ///
+    /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
     pub fn search_window<T>(
         &self,
@@ -1284,6 +1098,239 @@ impl Log {
             );
         }
     }
+}
+
+/// An array of bits.
+///
+/// This unindexed version is used to build up a bitmap using the `push` method. Once a bitmap is
+/// built, it should be converted to an indexed type for performant rank queries.
+///
+/// Typical usage:
+///
+/// let mut builder = BitMapBuilder::new();
+///
+/// builder.push(...)
+/// builder.push(...)
+/// etc...
+///
+/// let bitmap = BitMap::from(builder);
+///
+struct BitMapBuilder {
+    length: usize,
+    bitmap: Vec<u8>,
+}
+
+impl BitMapBuilder {
+    /// Initialize an empty BitMapBuilder
+    fn new() -> BitMapBuilder {
+        BitMapBuilder {
+            length: 0,
+            bitmap: vec![],
+        }
+    }
+
+    /// Push a bit onto the BitMapBuilder
+    fn push(&mut self, bit: bool) {
+        // Which bit do we need to set in the relevant byte?
+        let position = self.length % 8;
+
+        // How much do we need to shift to the left to get to that position?
+        let shift = 7 - position;
+
+        // If position == 0, we start a new byte
+        if position == 0 {
+            self.bitmap.push(if bit { 1 << shift } else { 0 });
+        }
+        // Otherwise add bit to currently started byte
+        else if bit {
+            let last = self.bitmap.len() - 1;
+            self.bitmap[last] += 1 << shift;
+        }
+
+        self.length += 1;
+    }
+}
+
+/// An array of bits with a single level index for making fast rank queries.
+///
+struct BitMap {
+    length: usize,
+    k: usize,
+    index: Vec<u32>,
+    bitmap: Vec<u32>,
+}
+
+impl From<BitMapBuilder> for BitMap {
+    /// Generate an indexed bitmap from an unindexed one.
+    ///
+    /// Index is an array of bit counts for every k words in the bitmap, such that
+    /// rank(i) = index[i / k / wordlen] if i is an even multiple of k * wordlen. wordlen is 32 for
+    /// this implementation which uses 32 bit unsigned integers.
+    fn from(bitmap: BitMapBuilder) -> Self {
+        // Value of k is more or less arbitrary. Could be tuned via benchmarking.
+        // Index will add bitmap.length / k extra space to store the index
+        let k = 4; // 25% extra space to store the index
+        let blocks = bitmap.length / 32 / k;
+        let mut index: Vec<u32> = Vec::with_capacity(blocks);
+
+        // Convert vector of u8 to vector of u32
+        let words = div_ceil(bitmap.bitmap.len(), 4);
+        let mut bitmap32: Vec<u32> = Vec::with_capacity(words);
+        if words > 0 {
+            let mut shift = 24;
+            let mut word_index = 0;
+
+            bitmap32.push(0);
+            for byte in bitmap.bitmap {
+                let mut word: u32 = byte.into();
+                word <<= shift;
+                bitmap32[word_index] |= word;
+
+                if shift == 0 {
+                    bitmap32.push(0);
+                    word_index += 1;
+                    shift = 24;
+                } else {
+                    shift -= 8;
+                }
+            }
+        }
+
+        // Generate index
+        let mut count = 0;
+        for i in 0..blocks {
+            for j in 0..k {
+                count += bitmap32[i * k + j].count_ones();
+            }
+            index.push(count);
+        }
+
+        BitMap {
+            length: bitmap.length,
+            k,
+            index,
+            bitmap: bitmap32,
+        }
+    }
+}
+
+impl BitMap {
+    /// Get the bit at position i
+    fn get(&self, i: usize) -> bool {
+        let word_index = i / 32;
+        let bit_index = i % 32;
+        let shift = 31 - bit_index;
+        let word = self.bitmap[word_index];
+
+        (word >> shift) & 1 > 0
+    }
+
+    /// Count occurences of 1 in BitMap[0...i]
+    fn rank(&self, i: usize) -> usize {
+        if i > self.length {
+            // Can only happen if there is a programming error in this module
+            panic!("index out of bounds. length: {}, i: {}", self.length, i);
+        }
+
+        // Use the index
+        let block = i / 32 / self.k;
+        let mut count = if block > 0 { self.index[block - 1] } else { 0 };
+
+        // Use popcount/count_ones on any whole words not included in index
+        let start = block * self.k;
+        let end = i / 32;
+        for word in &self.bitmap[start..end] {
+            count += word.count_ones();
+        }
+
+        // Count last bits in remaining fraction of a word
+        let leftover_bits = i - end * 32;
+        if leftover_bits > 0 {
+            let word = &self.bitmap[end];
+            let shift = 32 - leftover_bits;
+            count += (word >> shift).count_ones();
+        }
+
+        count.try_into().unwrap()
+    }
+
+    /// Count occurences of 0 in BitMap[0...i]
+    fn rank0(&self, i: usize) -> usize {
+        i - self.rank(i)
+    }
+}
+
+/// Compact storage for integers (Directly Addressable Codes)
+struct Dacs {
+    levels: Vec<(BitMap, Vec<u8>)>,
+}
+
+impl Dacs {
+    fn get<T>(&self, index: usize) -> T
+    where
+        T: PrimInt + Debug,
+    {
+        let mut index = index;
+        let mut n: u64 = 0;
+        for (i, (bitmap, bytes)) in self.levels.iter().enumerate() {
+            n |= (bytes[index] as u64) << i * 8;
+            if bitmap.get(index) {
+                index = bitmap.rank(index);
+            } else {
+                break;
+            }
+        }
+
+        let n = zigzag_decode(n);
+        T::from(n).unwrap()
+    }
+}
+
+impl<T> From<Vec<T>> for Dacs
+where
+    T: PrimInt + Debug,
+{
+    fn from(data: Vec<T>) -> Self {
+        // Set up levels. Probably won't need all of them
+        let mut levels = Vec::with_capacity(8);
+        for _ in 0..8 {
+            levels.push((BitMapBuilder::new(), Vec::new()));
+        }
+
+        // Chunk each datum into bytes, one per level, stopping when only 0s are left
+        for datum in data {
+            let mut datum = zigzag_encode(datum.to_i64().unwrap());
+            for (bitmap, bytes) in &mut levels {
+                bytes.push((datum & 0xff) as u8);
+                datum >>= 8;
+                if datum == 0 {
+                    bitmap.push(false);
+                    break;
+                } else {
+                    bitmap.push(true);
+                }
+            }
+        }
+
+        // Index bitmaps and prepare to return, stopping as soon as an empty level is encountered
+        let levels = levels
+            .into_iter()
+            .take_while(|(bitmap, _)| bitmap.length > 0)
+            .map(|(bitmap, bytes)| (BitMap::from(bitmap), bytes))
+            .collect();
+
+        Dacs { levels }
+    }
+}
+
+fn zigzag_encode(n: i64) -> u64 {
+    let zz = (n >> 63) ^ (n << 1);
+    zz as u64
+}
+
+fn zigzag_decode(zz: u64) -> i64 {
+    let n = (zz >> 1) ^ if zz & 1 == 1 { 0xffffffffffffffff } else { 0 };
+    n as i64
 }
 
 // Temporary tree structure for building T - K^2 raster

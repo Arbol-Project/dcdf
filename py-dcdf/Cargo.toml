@@ -7,7 +7,7 @@ edition = "2021"
 name = "dcdf._dcdf"  # Where in the Python package to put the Rust code
 
 [lib]
-name = "dcdf"   # Python package name
+name = "py_dcdf"
 crate-type = ["cdylib"]
 
 [dependencies]

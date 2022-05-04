@@ -42,10 +42,10 @@ where
     coords
 }
 
-mod bitmap {
+mod bitmap_builder {
     use super::*;
 
-    impl BitMap {
+    impl BitMapBuilder {
         /// Count occurences of 1 in BitMap[0...i]
         ///
         /// Naive brute force implementation that is only used to double check the indexed
@@ -74,7 +74,7 @@ mod bitmap {
 
     #[test]
     fn new() {
-        let bitmap = BitMap::new();
+        let bitmap = BitMapBuilder::new();
 
         assert_eq!(bitmap.length, 0);
         assert_eq!(bitmap.bitmap, vec![]);
@@ -82,7 +82,7 @@ mod bitmap {
 
     #[test]
     fn push() {
-        let mut bitmap = BitMap::new();
+        let mut bitmap = BitMapBuilder::new();
 
         bitmap.push(true);
         assert_eq!(bitmap.length, 1);
@@ -128,7 +128,7 @@ mod bitmap {
     #[test]
     fn rank() {
         // 1010101001
-        let bitmap = BitMap {
+        let bitmap = BitMapBuilder {
             length: 10,
             bitmap: vec![170, 64],
         };
@@ -150,7 +150,7 @@ mod bitmap {
     #[should_panic]
     fn rank_out_of_bounds() {
         // 1010101001
-        let bitmap = BitMap {
+        let bitmap = BitMapBuilder {
             length: 10,
             bitmap: vec![170, 64],
         };
@@ -159,7 +159,7 @@ mod bitmap {
     }
 }
 
-mod indexed_bitmap {
+mod bitmap {
     use super::*;
     use rand;
     use rand::{Rng, RngCore};
@@ -167,22 +167,22 @@ mod indexed_bitmap {
 
     #[test]
     fn from_bitmap() {
-        let bitmap = BitMap {
+        let bitmap = BitMapBuilder {
             length: 36,
             bitmap: vec![99, 104, 114, 105, 115],
         };
 
-        let bitmap = IndexedBitMap::from(bitmap);
+        let bitmap = BitMap::from(bitmap);
         assert_eq!(bitmap.bitmap, vec![1667789417, 1929379840]);
 
-        let bitmap = BitMap {
+        let bitmap = BitMapBuilder {
             length: 129,
             bitmap: vec![
                 99, 104, 114, 105, 115, 0, 0, 0, 99, 104, 114, 105, 115, 0, 0, 0, 128,
             ],
         };
 
-        let bitmap = IndexedBitMap::from(bitmap);
+        let bitmap = BitMap::from(bitmap);
         assert_eq!(
             bitmap.bitmap,
             vec![1667789417, 1929379840, 1667789417, 1929379840, 1 << 31]
@@ -190,7 +190,7 @@ mod indexed_bitmap {
         assert_eq!(bitmap.index, vec![40]);
     }
 
-    fn test_rank(bitmap: BitMap, indexes: &[usize]) {
+    fn test_rank(bitmap: BitMapBuilder, indexes: &[usize]) {
         // Gather answers using the naive, reference implementation
         println!(
             "Test rank: {} bits, {}/{} lookups",
@@ -208,7 +208,7 @@ mod indexed_bitmap {
 
         // Compare our answers with the reference implementation
         let timer = time::Instant::now();
-        let bitmap = IndexedBitMap::from(bitmap);
+        let bitmap = BitMap::from(bitmap);
         let make_index = timer.elapsed().as_millis();
 
         let timer = time::Instant::now();
@@ -228,13 +228,13 @@ mod indexed_bitmap {
         let answers = [
             true, false, true, false, true, false, true, false, false, false, true,
         ];
-        let mut bitmap = BitMap::new();
+        let mut bitmap = BitMapBuilder::new();
 
         for answer in answers {
             bitmap.push(answer);
         }
 
-        let bitmap = IndexedBitMap::from(bitmap);
+        let bitmap = BitMap::from(bitmap);
         for (index, answer) in answers.iter().enumerate() {
             assert_eq!(bitmap.get(index), *answer);
         }
@@ -243,7 +243,7 @@ mod indexed_bitmap {
     #[test]
     fn rank() {
         // 1010101001
-        let bitmap = BitMap {
+        let bitmap = BitMapBuilder {
             length: 10,
             bitmap: vec![170, 64],
         };
@@ -256,12 +256,12 @@ mod indexed_bitmap {
     #[should_panic]
     fn rank_out_of_bounds() {
         // 1010101001
-        let bitmap = BitMap {
+        let bitmap = BitMapBuilder {
             length: 10,
             bitmap: vec![170, 64],
         };
 
-        let bitmap = IndexedBitMap::from(bitmap);
+        let bitmap = BitMap::from(bitmap);
         bitmap.rank(11);
     }
 
@@ -275,13 +275,13 @@ mod indexed_bitmap {
         }
     }
 
-    fn make_bitmap(n: usize) -> BitMap {
+    fn make_bitmap(n: usize) -> BitMapBuilder {
         let timer = time::Instant::now();
         let mut bytes: Vec<u8> = Vec::with_capacity(n >> 3);
         bytes.resize(n >> 3, 0);
         rand::thread_rng().fill_bytes(&mut bytes);
 
-        let bitmap = BitMap {
+        let bitmap = BitMapBuilder {
             length: n,
             bitmap: bytes,
         };
