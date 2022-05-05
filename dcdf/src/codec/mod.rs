@@ -17,8 +17,8 @@
 //!     structure for raster data, Information Systems 72 (2017) 179-204.
 //!
 //! [^bib3]: [F. González, S. Grabowski, V. Mäkinen, G. Navarro, Practical implementations of rank
-//!     and select queries, in: Poster Proc. of 4th Workshop on Efficient and Experimental 
-//!     Algorithms (WEA) Greece, 2005, pp. 27-38.][2] 
+//!     and select queries, in: Poster Proc. of 4th Workshop on Efficient and Experimental
+//!     Algorithms (WEA) Greece, 2005, pp. 27-38.][2]
 //!
 //! [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
 //! [2]: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.69.9548&rep=rep1&type=pdf
@@ -33,7 +33,7 @@ use std::fmt::Debug;
 ///
 /// A Snapshot stores raster data for a particular time instant in a raster time series. Data is
 /// stored standalone without reference to any other time instant.
-/// 
+///
 pub struct Snapshot {
     /// Bitmap of tree structure, known as T in Silva-Coira
     nodemap: BitMap,
@@ -59,7 +59,7 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Build a snapshot from a two-dimensional array. 
+    /// Build a snapshot from a two-dimensional array.
     ///
     pub fn from_array<T>(data: ArrayView2<T>, k: i32) -> Self
     where
@@ -178,9 +178,7 @@ impl Snapshot {
                     window[[row, col]] = value;
                 }
             }
-        }
-
-        else {
+        } else {
             self._get_window(
                 self.sidelen,
                 top,
@@ -301,9 +299,7 @@ impl Snapshot {
                     }
                 }
             }
-        }
-
-        else {
+        } else {
             self._search_window(
                 self.sidelen,
                 top,
@@ -575,7 +571,7 @@ impl Log {
     ///
     /// See: Algorithm 3 in Silva-Coira[^note]
     ///
-    /// [^note]: [F. Silva-Coira, J.R. Paramá, G. de Bernardo, D. Seco, Space-efficient 
+    /// [^note]: [F. Silva-Coira, J.R. Paramá, G. de Bernardo, D. Seco, Space-efficient
     ///     representations of raster time series, Information Sciences 566 (2021) 300-325.][1]
     ///
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
@@ -630,34 +626,34 @@ impl Log {
         let mut max_s = max_s;
         let mut max_t = max_t;
 
-        let index_s = if let Some(index) = index_s {
-            let index = 1 + snapshot.nodemap.rank(index) * k * k;
-            let index = index + row / sidelen * k + col / sidelen;
-            max_s = max_s - snapshot.max.get::<i64>(index);
-            Some(index)
-        } else {
-            None
+        let index_s = match index_s {
+            Some(index) => {
+                let index = 1 + snapshot.nodemap.rank(index) * k * k;
+                let index = index + row / sidelen * k + col / sidelen;
+                max_s = max_s - snapshot.max.get::<i64>(index);
+                Some(index)
+            }
+            None => None,
         };
 
-        let index_t = if let Some(index) = index_t {
-            let index = 1 + self.nodemap.rank(index) * k * k;
-            let index = index + row / sidelen * k + col / sidelen;
-            max_t = self.max.get(index);
-            Some(index)
-        } else {
-            None
+        let index_t = match index_t {
+            Some(index) => {
+                let index = 1 + self.nodemap.rank(index) * k * k;
+                let index = index + row / sidelen * k + col / sidelen;
+                max_t = self.max.get(index);
+                Some(index)
+            }
+            None => None,
         };
 
-        let leaf_t = if let Some(index) = index_t {
-            index > self.nodemap.length || !self.nodemap.get(index)
-        } else {
-            true
+        let leaf_t = match index_t {
+            Some(index) => index > self.nodemap.length || !self.nodemap.get(index),
+            None => true,
         };
 
-        let leaf_s = if let Some(index) = index_s {
-            index > snapshot.nodemap.length || !snapshot.nodemap.get(index)
-        } else {
-            true
+        let leaf_s = match index_s {
+            Some(index) => index > snapshot.nodemap.length || !snapshot.nodemap.get(index),
+            None => true,
         };
 
         if leaf_t && leaf_s {
@@ -711,7 +707,7 @@ impl Log {
     /// This is based on Algorithm 5 in Silva-Coira[^note], but has been modified to return a
     /// submatrix rather than an unordered sequence of values.
     ///
-    /// [^note]: [F. Silva-Coira, J.R. Paramá, G. de Bernardo, D. Seco, Space-efficient 
+    /// [^note]: [F. Silva-Coira, J.R. Paramá, G. de Bernardo, D. Seco, Space-efficient
     ///     representations of raster time series, Information Sciences 566 (2021) 300-325.][1]
     ///
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
@@ -748,9 +744,7 @@ impl Log {
                     window[[row, col]] = max_t + max_s;
                 }
             }
-        }
-
-        else {
+        } else {
             self._get_window(
                 snapshot,
                 self.sidelen,
@@ -758,8 +752,8 @@ impl Log {
                 bottom - 1,
                 left,
                 right - 1,
-                if single_t { None } else {Some(0)},
-                if single_s { None } else {Some(0)},
+                if single_t { None } else { Some(0) },
+                if single_s { None } else { Some(0) },
                 self.max.get(0),
                 snapshot.max.get(0),
                 &mut window,
@@ -935,8 +929,8 @@ impl Log {
     /// Search the window for cells with values in a given range
     ///
     /// See: Algorithm 7 in Silva-Coira[^note]
-    /// 
-    /// [^note]: [F. Silva-Coira, J.R. Paramá, G. de Bernardo, D. Seco, Space-efficient 
+    ///
+    /// [^note]: [F. Silva-Coira, J.R. Paramá, G. de Bernardo, D. Seco, Space-efficient
     ///     representations of raster time series, Information Sciences 566 (2021) 300-325.][1]
     ///
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
@@ -972,8 +966,8 @@ impl Log {
             right - 1,
             lower.to_i64().unwrap(),
             upper.to_i64().unwrap(),
-            if single_t { None } else {Some(0)},
-            if single_s { None } else {Some(0)},
+            if single_t { None } else { Some(0) },
+            if single_s { None } else { Some(0) },
             self.min.get(0),
             snapshot.min.get(0),
             self.max.get(0),

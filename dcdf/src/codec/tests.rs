@@ -2,7 +2,6 @@ use std::collections::HashSet;
 
 use super::*;
 
-
 impl BitMapBuilder {
     /// Count occurences of 1 in BitMap[0...i]
     ///
@@ -447,16 +446,13 @@ mod snapshot {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        println!("hi mom! {top}:{bottom} {left}:{right}");
                         let mut expected: HashSet<(usize, usize)> = HashSet::new();
                         for row in top..bottom {
                             for col in left..right {
-                                println!("hey! {row}, {col}");
                                 expected.insert((row, col));
                             }
                         }
-                        let coords =
-                            snapshot.search_window(top, bottom, left, right, 41, 43);
+                        let coords = snapshot.search_window(top, bottom, left, right, 41, 43);
                         let coords = HashSet::from_iter(coords.iter().cloned());
 
                         assert_eq!(coords, expected);
@@ -475,8 +471,7 @@ mod snapshot {
             for bottom in top + 1..16 {
                 for left in 0..16 {
                     for right in left + 1..16 {
-                        let coords =
-                            snapshot.search_window(top, bottom, left, right, 0, 41);
+                        let coords = snapshot.search_window(top, bottom, left, right, 0, 41);
 
                         assert_eq!(coords, vec![]);
                     }
@@ -1384,7 +1379,13 @@ mod log {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
-                                    data_t.view(), top, bottom, left, right, lower, upper,
+                                    data_t.view(),
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    lower,
+                                    upper,
                                 );
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
@@ -1418,7 +1419,13 @@ mod log {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
-                                    data_t.view(), top, bottom, left, right, lower, upper,
+                                    data_t.view(),
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    lower,
+                                    upper,
                                 );
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
@@ -1452,7 +1459,13 @@ mod log {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
-                                    data_t.view(), top, bottom, left, right, lower, upper,
+                                    data_t.view(),
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    lower,
+                                    upper,
                                 );
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
@@ -1471,7 +1484,7 @@ mod log {
         }
     }
 
-   #[test]
+    #[test]
     fn search_window_sequal_snapshot_and_log() {
         let data = array8();
         let data_s = data.slice(s![0, .., ..]);
@@ -1485,7 +1498,13 @@ mod log {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
-                                    data_s.view(), top, bottom, left, right, lower, upper,
+                                    data_s.view(),
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    lower,
+                                    upper,
                                 );
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
