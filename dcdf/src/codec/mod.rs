@@ -29,6 +29,75 @@ use std::cmp::min;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 
+/// A short series of time instants made up of one Snapshot encoding the first time instant and
+/// Logs encoding subsequent time instants.
+///
+struct Block {
+    /// Snapshot of first time instant
+    snapshot: Snapshot,
+
+    /// Successive time instants as logs
+    logs: Vec<Log>,
+}
+
+impl Block {
+    fn get<T>(&self, instant: usize, row: usize, col: usize) -> T
+    where
+        T: PrimInt + Debug,
+    {
+        match instant {
+            0 => self.snapshot.get(row, col),
+            _ => self.logs[instant - 1].get(&self.snapshot, row, col),
+        }
+    }
+
+    fn get_window<T>(
+        &self,
+        instant: usize,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+    ) -> Array2<T>
+    where
+        T: PrimInt + Debug,
+    {
+        match instant {
+            0 => self.snapshot.get_window(top, bottom, left, right),
+            _ => self.logs[instant - 1].get_window(&self.snapshot, top, bottom, left, right),
+        }
+    }
+
+    pub fn search_window<T>(
+        &self,
+        instant: usize,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        lower: T,
+        upper: T,
+    ) -> Vec<(usize, usize)>
+    where
+        T: PrimInt + Debug,
+    {
+        match instant {
+            0 => self
+                .snapshot
+                .search_window(top, bottom, left, right, lower, upper),
+            _ => self.logs[instant - 1].search_window(
+                &self.snapshot,
+                top,
+                bottom,
+                left,
+                right,
+                lower,
+                upper,
+            ),
+        }
+    }
+}
+
 /// K²-Raster encoded Snapshot
 ///
 /// A Snapshot stores raster data for a particular time instant in a raster time series. Data is

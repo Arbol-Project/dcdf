@@ -62,6 +62,149 @@ where
     coords
 }
 
+mod block {
+    use super::*;
+    use ndarray::{arr3, s, Array3};
+
+    fn array8() -> Array3<i32> {
+        arr3(&[
+            [
+                [9, 8, 7, 7, 6, 6, 3, 2],
+                [7, 7, 7, 7, 6, 6, 3, 3],
+                [6, 6, 6, 6, 3, 3, 3, 3],
+                [5, 5, 6, 6, 3, 3, 3, 3],
+                [4, 5, 5, 5, 4, 4, 4, 4],
+                [3, 3, 5, 5, 4, 4, 4, 4],
+                [3, 3, 3, 5, 4, 4, 4, 4],
+                [4, 4, 3, 4, 4, 4, 4, 4],
+            ],
+            [
+                [9, 8, 7, 7, 7, 7, 2, 2],
+                [7, 7, 7, 7, 7, 7, 2, 2],
+                [6, 6, 6, 6, 4, 3, 3, 3],
+                [5, 5, 6, 6, 3, 3, 3, 3],
+                [4, 5, 5, 5, 4, 4, 4, 4],
+                [3, 3, 5, 5, 4, 4, 4, 4],
+                [3, 3, 4, 5, 5, 4, 4, 4],
+                [4, 4, 4, 4, 4, 4, 4, 4],
+            ],
+            [
+                [9, 8, 7, 7, 8, 7, 5, 5],
+                [7, 7, 7, 7, 7, 7, 5, 5],
+                [7, 7, 6, 6, 4, 3, 4, 4],
+                [6, 6, 6, 6, 4, 4, 4, 4],
+                [4, 5, 5, 5, 4, 4, 4, 4],
+                [3, 3, 5, 5, 4, 4, 4, 4],
+                [3, 3, 4, 5, 6, 4, 4, 4],
+                [4, 4, 4, 4, 5, 4, 4, 4],
+            ],
+        ])
+    }
+
+    #[test]
+    fn get() {
+        let data = array8();
+        let data = vec![
+            data.slice(s![0, .., ..]),
+            data.slice(s![1, .., ..]),
+            data.slice(s![2, .., ..]),
+        ];
+
+        let block = Block {
+            snapshot: Snapshot::from_array(data[0], 2),
+            logs: vec![
+                Log::from_arrays(data[0], data[1], 2),
+                Log::from_arrays(data[0], data[2], 2),
+            ],
+        };
+
+        for t in 0..3 {
+            for r in 0..8 {
+                for c in 0..8 {
+                    assert_eq!(block.get::<i32>(t, r, c), data[t][[r, c]]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn get_window() {
+        let data = array8();
+        let data = vec![
+            data.slice(s![0, .., ..]),
+            data.slice(s![1, .., ..]),
+            data.slice(s![2, .., ..]),
+        ];
+
+        let block = Block {
+            snapshot: Snapshot::from_array(data[0], 2),
+            logs: vec![
+                Log::from_arrays(data[0], data[1], 2),
+                Log::from_arrays(data[0], data[2], 2),
+            ],
+        };
+
+        for t in 0..3 {
+            for top in 0..8 {
+                for bottom in top + 1..8 {
+                    for left in 0..8 {
+                        for right in left + 1..8 {
+                            let expected = data[t].slice(s![top..bottom, left..right]);
+                            assert_eq!(
+                                block.get_window::<i32>(t, top, bottom, left, right),
+                                expected,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn search_window() {
+        let data = array8();
+        let data = vec![
+            data.slice(s![0, .., ..]),
+            data.slice(s![1, .., ..]),
+            data.slice(s![2, .., ..]),
+        ];
+
+        let block = Block {
+            snapshot: Snapshot::from_array(data[0], 2),
+            logs: vec![
+                Log::from_arrays(data[0], data[1], 2),
+                Log::from_arrays(data[0], data[2], 2),
+            ],
+        };
+
+        for t in 0..3 {
+            for top in 0..8 {
+                for bottom in top + 1..8 {
+                    for left in 0..8 {
+                        for right in left + 1..8 {
+                            for lower in 0..10 {
+                                for upper in lower..10 {
+                                    let expected = array_search_window(
+                                        data[t], top, bottom, left, right, lower, upper,
+                                    );
+                                    let expected: HashSet<(usize, usize)> =
+                                        HashSet::from_iter(expected.into_iter());
+                                    let cells = block.search_window::<i32>(
+                                        t, top, bottom, left, right, lower, upper,
+                                    );
+                                    let cells = HashSet::from_iter(cells.into_iter());
+                                    assert_eq!(cells, expected);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 mod snapshot {
     use super::*;
     use ndarray::{arr2, s, Array2};
