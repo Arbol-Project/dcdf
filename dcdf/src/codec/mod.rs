@@ -169,20 +169,33 @@ impl Snapshot {
         let rows = bottom - top;
         let cols = right - left;
         let mut window = Array2::zeros([rows, cols]);
-        self._get_window(
-            self.sidelen,
-            top,
-            bottom - 1,
-            left,
-            right - 1,
-            0,
-            self.max.get(0),
-            &mut window,
-            top,
-            left,
-            0,
-            0,
-        );
+
+        if !self.nodemap.get(0) {
+            // Special case: single node tree
+            let value = self.max.get(0);
+            for row in 0..rows {
+                for col in 0..cols {
+                    window[[row, col]] = value;
+                }
+            }
+        }
+
+        else {
+            self._get_window(
+                self.sidelen,
+                top,
+                bottom - 1,
+                left,
+                right - 1,
+                0,
+                self.max.get(0),
+                &mut window,
+                top,
+                left,
+                0,
+                0,
+            );
+        }
 
         window
     }
@@ -277,21 +290,36 @@ impl Snapshot {
         self.check_bounds(bottom, right);
 
         let mut cells: Vec<(usize, usize)> = vec![];
-        self._search_window(
-            self.sidelen,
-            top,
-            bottom - 1,
-            left,
-            right - 1,
-            lower,
-            upper,
-            0,
-            self.min.get(0),
-            self.max.get(0),
-            &mut cells,
-            0,
-            0,
-        );
+
+        if !self.nodemap.get(0) {
+            // Special case: single node tree
+            let value: T = self.max.get(0);
+            if lower <= value && value <= upper {
+                for row in top..bottom {
+                    for col in left..right {
+                        cells.push((row, col));
+                    }
+                }
+            }
+        }
+
+        else {
+            self._search_window(
+                self.sidelen,
+                top,
+                bottom - 1,
+                left,
+                right - 1,
+                lower,
+                upper,
+                0,
+                self.min.get(0),
+                self.max.get(0),
+                &mut cells,
+                0,
+                0,
+            );
+        }
 
         cells
     }
@@ -707,23 +735,40 @@ impl Log {
         let cols = right - left;
         let mut window = Array2::zeros([rows, cols]);
 
-        self._get_window(
-            snapshot,
-            self.sidelen,
-            top,
-            bottom - 1,
-            left,
-            right - 1,
-            Some(0),
-            Some(0),
-            self.max.get(0),
-            snapshot.max.get(0),
-            &mut window,
-            top,
-            left,
-            0,
-            0,
-        );
+        let single_t = !self.nodemap.get(0);
+        let single_s = !snapshot.nodemap.get(0);
+
+        if single_t && (single_s || !self.equal.get(0)) {
+            // Both trees have single node or log has single node but it contains a uniform value
+            // for all cells
+            let max_t: T = self.max.get(0);
+            let max_s: T = snapshot.max.get(0);
+            for row in 0..rows {
+                for col in 0..cols {
+                    window[[row, col]] = max_t + max_s;
+                }
+            }
+        }
+
+        else {
+            self._get_window(
+                snapshot,
+                self.sidelen,
+                top,
+                bottom - 1,
+                left,
+                right - 1,
+                if single_t { None } else {Some(0)},
+                if single_s { None } else {Some(0)},
+                self.max.get(0),
+                snapshot.max.get(0),
+                &mut window,
+                top,
+                left,
+                0,
+                0,
+            );
+        }
 
         window
     }
@@ -915,6 +960,9 @@ impl Log {
         self.check_bounds(bottom, right);
 
         let mut cells: Vec<(usize, usize)> = vec![];
+        let single_t = !self.nodemap.get(0);
+        let single_s = !snapshot.nodemap.get(0);
+
         self._search_window(
             snapshot,
             self.sidelen,
@@ -924,8 +972,8 @@ impl Log {
             right - 1,
             lower.to_i64().unwrap(),
             upper.to_i64().unwrap(),
-            Some(0),
-            Some(0),
+            if single_t { None } else {Some(0)},
+            if single_s { None } else {Some(0)},
             self.min.get(0),
             snapshot.min.get(0),
             self.max.get(0),

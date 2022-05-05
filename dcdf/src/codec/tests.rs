@@ -2,6 +2,27 @@ use std::collections::HashSet;
 
 use super::*;
 
+
+impl BitMapBuilder {
+    /// Count occurences of 1 in BitMap[0...i]
+    ///
+    /// Naive brute force implementation that is used to double check the indexed implementation in
+    /// tests.
+    pub fn rank(&self, i: usize) -> usize {
+        let mut count = 0;
+        for word in self.bitmap.iter().take(i / 8) {
+            count += word.count_ones();
+        }
+        let leftover_bits = i % 8;
+        if leftover_bits > 0 {
+            let shift = 8 - leftover_bits;
+            let word = self.bitmap[i / 8];
+            count += (word >> shift).count_ones();
+        }
+        count.try_into().unwrap()
+    }
+}
+
 impl Dacs {
     fn len(&self) -> usize {
         self.levels[0].0.length
@@ -40,293 +61,6 @@ where
     }
 
     coords
-}
-
-mod bitmap_builder {
-    use super::*;
-
-    impl BitMapBuilder {
-        /// Count occurences of 1 in BitMap[0...i]
-        ///
-        /// Naive brute force implementation that is only used to double check the indexed
-        /// implementation in tests.
-        pub fn rank(&self, i: usize) -> usize {
-            if i > self.length {
-                // Can only happen if there is a programming error in this module
-                panic!("index out of bounds. length: {}, i: {}", self.length, i);
-            }
-
-            let mut count = 0;
-            for word in self.bitmap.iter().take(i / 8) {
-                count += word.count_ones();
-            }
-
-            let leftover_bits = i % 8;
-            if leftover_bits > 0 {
-                let shift = 8 - leftover_bits;
-                let word = self.bitmap[i / 8];
-                count += (word >> shift).count_ones();
-            }
-
-            count.try_into().unwrap()
-        }
-    }
-
-    #[test]
-    fn new() {
-        let bitmap = BitMapBuilder::new();
-
-        assert_eq!(bitmap.length, 0);
-        assert_eq!(bitmap.bitmap, vec![]);
-    }
-
-    #[test]
-    fn push() {
-        let mut bitmap = BitMapBuilder::new();
-
-        bitmap.push(true);
-        assert_eq!(bitmap.length, 1);
-        assert_eq!(bitmap.bitmap, vec![128]);
-
-        bitmap.push(false);
-        assert_eq!(bitmap.length, 2);
-        assert_eq!(bitmap.bitmap, vec![128]);
-
-        bitmap.push(true);
-        assert_eq!(bitmap.length, 3);
-        assert_eq!(bitmap.bitmap, vec![160]);
-
-        bitmap.push(false);
-        assert_eq!(bitmap.length, 4);
-        assert_eq!(bitmap.bitmap, vec![160]);
-
-        bitmap.push(true);
-        assert_eq!(bitmap.length, 5);
-        assert_eq!(bitmap.bitmap, vec![168]);
-
-        bitmap.push(false);
-        assert_eq!(bitmap.length, 6);
-        assert_eq!(bitmap.bitmap, vec![168]);
-
-        bitmap.push(true);
-        assert_eq!(bitmap.length, 7);
-        assert_eq!(bitmap.bitmap, vec![170]);
-
-        bitmap.push(false);
-        assert_eq!(bitmap.length, 8);
-        assert_eq!(bitmap.bitmap, vec![170]);
-
-        bitmap.push(false);
-        assert_eq!(bitmap.length, 9);
-        assert_eq!(bitmap.bitmap, vec![170, 0]);
-
-        bitmap.push(true);
-        assert_eq!(bitmap.length, 10);
-        assert_eq!(bitmap.bitmap, vec![170, 64]);
-    }
-
-    #[test]
-    fn rank() {
-        // 1010101001
-        let bitmap = BitMapBuilder {
-            length: 10,
-            bitmap: vec![170, 64],
-        };
-
-        assert_eq!(bitmap.rank(0), 0);
-        assert_eq!(bitmap.rank(1), 1);
-        assert_eq!(bitmap.rank(2), 1);
-        assert_eq!(bitmap.rank(3), 2);
-        assert_eq!(bitmap.rank(4), 2);
-        assert_eq!(bitmap.rank(5), 3);
-        assert_eq!(bitmap.rank(6), 3);
-        assert_eq!(bitmap.rank(7), 4);
-        assert_eq!(bitmap.rank(8), 4);
-        assert_eq!(bitmap.rank(9), 4);
-        assert_eq!(bitmap.rank(10), 5);
-    }
-
-    #[test]
-    #[should_panic]
-    fn rank_out_of_bounds() {
-        // 1010101001
-        let bitmap = BitMapBuilder {
-            length: 10,
-            bitmap: vec![170, 64],
-        };
-
-        bitmap.rank(11);
-    }
-}
-
-mod bitmap {
-    use super::*;
-    use rand;
-    use rand::{Rng, RngCore};
-    use std::time;
-
-    #[test]
-    fn from_bitmap() {
-        let bitmap = BitMapBuilder {
-            length: 36,
-            bitmap: vec![99, 104, 114, 105, 115],
-        };
-
-        let bitmap = BitMap::from(bitmap);
-        assert_eq!(bitmap.bitmap, vec![1667789417, 1929379840]);
-
-        let bitmap = BitMapBuilder {
-            length: 129,
-            bitmap: vec![
-                99, 104, 114, 105, 115, 0, 0, 0, 99, 104, 114, 105, 115, 0, 0, 0, 128,
-            ],
-        };
-
-        let bitmap = BitMap::from(bitmap);
-        assert_eq!(
-            bitmap.bitmap,
-            vec![1667789417, 1929379840, 1667789417, 1929379840, 1 << 31]
-        );
-        assert_eq!(bitmap.index, vec![40]);
-    }
-
-    fn test_rank(bitmap: BitMapBuilder, indexes: &[usize]) {
-        // Gather answers using the naive, reference implementation
-        println!(
-            "Test rank: {} bits, {}/{} lookups",
-            bitmap.length,
-            indexes.len(),
-            indexes.len() * 1000,
-        );
-
-        let timer = time::Instant::now();
-        let mut answers: Vec<usize> = Vec::with_capacity(indexes.len());
-        for index in indexes {
-            answers.push(bitmap.rank(*index));
-        }
-        let reference_impl = timer.elapsed().as_millis();
-
-        // Compare our answers with the reference implementation
-        let timer = time::Instant::now();
-        let bitmap = BitMap::from(bitmap);
-        let make_index = timer.elapsed().as_millis();
-
-        let timer = time::Instant::now();
-        for _ in 1..1000 {
-            for (index, answer) in indexes.iter().zip(answers.iter()) {
-                assert_eq!(*answer, bitmap.rank(*index));
-            }
-        }
-        let our_impl = timer.elapsed().as_millis();
-
-        println!("time to build index: {}", make_index);
-        println!("reference impl: {}, our impl: {}", reference_impl, our_impl);
-    }
-
-    #[test]
-    fn get() {
-        let answers = [
-            true, false, true, false, true, false, true, false, false, false, true,
-        ];
-        let mut bitmap = BitMapBuilder::new();
-
-        for answer in answers {
-            bitmap.push(answer);
-        }
-
-        let bitmap = BitMap::from(bitmap);
-        for (index, answer) in answers.iter().enumerate() {
-            assert_eq!(bitmap.get(index), *answer);
-        }
-    }
-
-    #[test]
-    fn rank() {
-        // 1010101001
-        let bitmap = BitMapBuilder {
-            length: 10,
-            bitmap: vec![170, 64],
-        };
-
-        let indexes: Vec<usize> = (0..10).collect();
-        test_rank(bitmap, &indexes);
-    }
-
-    #[test]
-    #[should_panic]
-    fn rank_out_of_bounds() {
-        // 1010101001
-        let bitmap = BitMapBuilder {
-            length: 10,
-            bitmap: vec![170, 64],
-        };
-
-        let bitmap = BitMap::from(bitmap);
-        bitmap.rank(11);
-    }
-
-    struct RandomRange(usize);
-
-    impl Iterator for RandomRange {
-        type Item = usize;
-
-        fn next(&mut self) -> Option<Self::Item> {
-            Some(rand::thread_rng().gen_range(0..self.0))
-        }
-    }
-
-    fn make_bitmap(n: usize) -> BitMapBuilder {
-        let timer = time::Instant::now();
-        let mut bytes: Vec<u8> = Vec::with_capacity(n >> 3);
-        bytes.resize(n >> 3, 0);
-        rand::thread_rng().fill_bytes(&mut bytes);
-
-        let bitmap = BitMapBuilder {
-            length: n,
-            bitmap: bytes,
-        };
-        println!("Time to build bitmap: {}", timer.elapsed().as_millis());
-
-        bitmap
-    }
-
-    #[test]
-    fn rank_megabit() {
-        let bitmap = make_bitmap(1 << 20);
-        let indexes = RandomRange(1 << 20);
-        let indexes: Vec<usize> = indexes.take(100).collect();
-        test_rank(bitmap, &indexes);
-    }
-
-    #[test]
-    #[ignore]
-    fn rank_gigabit() {
-        let bitmap = make_bitmap(1 << 30);
-        let indexes: Vec<usize> = RandomRange(1 << 30).take(1000).collect();
-        test_rank(bitmap, &indexes);
-    }
-}
-
-mod dacs {
-    use super::*;
-
-    #[test]
-    fn get_i32() {
-        let data = vec![0, 2, -3, -2.pow(9), 2.pow(17) + 1, -2.pow(30) - 42];
-        let dacs = Dacs::from(data.clone());
-        for i in 0..data.len() {
-            assert_eq!(dacs.get::<i32>(i), data[i]);
-        }
-        assert_eq!(dacs.levels[0].0.get(2), false);
-    }
-
-    #[test]
-    fn this_one() {
-        let data: Vec<i32> = vec![-512];
-        let dacs = Dacs::from(data.clone());
-        assert_eq!(zigzag_decode(zigzag_encode(-512)), -512);
-        assert_eq!(dacs.get::<i32>(0), data[0]);
-    }
 }
 
 mod snapshot {
@@ -534,6 +268,24 @@ mod snapshot {
     }
 
     #[test]
+    fn get_window_single_node_tree() {
+        let data: Array2<i32> = Array2::zeros([16, 16]) + 42;
+        let snapshot = Snapshot::from_array(data.view(), 2);
+
+        for top in 0..16 {
+            for bottom in top + 1..16 {
+                for left in 0..16 {
+                    for right in left + 1..16 {
+                        let window = snapshot.get_window::<i32>(top, bottom, left, right);
+                        let expected = data.slice(s![top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn search_window() {
         let data = array8();
         let snapshot = Snapshot::from_array(data.view(), 2);
@@ -684,6 +436,53 @@ mod snapshot {
         let snapshot = Snapshot::from_array(data.view(), 2);
 
         snapshot.search_window(0, 9, 0, 5, 4, 6);
+    }
+
+    #[test]
+    fn search_window_single_tree_node_in_range() {
+        let data: Array2<i32> = Array2::zeros([8, 8]) + 42;
+        let snapshot = Snapshot::from_array(data.view(), 2);
+
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        println!("hi mom! {top}:{bottom} {left}:{right}");
+                        let mut expected: HashSet<(usize, usize)> = HashSet::new();
+                        for row in top..bottom {
+                            for col in left..right {
+                                println!("hey! {row}, {col}");
+                                expected.insert((row, col));
+                            }
+                        }
+                        let coords =
+                            snapshot.search_window(top, bottom, left, right, 41, 43);
+                        let coords = HashSet::from_iter(coords.iter().cloned());
+
+                        assert_eq!(coords, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn search_window_single_tree_node_out_of_range() {
+        let data: Array2<i32> = Array2::zeros([16, 16]) + 42;
+        let snapshot = Snapshot::from_array(data.view(), 2);
+
+        for top in 0..16 {
+            for bottom in top + 1..16 {
+                for left in 0..16 {
+                    for right in left + 1..16 {
+                        let coords =
+                            snapshot.search_window(top, bottom, left, right, 0, 41);
+
+                        assert_eq!(coords, vec![]);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -913,8 +712,8 @@ mod log {
     #[test]
     fn get_single_node_log() {
         let data = array8();
-        let data_t: Array2<i32> = Array2::zeros([8, 8]) + 20;
         let data_s = data.slice(s![0, .., ..]);
+        let data_t: Array2<i32> = Array2::zeros([8, 8]) + 20;
 
         let snapshot = Snapshot::from_array(data_s.view(), 2);
         let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
@@ -1164,6 +963,88 @@ mod log {
                     for right in left + 1..8 {
                         let window = log.get_window::<i32>(&snapshot, bottom, top, right, left);
                         let expected = data.slice(s![2, top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn get_window_single_node_trees() {
+        let data_s: Array2<i32> = Array2::zeros([8, 8]) + 20;
+        let data_t: Array2<i32> = Array2::zeros([8, 8]) + 42;
+
+        let snapshot = Snapshot::from_array(data_s.view(), 2);
+        let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let expected = data_t.slice(s![top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn get_window_single_node_snapshot() {
+        let data = array8();
+        let data_s: Array2<i32> = Array2::zeros([8, 8]) + 20;
+        let data_t = data.slice(s![0, .., ..]);
+
+        let snapshot = Snapshot::from_array(data_s.view(), 2);
+        let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let expected = data_t.slice(s![top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn get_window_single_node_log() {
+        let data = array8();
+        let data_s = data.slice(s![0, .., ..]);
+        let data_t: Array2<i32> = Array2::zeros([8, 8]) + 20;
+
+        let snapshot = Snapshot::from_array(data_s.view(), 2);
+        let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let expected = data_t.slice(s![top..bottom, left..right]);
+                        assert_eq!(window, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn get_window_equal_snapshot_and_log() {
+        let data = array8();
+        let data_s = data.slice(s![0, .., ..]);
+
+        let snapshot = Snapshot::from_array(data_s.view(), 2);
+        let log = Log::from_arrays(data_s.view(), data_s.view(), 2);
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let expected = data_s.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
                 }
@@ -1487,5 +1368,309 @@ mod log {
         let log = Log::from_arrays(data0, data1, 2);
 
         log.search_window(&snapshot, 0, 9, 0, 5, 4, 6);
+    }
+
+    #[test]
+    fn search_window_single_node_trees() {
+        let data_s: Array2<i32> = Array2::zeros([8, 8]) + 20;
+        let data_t: Array2<i32> = Array2::zeros([8, 8]) + 42;
+        let snapshot = Snapshot::from_array(data_s.view(), 2);
+        let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
+
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    data_t.view(), top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords = log.search_window(
+                                    &snapshot, top, bottom, left, right, lower, upper,
+                                );
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn search_window_single_node_snapshot() {
+        let data = array8();
+        let data_s: Array2<i32> = Array2::zeros([8, 8]) + 42;
+        let data_t = data.slice(s![0, .., ..]);
+        let snapshot = Snapshot::from_array(data_s.view(), 2);
+        let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
+
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    data_t.view(), top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords = log.search_window(
+                                    &snapshot, top, bottom, left, right, lower, upper,
+                                );
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn search_window_single_node_log() {
+        let data = array8();
+        let data_s = data.slice(s![0, .., ..]);
+        let data_t: Array2<i32> = Array2::zeros([8, 8]) + 42;
+        let snapshot = Snapshot::from_array(data_s.view(), 2);
+        let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
+
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    data_t.view(), top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords = log.search_window(
+                                    &snapshot, top, bottom, left, right, lower, upper,
+                                );
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+   #[test]
+    fn search_window_sequal_snapshot_and_log() {
+        let data = array8();
+        let data_s = data.slice(s![0, .., ..]);
+        let snapshot = Snapshot::from_array(data_s.view(), 2);
+        let log = Log::from_arrays(data_s.view(), data_s.view(), 2);
+
+        for top in 0..8 {
+            for bottom in top + 1..8 {
+                for left in 0..8 {
+                    for right in left + 1..8 {
+                        for lower in 4..=9 {
+                            for upper in lower..=9 {
+                                let expected: Vec<(usize, usize)> = array_search_window(
+                                    data_s.view(), top, bottom, left, right, lower, upper,
+                                );
+                                let expected: HashSet<(usize, usize)> =
+                                    HashSet::from_iter(expected.iter().cloned());
+
+                                let coords = log.search_window(
+                                    &snapshot, top, bottom, left, right, lower, upper,
+                                );
+                                let coords = HashSet::from_iter(coords.iter().cloned());
+
+                                assert_eq!(coords, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+mod bitmap {
+    use super::*;
+    use rand;
+    use rand::{Rng, RngCore};
+    use std::time;
+
+    #[test]
+    fn from_bitmap() {
+        let bitmap = BitMapBuilder {
+            length: 36,
+            bitmap: vec![99, 104, 114, 105, 115],
+        };
+
+        let bitmap = BitMap::from(bitmap);
+        assert_eq!(bitmap.bitmap, vec![1667789417, 1929379840]);
+
+        let bitmap = BitMapBuilder {
+            length: 129,
+            bitmap: vec![
+                99, 104, 114, 105, 115, 0, 0, 0, 99, 104, 114, 105, 115, 0, 0, 0, 128,
+            ],
+        };
+
+        let bitmap = BitMap::from(bitmap);
+        assert_eq!(
+            bitmap.bitmap,
+            vec![1667789417, 1929379840, 1667789417, 1929379840, 1 << 31]
+        );
+        assert_eq!(bitmap.index, vec![40]);
+    }
+
+    fn test_rank(bitmap: BitMapBuilder, indexes: &[usize]) {
+        // Gather answers using the naive, reference implementation
+        println!(
+            "Test rank: {} bits, {}/{} lookups",
+            bitmap.length,
+            indexes.len(),
+            indexes.len() * 1000,
+        );
+
+        let timer = time::Instant::now();
+        let mut answers: Vec<usize> = Vec::with_capacity(indexes.len());
+        for index in indexes {
+            answers.push(bitmap.rank(*index));
+        }
+        let reference_impl = timer.elapsed().as_millis();
+
+        // Compare our answers with the reference implementation
+        let timer = time::Instant::now();
+        let bitmap = BitMap::from(bitmap);
+        let make_index = timer.elapsed().as_millis();
+
+        let timer = time::Instant::now();
+        for _ in 1..1000 {
+            for (index, answer) in indexes.iter().zip(answers.iter()) {
+                assert_eq!(*answer, bitmap.rank(*index));
+            }
+        }
+        let our_impl = timer.elapsed().as_millis();
+
+        println!("time to build index: {}", make_index);
+        println!("reference impl: {}, our impl: {}", reference_impl, our_impl);
+    }
+
+    #[test]
+    fn get() {
+        let answers = [
+            true, false, true, false, true, false, true, false, false, false, true,
+        ];
+        let mut bitmap = BitMapBuilder::new();
+
+        for answer in answers {
+            bitmap.push(answer);
+        }
+
+        let bitmap = BitMap::from(bitmap);
+        for (index, answer) in answers.iter().enumerate() {
+            assert_eq!(bitmap.get(index), *answer);
+        }
+    }
+
+    #[test]
+    fn rank() {
+        // 1010101001
+        let bitmap = BitMapBuilder {
+            length: 10,
+            bitmap: vec![170, 64],
+        };
+
+        let indexes: Vec<usize> = (0..10).collect();
+        test_rank(bitmap, &indexes);
+    }
+
+    #[test]
+    #[should_panic]
+    fn rank_out_of_bounds() {
+        // 1010101001
+        let bitmap = BitMapBuilder {
+            length: 10,
+            bitmap: vec![170, 64],
+        };
+
+        let bitmap = BitMap::from(bitmap);
+        bitmap.rank(11);
+    }
+
+    struct RandomRange(usize);
+
+    impl Iterator for RandomRange {
+        type Item = usize;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            Some(rand::thread_rng().gen_range(0..self.0))
+        }
+    }
+
+    fn make_bitmap(n: usize) -> BitMapBuilder {
+        let timer = time::Instant::now();
+        let mut bytes: Vec<u8> = Vec::with_capacity(n >> 3);
+        bytes.resize(n >> 3, 0);
+        rand::thread_rng().fill_bytes(&mut bytes);
+
+        let bitmap = BitMapBuilder {
+            length: n,
+            bitmap: bytes,
+        };
+        println!("Time to build bitmap: {}", timer.elapsed().as_millis());
+
+        bitmap
+    }
+
+    #[test]
+    fn rank_megabit() {
+        let bitmap = make_bitmap(1 << 20);
+        let indexes = RandomRange(1 << 20);
+        let indexes: Vec<usize> = indexes.take(100).collect();
+        test_rank(bitmap, &indexes);
+    }
+
+    #[test]
+    #[ignore]
+    fn rank_gigabit() {
+        let bitmap = make_bitmap(1 << 30);
+        let indexes: Vec<usize> = RandomRange(1 << 30).take(1000).collect();
+        test_rank(bitmap, &indexes);
+    }
+}
+
+mod dacs {
+    use super::*;
+
+    #[test]
+    fn get_i32() {
+        let data = vec![0, 2, -3, -2.pow(9), 2.pow(17) + 1, -2.pow(30) - 42];
+        let dacs = Dacs::from(data.clone());
+        for i in 0..data.len() {
+            assert_eq!(dacs.get::<i32>(i), data[i]);
+        }
+        assert_eq!(dacs.levels[0].0.get(2), false);
+    }
+
+    #[test]
+    fn this_one() {
+        let data: Vec<i32> = vec![-512];
+        let dacs = Dacs::from(data.clone());
+        assert_eq!(zigzag_decode(zigzag_encode(-512)), -512);
+        assert_eq!(dacs.get::<i32>(0), data[0]);
     }
 }
