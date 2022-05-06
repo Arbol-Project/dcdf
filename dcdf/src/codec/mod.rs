@@ -28,20 +28,31 @@ use num_traits::PrimInt;
 use std::cmp::min;
 use std::collections::VecDeque;
 use std::fmt::Debug;
+use std::marker::PhantomData;
 
 /// A short series of time instants made up of one Snapshot encoding the first time instant and
 /// Logs encoding subsequent time instants.
 ///
-struct Block {
+struct Block<T> {
+    _marker: PhantomData<T>,
+
     /// Snapshot of first time instant
-    snapshot: Snapshot,
+    snapshot: Snapshot<T>,
 
     /// Successive time instants as logs
-    logs: Vec<Log>,
+    logs: Vec<Log<T>>,
 }
 
-impl Block {
-    fn get<T>(&self, instant: usize, row: usize, col: usize) -> T
+impl<T> Block<T> {
+    fn new(snapshot: Snapshot<T>, logs: Vec<Log<T>>) -> Self {
+        Self {
+            _marker: PhantomData,
+            snapshot: snapshot,
+            logs: logs,
+        }
+    }
+
+    fn get(&self, instant: usize, row: usize, col: usize) -> T
     where
         T: PrimInt + Debug,
     {
@@ -51,7 +62,7 @@ impl Block {
         }
     }
 
-    fn get_window<T>(
+    fn get_window(
         &self,
         instant: usize,
         top: usize,
@@ -68,7 +79,7 @@ impl Block {
         }
     }
 
-    pub fn search_window<T>(
+    pub fn search_window(
         &self,
         instant: usize,
         top: usize,
@@ -103,7 +114,9 @@ impl Block {
 /// A Snapshot stores raster data for a particular time instant in a raster time series. Data is
 /// stored standalone without reference to any other time instant.
 ///
-pub struct Snapshot {
+pub struct Snapshot<T> {
+    _marker: PhantomData<T>,
+
     /// Bitmap of tree structure, known as T in Silva-Coira
     nodemap: BitMap,
 
@@ -127,13 +140,13 @@ pub struct Snapshot {
     sidelen: usize,
 }
 
-impl Snapshot {
+impl<T> Snapshot<T>
+where
+    T: PrimInt + Debug,
+{
     /// Build a snapshot from a two-dimensional array.
     ///
-    pub fn from_array<T>(data: ArrayView2<T>, k: i32) -> Self
-    where
-        T: PrimInt + Debug,
-    {
+    pub fn from_array(data: ArrayView2<T>, k: i32) -> Self {
         let mut nodemap = BitMapBuilder::new();
         let mut max: Vec<T> = vec![];
         let mut min: Vec<T> = vec![];
@@ -170,6 +183,7 @@ impl Snapshot {
         }
 
         Snapshot {
+            _marker: PhantomData,
             nodemap: BitMap::from(nodemap),
             max: Dacs::from(max),
             min: Dacs::from(min),
@@ -186,10 +200,7 @@ impl Snapshot {
     /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
     ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
-    pub fn get<T>(&self, row: usize, col: usize) -> T
-    where
-        T: PrimInt + Debug,
-    {
+    pub fn get(&self, row: usize, col: usize) -> T {
         self.check_bounds(row, col);
 
         if !self.nodemap.get(0) {
@@ -200,10 +211,7 @@ impl Snapshot {
         }
     }
 
-    fn _get<T>(&self, sidelen: usize, row: usize, col: usize, index: usize, max_value: T) -> T
-    where
-        T: PrimInt + Debug,
-    {
+    fn _get(&self, sidelen: usize, row: usize, col: usize, index: usize, max_value: T) -> T {
         let k = self.k as usize;
         let sidelen = sidelen / k;
         let index = 1 + self.nodemap.rank(index) * k * k;
@@ -227,10 +235,7 @@ impl Snapshot {
     /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
     ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
-    pub fn get_window<T>(&self, top: usize, bottom: usize, left: usize, right: usize) -> Array2<T>
-    where
-        T: PrimInt + Debug,
-    {
+    pub fn get_window(&self, top: usize, bottom: usize, left: usize, right: usize) -> Array2<T> {
         let (left, right) = rearrange(left, right);
         let (top, bottom) = rearrange(top, bottom);
         self.check_bounds(bottom, right);
@@ -267,7 +272,7 @@ impl Snapshot {
         window
     }
 
-    fn _get_window<T>(
+    fn _get_window(
         &self,
         sidelen: usize,
         top: usize,
@@ -281,9 +286,7 @@ impl Snapshot {
         window_left: usize,
         top_offset: usize,
         left_offset: usize,
-    ) where
-        T: PrimInt + Debug,
-    {
+    ) {
         let k = self.k as usize;
         let sidelen = sidelen / k;
         let index = 1 + self.nodemap.rank(index) * k * k;
@@ -339,7 +342,7 @@ impl Snapshot {
     /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
     ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
-    pub fn search_window<T>(
+    pub fn search_window(
         &self,
         top: usize,
         bottom: usize,
@@ -347,10 +350,7 @@ impl Snapshot {
         right: usize,
         lower: T,
         upper: T,
-    ) -> Vec<(usize, usize)>
-    where
-        T: PrimInt + Debug,
-    {
+    ) -> Vec<(usize, usize)> {
         let (left, right) = rearrange(left, right);
         let (top, bottom) = rearrange(top, bottom);
         let (lower, upper) = rearrange(lower, upper);
@@ -389,7 +389,7 @@ impl Snapshot {
         cells
     }
 
-    fn _search_window<T>(
+    fn _search_window(
         &self,
         sidelen: usize,
         top: usize,
@@ -404,9 +404,7 @@ impl Snapshot {
         cells: &mut Vec<(usize, usize)>,
         top_offset: usize,
         left_offset: usize,
-    ) where
-        T: PrimInt + Debug,
-    {
+    ) {
         let k = self.k as usize;
         let sidelen = sidelen / k;
         let index = 1 + self.nodemap.rank(index) * k * k;
@@ -546,7 +544,9 @@ where
 /// A Log stores raster data for a particular time instant in a raster time series as the
 /// difference between this time instant and a reference Snapshot.
 ///
-pub struct Log {
+pub struct Log<T> {
+    _marker: PhantomData<T>,
+
     /// Bitmap of tree structure, known as T in Silva-Coira
     nodemap: BitMap,
 
@@ -574,13 +574,13 @@ pub struct Log {
     sidelen: usize,
 }
 
-impl Log {
+impl<T> Log<T>
+where
+    T: PrimInt + Debug,
+{
     /// Build a snapshot from a pair of two-dimensional arrays.
     ///
-    pub fn from_arrays<T>(snapshot: ArrayView2<T>, log: ArrayView2<T>, k: i32) -> Self
-    where
-        T: PrimInt + Debug,
-    {
+    pub fn from_arrays(snapshot: ArrayView2<T>, log: ArrayView2<T>, k: i32) -> Self {
         let mut nodemap = BitMapBuilder::new();
         let mut equal = BitMapBuilder::new();
         let mut max: Vec<i64> = vec![];
@@ -626,6 +626,7 @@ impl Log {
         }
 
         Log {
+            _marker: PhantomData,
             nodemap: BitMap::from(nodemap),
             equal: BitMap::from(equal),
             max: Dacs::from(max),
@@ -645,10 +646,7 @@ impl Log {
     ///
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
-    pub fn get<T>(&self, snapshot: &Snapshot, row: usize, col: usize) -> T
-    where
-        T: PrimInt + Debug,
-    {
+    pub fn get(&self, snapshot: &Snapshot<T>, row: usize, col: usize) -> T {
         self.check_bounds(row, col);
 
         let max_t: T = self.max.get(0);
@@ -681,7 +679,7 @@ impl Log {
 
     fn _get(
         &self,
-        snapshot: &Snapshot,
+        snapshot: &Snapshot<T>,
         sidelen: usize,
         row: usize,
         col: usize,
@@ -781,17 +779,14 @@ impl Log {
     ///
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
-    pub fn get_window<T>(
+    pub fn get_window(
         &self,
-        snapshot: &Snapshot,
+        snapshot: &Snapshot<T>,
         top: usize,
         bottom: usize,
         left: usize,
         right: usize,
-    ) -> Array2<T>
-    where
-        T: PrimInt + Debug,
-    {
+    ) -> Array2<T> {
         let (left, right) = rearrange(left, right);
         let (top, bottom) = rearrange(top, bottom);
         self.check_bounds(bottom, right);
@@ -836,9 +831,9 @@ impl Log {
         window
     }
 
-    fn _get_window<T>(
+    fn _get_window(
         &self,
-        snapshot: &Snapshot,
+        snapshot: &Snapshot<T>,
         sidelen: usize,
         top: usize,
         bottom: usize,
@@ -853,9 +848,7 @@ impl Log {
         window_left: usize,
         top_offset: usize,
         left_offset: usize,
-    ) where
-        T: PrimInt + Debug,
-    {
+    ) {
         let k = self.k as usize;
         let sidelen = sidelen / k;
 
@@ -1004,19 +997,16 @@ impl Log {
     ///
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
-    pub fn search_window<T>(
+    pub fn search_window(
         &self,
-        snapshot: &Snapshot,
+        snapshot: &Snapshot<T>,
         top: usize,
         bottom: usize,
         left: usize,
         right: usize,
         lower: T,
         upper: T,
-    ) -> Vec<(usize, usize)>
-    where
-        T: PrimInt + Debug,
-    {
+    ) -> Vec<(usize, usize)> {
         let (left, right) = rearrange(left, right);
         let (top, bottom) = rearrange(top, bottom);
         let (lower, upper) = rearrange(lower, upper);
@@ -1051,7 +1041,7 @@ impl Log {
 
     fn _search_window(
         &self,
-        snapshot: &Snapshot,
+        snapshot: &Snapshot<T>,
         sidelen: usize,
         top: usize,
         bottom: usize,

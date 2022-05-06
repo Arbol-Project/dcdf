@@ -5,7 +5,7 @@ use dcdf;
 
 #[pyclass]
 struct PySnapshot32 {
-    inner: dcdf::Snapshot,
+    inner: dcdf::Snapshot<i32>,
 }
 
 #[pymethods]
@@ -51,7 +51,7 @@ impl PySnapshot32 {
 
 #[pyclass]
 struct PySnapshotU32 {
-    inner: dcdf::Snapshot,
+    inner: dcdf::Snapshot<u32>,
 }
 
 #[pymethods]
@@ -97,7 +97,7 @@ impl PySnapshotU32 {
 
 #[pyclass]
 struct PySnapshot64 {
-    inner: dcdf::Snapshot,
+    inner: dcdf::Snapshot<i64>,
 }
 
 #[pymethods]
@@ -143,7 +143,7 @@ impl PySnapshot64 {
 
 #[pyclass]
 struct PySnapshotU64 {
-    inner: dcdf::Snapshot,
+    inner: dcdf::Snapshot<u64>,
 }
 
 #[pymethods]
@@ -189,7 +189,7 @@ impl PySnapshotU64 {
 
 #[pyclass]
 struct PyLog32 {
-    inner: dcdf::Log,
+    inner: dcdf::Log<i32>,
 }
 
 #[pymethods]
@@ -239,7 +239,7 @@ impl PyLog32 {
 
 #[pyclass]
 struct PyLogU32 {
-    inner: dcdf::Log,
+    inner: dcdf::Log<u32>,
 }
 
 #[pymethods]
@@ -290,7 +290,7 @@ impl PyLogU32 {
 
 #[pyclass]
 struct PyLog64 {
-    inner: dcdf::Log,
+    inner: dcdf::Log<i64>,
 }
 
 #[pymethods]
@@ -340,7 +340,7 @@ impl PyLog64 {
 
 #[pyclass]
 struct PyLogU64 {
-    inner: dcdf::Log,
+    inner: dcdf::Log<u64>,
 }
 
 #[pymethods]

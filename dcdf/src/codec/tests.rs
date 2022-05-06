@@ -110,18 +110,18 @@ mod block {
             data.slice(s![2, .., ..]),
         ];
 
-        let block = Block {
-            snapshot: Snapshot::from_array(data[0], 2),
-            logs: vec![
+        let block: Block<i32> = Block::new(
+            Snapshot::from_array(data[0], 2),
+            vec![
                 Log::from_arrays(data[0], data[1], 2),
                 Log::from_arrays(data[0], data[2], 2),
             ],
-        };
+        );
 
         for t in 0..3 {
             for r in 0..8 {
                 for c in 0..8 {
-                    assert_eq!(block.get::<i32>(t, r, c), data[t][[r, c]]);
+                    assert_eq!(block.get(t, r, c), data[t][[r, c]]);
                 }
             }
         }
@@ -136,13 +136,13 @@ mod block {
             data.slice(s![2, .., ..]),
         ];
 
-        let block = Block {
-            snapshot: Snapshot::from_array(data[0], 2),
-            logs: vec![
+        let block: Block<i32> = Block::new(
+            Snapshot::from_array(data[0], 2),
+            vec![
                 Log::from_arrays(data[0], data[1], 2),
                 Log::from_arrays(data[0], data[2], 2),
             ],
-        };
+        );
 
         for t in 0..3 {
             for top in 0..8 {
@@ -150,10 +150,7 @@ mod block {
                     for left in 0..8 {
                         for right in left + 1..8 {
                             let expected = data[t].slice(s![top..bottom, left..right]);
-                            assert_eq!(
-                                block.get_window::<i32>(t, top, bottom, left, right),
-                                expected,
-                            );
+                            assert_eq!(block.get_window(t, top, bottom, left, right), expected,);
                         }
                     }
                 }
@@ -170,13 +167,13 @@ mod block {
             data.slice(s![2, .., ..]),
         ];
 
-        let block = Block {
-            snapshot: Snapshot::from_array(data[0], 2),
-            logs: vec![
+        let block = Block::new(
+            Snapshot::from_array(data[0], 2),
+            vec![
                 Log::from_arrays(data[0], data[1], 2),
                 Log::from_arrays(data[0], data[2], 2),
             ],
-        };
+        );
 
         for t in 0..3 {
             for top in 0..8 {
@@ -190,9 +187,8 @@ mod block {
                                     );
                                     let expected: HashSet<(usize, usize)> =
                                         HashSet::from_iter(expected.into_iter());
-                                    let cells = block.search_window::<i32>(
-                                        t, top, bottom, left, right, lower, upper,
-                                    );
+                                    let cells = block
+                                        .search_window(t, top, bottom, left, right, lower, upper);
                                     let cells = HashSet::from_iter(cells.into_iter());
                                     assert_eq!(cells, expected);
                                 }
@@ -266,7 +262,7 @@ mod snapshot {
 
         for row in 0..8 {
             for col in 0..8 {
-                assert_eq!(snapshot.get::<i32>(row, col), data[[row, col]]);
+                assert_eq!(snapshot.get(row, col), data[[row, col]]);
             }
         }
     }
@@ -277,7 +273,7 @@ mod snapshot {
         let data = array8();
         let snapshot = Snapshot::from_array(data.view(), 2);
 
-        snapshot.get::<i32>(0, 9);
+        snapshot.get(0, 9);
     }
 
     #[test]
@@ -290,7 +286,7 @@ mod snapshot {
 
         for row in 0..16 {
             for col in 0..16 {
-                assert_eq!(snapshot.get::<i32>(row, col), 42);
+                assert_eq!(snapshot.get(row, col), 42);
             }
         }
     }
@@ -302,7 +298,7 @@ mod snapshot {
 
         for row in 0..9 {
             for col in 0..9 {
-                assert_eq!(snapshot.get::<i32>(row, col), data[[row, col]]);
+                assert_eq!(snapshot.get(row, col), data[[row, col]]);
             }
         }
     }
@@ -314,7 +310,7 @@ mod snapshot {
 
         for row in 0..9 {
             for col in 0..9 {
-                assert_eq!(snapshot.get::<i32>(row, col), data[[row, col]]);
+                assert_eq!(snapshot.get(row, col), data[[row, col]]);
             }
         }
     }
@@ -325,7 +321,7 @@ mod snapshot {
         let data = array9();
         let snapshot = Snapshot::from_array(data.view(), 2);
 
-        snapshot.get::<i32>(0, 9);
+        snapshot.get(0, 9);
     }
 
     #[test]
@@ -337,7 +333,7 @@ mod snapshot {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        let window = snapshot.get_window::<i32>(top, bottom, left, right);
+                        let window = snapshot.get_window(top, bottom, left, right);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -352,7 +348,7 @@ mod snapshot {
         let data = array8();
         let snapshot = Snapshot::from_array(data.view(), 2);
 
-        snapshot.get_window::<i32>(0, 9, 0, 5);
+        snapshot.get_window(0, 9, 0, 5);
     }
 
     #[test]
@@ -364,7 +360,7 @@ mod snapshot {
             for bottom in top + 1..9 {
                 for left in 0..9 {
                     for right in left + 1..9 {
-                        let window = snapshot.get_window::<i32>(top, bottom, left, right);
+                        let window = snapshot.get_window(top, bottom, left, right);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -382,7 +378,7 @@ mod snapshot {
             for bottom in top + 1..9 {
                 for left in 0..9 {
                     for right in left + 1..9 {
-                        let window = snapshot.get_window::<i32>(top, bottom, left, right);
+                        let window = snapshot.get_window(top, bottom, left, right);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -400,7 +396,7 @@ mod snapshot {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        let window = snapshot.get_window::<i32>(bottom, top, right, left);
+                        let window = snapshot.get_window(bottom, top, right, left);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -418,7 +414,7 @@ mod snapshot {
             for bottom in top + 1..16 {
                 for left in 0..16 {
                     for right in left + 1..16 {
-                        let window = snapshot.get_window::<i32>(top, bottom, left, right);
+                        let window = snapshot.get_window(top, bottom, left, right);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -785,14 +781,14 @@ mod log {
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
         for row in 0..8 {
             for col in 0..8 {
-                assert_eq!(log.get::<i32>(&snapshot, row, col), data[[1, row, col]]);
+                assert_eq!(log.get(&snapshot, row, col), data[[1, row, col]]);
             }
         }
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
         for row in 0..8 {
             for col in 0..8 {
-                assert_eq!(log.get::<i32>(&snapshot, row, col), data[[2, row, col]]);
+                assert_eq!(log.get(&snapshot, row, col), data[[2, row, col]]);
             }
         }
     }
@@ -805,14 +801,14 @@ mod log {
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
         for row in 0..8 {
             for col in 0..8 {
-                assert_eq!(log.get::<u32>(&snapshot, row, col), data[[1, row, col]]);
+                assert_eq!(log.get(&snapshot, row, col), data[[1, row, col]]);
             }
         }
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
         for row in 0..8 {
             for col in 0..8 {
-                assert_eq!(log.get::<u32>(&snapshot, row, col), data[[2, row, col]]);
+                assert_eq!(log.get(&snapshot, row, col), data[[2, row, col]]);
             }
         }
     }
@@ -826,7 +822,7 @@ mod log {
 
         for row in 0..8 {
             for col in 0..8 {
-                assert_eq!(log.get::<i32>(&snapshot, row, col), 42);
+                assert_eq!(log.get(&snapshot, row, col), 42);
             }
         }
     }
@@ -842,7 +838,7 @@ mod log {
 
         for row in 0..8 {
             for col in 0..8 {
-                assert_eq!(log.get::<i32>(&snapshot, row, col), data_t[[row, col]]);
+                assert_eq!(log.get(&snapshot, row, col), data_t[[row, col]]);
             }
         }
     }
@@ -858,7 +854,7 @@ mod log {
 
         for row in 0..8 {
             for col in 1..8 {
-                assert_eq!(log.get::<i32>(&snapshot, row, col), data_t[[row, col]]);
+                assert_eq!(log.get(&snapshot, row, col), data_t[[row, col]]);
             }
         }
     }
@@ -873,7 +869,7 @@ mod log {
 
         for row in 0..8 {
             for col in 1..8 {
-                assert_eq!(log.get::<i32>(&snapshot, row, col), data_s[[row, col]]);
+                assert_eq!(log.get(&snapshot, row, col), data_s[[row, col]]);
             }
         }
     }
@@ -885,7 +881,7 @@ mod log {
         let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
 
-        log.get::<i32>(&snapshot, 0, 9);
+        log.get(&snapshot, 0, 9);
     }
 
     #[test]
@@ -896,14 +892,14 @@ mod log {
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
         for row in 0..9 {
             for col in 0..9 {
-                assert_eq!(log.get::<i32>(&snapshot, row, col), data[[1, row, col]]);
+                assert_eq!(log.get(&snapshot, row, col), data[[1, row, col]]);
             }
         }
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
         for row in 0..9 {
             for col in 0..9 {
-                assert_eq!(log.get::<i32>(&snapshot, row, col), data[[2, row, col]]);
+                assert_eq!(log.get(&snapshot, row, col), data[[2, row, col]]);
             }
         }
     }
@@ -916,14 +912,14 @@ mod log {
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 3);
         for row in 0..9 {
             for col in 0..9 {
-                assert_eq!(log.get::<i32>(&snapshot, row, col), data[[1, row, col]]);
+                assert_eq!(log.get(&snapshot, row, col), data[[1, row, col]]);
             }
         }
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 3);
         for row in 0..9 {
             for col in 0..9 {
-                assert_eq!(log.get::<i32>(&snapshot, row, col), data[[2, row, col]]);
+                assert_eq!(log.get(&snapshot, row, col), data[[2, row, col]]);
             }
         }
     }
@@ -935,7 +931,7 @@ mod log {
         let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
 
-        log.get::<i32>(&snapshot, 0, 9);
+        log.get(&snapshot, 0, 9);
     }
 
     #[test]
@@ -948,7 +944,7 @@ mod log {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![1, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -961,7 +957,7 @@ mod log {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -980,7 +976,7 @@ mod log {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        let window = log.get_window::<u32>(&snapshot, top, bottom, left, right);
+                        let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![1, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -993,7 +989,7 @@ mod log {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        let window = log.get_window::<u32>(&snapshot, top, bottom, left, right);
+                        let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1009,7 +1005,7 @@ mod log {
         let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
 
-        log.get_window::<i32>(&snapshot, 0, 9, 0, 5);
+        log.get_window(&snapshot, 0, 9, 0, 5);
     }
 
     #[test]
@@ -1022,7 +1018,7 @@ mod log {
             for bottom in top + 1..9 {
                 for left in 0..9 {
                     for right in left + 1..9 {
-                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![1, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1035,7 +1031,7 @@ mod log {
             for bottom in top + 1..9 {
                 for left in 0..9 {
                     for right in left + 1..9 {
-                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1054,7 +1050,7 @@ mod log {
             for bottom in top + 1..9 {
                 for left in 0..9 {
                     for right in left + 1..9 {
-                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![1, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1067,7 +1063,7 @@ mod log {
             for bottom in top + 1..9 {
                 for left in 0..9 {
                     for right in left + 1..9 {
-                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1086,7 +1082,7 @@ mod log {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        let window = log.get_window::<i32>(&snapshot, bottom, top, right, left);
+                        let window = log.get_window(&snapshot, bottom, top, right, left);
                         let expected = data.slice(s![1, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1099,7 +1095,7 @@ mod log {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        let window = log.get_window::<i32>(&snapshot, bottom, top, right, left);
+                        let window = log.get_window(&snapshot, bottom, top, right, left);
                         let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1119,7 +1115,7 @@ mod log {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data_t.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1140,7 +1136,7 @@ mod log {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data_t.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1161,7 +1157,7 @@ mod log {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data_t.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1181,7 +1177,7 @@ mod log {
             for bottom in top + 1..8 {
                 for left in 0..8 {
                     for right in left + 1..8 {
-                        let window = log.get_window::<i32>(&snapshot, top, bottom, left, right);
+                        let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data_s.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
