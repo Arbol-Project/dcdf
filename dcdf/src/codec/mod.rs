@@ -30,6 +30,259 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
+/// A series of time instants stored in a single file on disk.
+///
+/// Made up of a series of blocks.
+///
+struct Chunk<T>
+where
+    T: PrimInt + Debug,
+{
+    _marker: PhantomData<T>,
+
+    /// Stored data
+    blocks: Vec<Block<T>>,
+
+    /// Index into stored data for finding which block contains a particular time instant
+    index: Vec<usize>,
+}
+
+impl<T> From<Vec<Block<T>>> for Chunk<T>
+where
+    T: PrimInt + Debug,
+{
+    fn from(blocks: Vec<Block<T>>) -> Self {
+        let mut index = Vec::with_capacity(blocks.len());
+        let mut count = 0;
+        for block in &blocks {
+            count += block.logs.len() + 1;
+            index.push(count);
+        }
+
+        Self {
+            _marker: PhantomData,
+            blocks,
+            index,
+        }
+    }
+}
+
+impl<T> Chunk<T>
+where
+    T: PrimInt + Debug,
+{
+    // Iterate over time instants in this chunk.
+    fn iter(&self, start: usize, end: usize) -> ChunkIter<T> {
+        let (block, block_index) = if start < self.index[0] {
+            // Common special case, starting at beginning of chunk
+            (0, start)
+        } else {
+            // Use binary search to locate starting block
+            let mut lower = 0;
+            let mut upper = self.blocks.len();
+            let mut index = upper / 2;
+            loop {
+                let here = self.index[index];
+                if here == start {
+                    index += 1;
+                    break;
+                } else if here < start {
+                    lower = index;
+                } else if here > start {
+                    if self.index[index - 1] <= start {
+                        break;
+                    } else {
+                        upper = index;
+                    }
+                }
+                index = (lower + upper) / 2;
+            }
+            (index, start - self.index[index - 1])
+        };
+
+        ChunkIter {
+            chunk: self,
+            block,
+            block_index,
+            remaining: end - start,
+        }
+    }
+
+    fn iter_cell(&self, start: usize, end: usize, row: usize, col: usize) -> CellIter<T> {
+        CellIter {
+            _marker: PhantomData,
+            iter: self.iter(start, end),
+            row,
+            col,
+        }
+    }
+
+    fn iter_window(
+        &self,
+        start: usize,
+        end: usize,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+    ) -> WindowIter<T> {
+        WindowIter {
+            _marker: PhantomData,
+            iter: self.iter(start, end),
+            top,
+            bottom,
+            left,
+            right,
+        }
+    }
+
+    pub fn iter_search(
+        &self,
+        start: usize,
+        end: usize,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        lower: T,
+        upper: T,
+    ) -> SearchIter<T> {
+        SearchIter {
+            iter: self.iter(start, end),
+            top,
+            bottom,
+            left,
+            right,
+            lower,
+            upper,
+        }
+    }
+}
+
+struct ChunkIter<'a, T>
+where
+    T: PrimInt + Debug,
+{
+    chunk: &'a Chunk<T>,
+    block: usize,
+    block_index: usize,
+    remaining: usize,
+}
+
+// Unable to use the Iterator trait due to lack of support for Generic Associated Types in Rust
+// at this time. (Item cannot contain Block<T>).
+//
+impl<'a, T> ChunkIter<'a, T>
+where
+    T: PrimInt + Debug,
+{
+    fn next(&mut self) -> Option<(usize, &'a Block<T>)> {
+        if self.remaining == 0 {
+            None
+        } else {
+            let block = &self.chunk.blocks[self.block];
+            let block_index = self.block_index;
+
+            if self.block_index == block.logs.len() {
+                self.block_index = 0;
+                self.block += 1;
+            } else {
+                self.block_index += 1;
+            }
+            self.remaining -= 1;
+
+            Some((block_index, block))
+        }
+    }
+}
+
+struct CellIter<'a, T>
+where
+    T: PrimInt + Debug,
+{
+    _marker: PhantomData<T>,
+    iter: ChunkIter<'a, T>,
+    row: usize,
+    col: usize,
+}
+
+impl<'a, T> Iterator for CellIter<'a, T>
+where
+    T: PrimInt + Debug,
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.iter.next() {
+            Some((index, block)) => Some(block.get(index, self.row, self.col)),
+            None => None,
+        }
+    }
+}
+
+struct WindowIter<'a, T>
+where
+    T: PrimInt + Debug,
+{
+    _marker: PhantomData<T>,
+    iter: ChunkIter<'a, T>,
+    top: usize,
+    bottom: usize,
+    left: usize,
+    right: usize,
+}
+
+impl<'a, T> Iterator for WindowIter<'a, T>
+where
+    T: PrimInt + Debug,
+{
+    type Item = Array2<T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.iter.next() {
+            Some((index, block)) => {
+                Some(block.get_window(index, self.top, self.bottom, self.left, self.right))
+            }
+            None => None,
+        }
+    }
+}
+
+struct SearchIter<'a, T>
+where
+    T: PrimInt + Debug,
+{
+    iter: ChunkIter<'a, T>,
+    top: usize,
+    bottom: usize,
+    left: usize,
+    right: usize,
+    lower: T,
+    upper: T,
+}
+
+impl<'a, T> Iterator for SearchIter<'a, T>
+where
+    T: PrimInt + Debug,
+{
+    type Item = Vec<(usize, usize)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.iter.next() {
+            Some((index, block)) => Some(block.search_window(
+                index,
+                self.top,
+                self.bottom,
+                self.left,
+                self.right,
+                self.lower,
+                self.upper,
+            )),
+            None => None,
+        }
+    }
+}
+
 /// A short series of time instants made up of one Snapshot encoding the first time instant and
 /// Logs encoding subsequent time instants.
 ///
