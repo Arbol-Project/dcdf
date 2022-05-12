@@ -34,24 +34,22 @@ use std::marker::PhantomData;
 ///
 /// Made up of a series of blocks.
 ///
-struct Chunk<T>
+struct Chunk<I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
-    _marker: PhantomData<T>,
-
     /// Stored data
-    blocks: Vec<Block<T>>,
+    blocks: Vec<Block<I>>,
 
     /// Index into stored data for finding which block contains a particular time instant
     index: Vec<usize>,
 }
 
-impl<T> From<Vec<Block<T>>> for Chunk<T>
+impl<I> From<Vec<Block<I>>> for Chunk<I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
-    fn from(blocks: Vec<Block<T>>) -> Self {
+    fn from(blocks: Vec<Block<I>>) -> Self {
         let mut index = Vec::with_capacity(blocks.len());
         let mut count = 0;
         for block in &blocks {
@@ -60,19 +58,18 @@ where
         }
 
         Self {
-            _marker: PhantomData,
             blocks,
             index,
         }
     }
 }
 
-impl<T> Chunk<T>
+impl<I> Chunk<I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
     // Iterate over time instants in this chunk.
-    fn iter(&self, start: usize, end: usize) -> ChunkIter<T> {
+    fn iter(&self, start: usize, end: usize) -> ChunkIter<I> {
         let (block, block_index) = if start < self.index[0] {
             // Common special case, starting at beginning of chunk
             (0, start)
@@ -108,9 +105,8 @@ where
         }
     }
 
-    fn iter_cell(&self, start: usize, end: usize, row: usize, col: usize) -> CellIter<T> {
+    fn iter_cell(&self, start: usize, end: usize, row: usize, col: usize) -> CellIter<I> {
         CellIter {
-            _marker: PhantomData,
             iter: self.iter(start, end),
             row,
             col,
@@ -125,9 +121,8 @@ where
         bottom: usize,
         left: usize,
         right: usize,
-    ) -> WindowIter<T> {
+    ) -> WindowIter<I> {
         WindowIter {
-            _marker: PhantomData,
             iter: self.iter(start, end),
             top,
             bottom,
@@ -144,9 +139,9 @@ where
         bottom: usize,
         left: usize,
         right: usize,
-        lower: T,
-        upper: T,
-    ) -> SearchIter<T> {
+        lower: I,
+        upper: I,
+    ) -> SearchIter<I> {
         SearchIter {
             iter: self.iter(start, end),
             top,
@@ -159,24 +154,24 @@ where
     }
 }
 
-struct ChunkIter<'a, T>
+struct ChunkIter<'a, I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
-    chunk: &'a Chunk<T>,
+    chunk: &'a Chunk<I>,
     block: usize,
     block_index: usize,
     remaining: usize,
 }
 
 // Unable to use the Iterator trait due to lack of support for Generic Associated Types in Rust
-// at this time. (Item cannot contain Block<T>).
+// at this time. (Item cannot contain Block<I>).
 //
-impl<'a, T> ChunkIter<'a, T>
+impl<'a, I> ChunkIter<'a, I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
-    fn next(&mut self) -> Option<(usize, &'a Block<T>)> {
+    fn next(&mut self) -> Option<(usize, &'a Block<I>)> {
         if self.remaining == 0 {
             None
         } else {
@@ -196,21 +191,20 @@ where
     }
 }
 
-struct CellIter<'a, T>
+struct CellIter<'a, I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
-    _marker: PhantomData<T>,
-    iter: ChunkIter<'a, T>,
+    iter: ChunkIter<'a, I>,
     row: usize,
     col: usize,
 }
 
-impl<'a, T> Iterator for CellIter<'a, T>
+impl<'a, I> Iterator for CellIter<'a, I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
-    type Item = T;
+    type Item = I;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter.next() {
@@ -220,23 +214,22 @@ where
     }
 }
 
-struct WindowIter<'a, T>
+struct WindowIter<'a, I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
-    _marker: PhantomData<T>,
-    iter: ChunkIter<'a, T>,
+    iter: ChunkIter<'a, I>,
     top: usize,
     bottom: usize,
     left: usize,
     right: usize,
 }
 
-impl<'a, T> Iterator for WindowIter<'a, T>
+impl<'a, I> Iterator for WindowIter<'a, I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
-    type Item = Array2<T>;
+    type Item = Array2<I>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter.next() {
@@ -248,22 +241,22 @@ where
     }
 }
 
-struct SearchIter<'a, T>
+struct SearchIter<'a, I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
-    iter: ChunkIter<'a, T>,
+    iter: ChunkIter<'a, I>,
     top: usize,
     bottom: usize,
     left: usize,
     right: usize,
-    lower: T,
-    upper: T,
+    lower: I,
+    upper: I,
 }
 
-impl<'a, T> Iterator for SearchIter<'a, T>
+impl<'a, I> Iterator for SearchIter<'a, I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
     type Item = Vec<(usize, usize)>;
 
@@ -286,28 +279,25 @@ where
 /// A short series of time instants made up of one Snapshot encoding the first time instant and
 /// Logs encoding subsequent time instants.
 ///
-struct Block<T> {
-    _marker: PhantomData<T>,
-
+struct Block<I> {
     /// Snapshot of first time instant
-    snapshot: Snapshot<T>,
+    snapshot: Snapshot<I>,
 
     /// Successive time instants as logs
-    logs: Vec<Log<T>>,
+    logs: Vec<Log<I>>,
 }
 
-impl<T> Block<T> {
-    fn new(snapshot: Snapshot<T>, logs: Vec<Log<T>>) -> Self {
+impl<I> Block<I> {
+    fn new(snapshot: Snapshot<I>, logs: Vec<Log<I>>) -> Self {
         Self {
-            _marker: PhantomData,
             snapshot: snapshot,
             logs: logs,
         }
     }
 
-    fn get(&self, instant: usize, row: usize, col: usize) -> T
+    fn get(&self, instant: usize, row: usize, col: usize) -> I
     where
-        T: PrimInt + Debug,
+        I: PrimInt + Debug,
     {
         match instant {
             0 => self.snapshot.get(row, col),
@@ -322,9 +312,9 @@ impl<T> Block<T> {
         bottom: usize,
         left: usize,
         right: usize,
-    ) -> Array2<T>
+    ) -> Array2<I>
     where
-        T: PrimInt + Debug,
+        I: PrimInt + Debug,
     {
         match instant {
             0 => self.snapshot.get_window(top, bottom, left, right),
@@ -339,11 +329,11 @@ impl<T> Block<T> {
         bottom: usize,
         left: usize,
         right: usize,
-        lower: T,
-        upper: T,
+        lower: I,
+        upper: I,
     ) -> Vec<(usize, usize)>
     where
-        T: PrimInt + Debug,
+        I: PrimInt + Debug,
     {
         match instant {
             0 => self
@@ -367,8 +357,8 @@ impl<T> Block<T> {
 /// A Snapshot stores raster data for a particular time instant in a raster time series. Data is
 /// stored standalone without reference to any other time instant.
 ///
-pub struct Snapshot<T> {
-    _marker: PhantomData<T>,
+pub struct Snapshot<I> {
+    _marker: PhantomData<I>,
 
     /// Bitmap of tree structure, known as T in Silva-Coira
     nodemap: BitMap,
@@ -393,16 +383,16 @@ pub struct Snapshot<T> {
     sidelen: usize,
 }
 
-impl<T> Snapshot<T>
+impl<I> Snapshot<I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
     /// Build a snapshot from a two-dimensional array.
     ///
-    pub fn from_array(data: ArrayView2<T>, k: i32) -> Self {
+    pub fn from_array(data: ArrayView2<I>, k: i32) -> Self {
         let mut nodemap = BitMapBuilder::new();
-        let mut max: Vec<T> = vec![];
-        let mut min: Vec<T> = vec![];
+        let mut max: Vec<I> = vec![];
+        let mut min: Vec<I> = vec![];
 
         // Compute the smallest square with sides whose length is a power of K that will contain
         // the passed in data.
@@ -453,7 +443,7 @@ where
     /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
     ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
-    pub fn get(&self, row: usize, col: usize) -> T {
+    pub fn get(&self, row: usize, col: usize) -> I {
         self.check_bounds(row, col);
 
         if !self.nodemap.get(0) {
@@ -464,7 +454,7 @@ where
         }
     }
 
-    fn _get(&self, sidelen: usize, row: usize, col: usize, index: usize, max_value: T) -> T {
+    fn _get(&self, sidelen: usize, row: usize, col: usize, index: usize, max_value: I) -> I {
         let k = self.k as usize;
         let sidelen = sidelen / k;
         let index = 1 + self.nodemap.rank(index) * k * k;
@@ -488,7 +478,7 @@ where
     /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
     ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
-    pub fn get_window(&self, top: usize, bottom: usize, left: usize, right: usize) -> Array2<T> {
+    pub fn get_window(&self, top: usize, bottom: usize, left: usize, right: usize) -> Array2<I> {
         let (left, right) = rearrange(left, right);
         let (top, bottom) = rearrange(top, bottom);
         self.check_bounds(bottom, right);
@@ -533,8 +523,8 @@ where
         left: usize,
         right: usize,
         index: usize,
-        max_value: T,
-        window: &mut Array2<T>,
+        max_value: I,
+        window: &mut Array2<I>,
         window_top: usize,
         window_left: usize,
         top_offset: usize,
@@ -601,8 +591,8 @@ where
         bottom: usize,
         left: usize,
         right: usize,
-        lower: T,
-        upper: T,
+        lower: I,
+        upper: I,
     ) -> Vec<(usize, usize)> {
         let (left, right) = rearrange(left, right);
         let (top, bottom) = rearrange(top, bottom);
@@ -613,7 +603,7 @@ where
 
         if !self.nodemap.get(0) {
             // Special case: single node tree
-            let value: T = self.max.get(0);
+            let value: I = self.max.get(0);
             if lower <= value && value <= upper {
                 for row in top..bottom {
                     for col in left..right {
@@ -649,11 +639,11 @@ where
         bottom: usize,
         left: usize,
         right: usize,
-        lower: T,
-        upper: T,
+        lower: I,
+        upper: I,
         index: usize,
-        min_value: T,
-        max_value: T,
+        min_value: I,
+        max_value: I,
         cells: &mut Vec<(usize, usize)>,
         top_offset: usize,
         left_offset: usize,
@@ -730,24 +720,24 @@ where
 }
 
 /// Temporary tree structure for building K^2 raster
-struct K2TreeNode<T>
+struct K2TreeNode<I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
-    max: T,
-    min: T,
-    children: Vec<K2TreeNode<T>>,
+    max: I,
+    min: I,
+    children: Vec<K2TreeNode<I>>,
 }
 
-impl<T> K2TreeNode<T>
+impl<I> K2TreeNode<I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
-    fn from_array(data: ArrayView2<T>, k: i32, sidelen: usize) -> Self {
+    fn from_array(data: ArrayView2<I>, k: i32, sidelen: usize) -> Self {
         Self::_from_array(data, k as usize, sidelen, 0, 0)
     }
 
-    fn _from_array(data: ArrayView2<T>, k: usize, sidelen: usize, row: usize, col: usize) -> Self {
+    fn _from_array(data: ArrayView2<I>, k: usize, sidelen: usize, row: usize, col: usize) -> Self {
         // Leaf node
         if sidelen == 1 {
             // Fill cells that lay outside of original raster with 0s
@@ -757,7 +747,7 @@ where
             let value = if row < rows && col < cols {
                 data[[row, col]]
             } else {
-                T::zero()
+                I::zero()
             };
             return K2TreeNode {
                 max: value,
@@ -767,7 +757,7 @@ where
         }
 
         // Branch
-        let mut children: Vec<K2TreeNode<T>> = vec![];
+        let mut children: Vec<K2TreeNode<I>> = vec![];
         let sidelen = sidelen / k;
         for i in 0..k {
             let row_ = row + i * sidelen;
@@ -797,8 +787,8 @@ where
 /// A Log stores raster data for a particular time instant in a raster time series as the
 /// difference between this time instant and a reference Snapshot.
 ///
-pub struct Log<T> {
-    _marker: PhantomData<T>,
+pub struct Log<I> {
+    _marker: PhantomData<I>,
 
     /// Bitmap of tree structure, known as T in Silva-Coira
     nodemap: BitMap,
@@ -827,13 +817,13 @@ pub struct Log<T> {
     sidelen: usize,
 }
 
-impl<T> Log<T>
+impl<I> Log<I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
     /// Build a snapshot from a pair of two-dimensional arrays.
     ///
-    pub fn from_arrays(snapshot: ArrayView2<T>, log: ArrayView2<T>, k: i32) -> Self {
+    pub fn from_arrays(snapshot: ArrayView2<I>, log: ArrayView2<I>, k: i32) -> Self {
         let mut nodemap = BitMapBuilder::new();
         let mut equal = BitMapBuilder::new();
         let mut max: Vec<i64> = vec![];
@@ -899,11 +889,11 @@ where
     ///
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
-    pub fn get(&self, snapshot: &Snapshot<T>, row: usize, col: usize) -> T {
+    pub fn get(&self, snapshot: &Snapshot<I>, row: usize, col: usize) -> I {
         self.check_bounds(row, col);
 
-        let max_t: T = self.max.get(0);
-        let max_s: T = snapshot.max.get(0);
+        let max_t: I = self.max.get(0);
+        let max_s: I = snapshot.max.get(0);
         let single_t = !self.nodemap.get(0);
         let single_s = !snapshot.nodemap.get(0);
         if single_t && single_s {
@@ -926,13 +916,13 @@ where
                 max_s.to_i64().unwrap(),
             );
 
-            T::from(value).unwrap()
+            I::from(value).unwrap()
         }
     }
 
     fn _get(
         &self,
-        snapshot: &Snapshot<T>,
+        snapshot: &Snapshot<I>,
         sidelen: usize,
         row: usize,
         col: usize,
@@ -1034,12 +1024,12 @@ where
     ///
     pub fn get_window(
         &self,
-        snapshot: &Snapshot<T>,
+        snapshot: &Snapshot<I>,
         top: usize,
         bottom: usize,
         left: usize,
         right: usize,
-    ) -> Array2<T> {
+    ) -> Array2<I> {
         let (left, right) = rearrange(left, right);
         let (top, bottom) = rearrange(top, bottom);
         self.check_bounds(bottom, right);
@@ -1054,8 +1044,8 @@ where
         if single_t && (single_s || !self.equal.get(0)) {
             // Both trees have single node or log has single node but it contains a uniform value
             // for all cells
-            let max_t: T = self.max.get(0);
-            let max_s: T = snapshot.max.get(0);
+            let max_t: I = self.max.get(0);
+            let max_s: I = snapshot.max.get(0);
             for row in 0..rows {
                 for col in 0..cols {
                     window[[row, col]] = max_t + max_s;
@@ -1086,7 +1076,7 @@ where
 
     fn _get_window(
         &self,
-        snapshot: &Snapshot<T>,
+        snapshot: &Snapshot<I>,
         sidelen: usize,
         top: usize,
         bottom: usize,
@@ -1096,7 +1086,7 @@ where
         index_s: Option<usize>,
         max_t: i64,
         max_s: i64,
-        window: &mut Array2<T>,
+        window: &mut Array2<I>,
         window_top: usize,
         window_left: usize,
         top_offset: usize,
@@ -1162,7 +1152,7 @@ where
                             window[[
                                 top_offset_ + row - window_top,
                                 left_offset_ + col - window_left,
-                            ]] = T::from(value).unwrap();
+                            ]] = I::from(value).unwrap();
                         }
                     }
                 } else if leaf_s {
@@ -1194,7 +1184,7 @@ where
                                         window[[
                                             top_offset_ + row - window_top,
                                             left_offset_ + col - window_left,
-                                        ]] = T::from(value).unwrap();
+                                        ]] = I::from(value).unwrap();
                                     }
                                 }
                                 continue;
@@ -1252,13 +1242,13 @@ where
     ///
     pub fn search_window(
         &self,
-        snapshot: &Snapshot<T>,
+        snapshot: &Snapshot<I>,
         top: usize,
         bottom: usize,
         left: usize,
         right: usize,
-        lower: T,
-        upper: T,
+        lower: I,
+        upper: I,
     ) -> Vec<(usize, usize)> {
         let (left, right) = rearrange(left, right);
         let (top, bottom) = rearrange(top, bottom);
@@ -1294,7 +1284,7 @@ where
 
     fn _search_window(
         &self,
-        snapshot: &Snapshot<T>,
+        snapshot: &Snapshot<I>,
         sidelen: usize,
         top: usize,
         bottom: usize,
@@ -1620,9 +1610,9 @@ struct Dacs {
 }
 
 impl Dacs {
-    fn get<T>(&self, index: usize) -> T
+    fn get<I>(&self, index: usize) -> I
     where
-        T: PrimInt + Debug,
+        I: PrimInt + Debug,
     {
         let mut index = index;
         let mut n: u64 = 0;
@@ -1636,15 +1626,15 @@ impl Dacs {
         }
 
         let n = zigzag_decode(n);
-        T::from(n).unwrap()
+        I::from(n).unwrap()
     }
 }
 
-impl<T> From<Vec<T>> for Dacs
+impl<I> From<Vec<I>> for Dacs
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
-    fn from(data: Vec<T>) -> Self {
+    fn from(data: Vec<I>) -> Self {
         // Set up levels. Probably won't need all of them
         let mut levels = Vec::with_capacity(8);
         for _ in 0..8 {
@@ -1688,30 +1678,30 @@ fn zigzag_decode(zz: u64) -> i64 {
 }
 
 // Temporary tree structure for building T - K^2 raster
-struct K2PTreeNode<T>
+struct K2PTreeNode<I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
-    max_t: T,
-    min_t: T,
-    max_s: T,
-    min_s: T,
+    max_t: I,
+    min_t: I,
+    max_s: I,
+    min_s: I,
     diff: i64,
     equal: bool,
-    children: Vec<K2PTreeNode<T>>,
+    children: Vec<K2PTreeNode<I>>,
 }
 
-impl<T> K2PTreeNode<T>
+impl<I> K2PTreeNode<I>
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
-    fn from_arrays(snapshot: ArrayView2<T>, log: ArrayView2<T>, k: i32, sidelen: usize) -> Self {
+    fn from_arrays(snapshot: ArrayView2<I>, log: ArrayView2<I>, k: i32, sidelen: usize) -> Self {
         Self::_from_arrays(snapshot, log, k as usize, sidelen, 0, 0)
     }
 
     fn _from_arrays(
-        snapshot: ArrayView2<T>,
-        log: ArrayView2<T>,
+        snapshot: ArrayView2<I>,
+        log: ArrayView2<I>,
         k: usize,
         sidelen: usize,
         row: usize,
@@ -1726,12 +1716,12 @@ where
             let value_s = if row < rows && col < cols {
                 snapshot[[row, col]]
             } else {
-                T::zero()
+                I::zero()
             };
             let value_t = if row < rows && col < cols {
                 log[[row, col]]
             } else {
-                T::zero()
+                I::zero()
             };
             let diff = value_t.to_i64().unwrap() - value_s.to_i64().unwrap();
             return K2PTreeNode {
@@ -1746,7 +1736,7 @@ where
         }
 
         // Branch
-        let mut children: Vec<K2PTreeNode<T>> = vec![];
+        let mut children: Vec<K2PTreeNode<I>> = vec![];
         let sidelen = sidelen / k;
         for i in 0..k {
             let row_ = row + i * sidelen;
@@ -1793,13 +1783,13 @@ where
 }
 
 /// Returns n / m with remainder rounded up to nearest integer
-fn div_ceil<T>(m: T, n: T) -> T
+fn div_ceil<I>(m: I, n: I) -> I
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
     let a = m / n;
-    if m % n > T::zero() {
-        a + T::one()
+    if m % n > I::zero() {
+        a + I::one()
     } else {
         a
     }
@@ -1807,9 +1797,9 @@ where
 
 /// Make sure bounds are ordered correctly, eg right is to the right of left, top is above
 /// bottom.
-fn rearrange<T>(lower: T, upper: T) -> (T, T)
+fn rearrange<I>(lower: I, upper: I) -> (I, I)
 where
-    T: PrimInt + Debug,
+    I: PrimInt + Debug,
 {
     if lower > upper {
         (upper, lower)
