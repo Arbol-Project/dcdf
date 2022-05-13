@@ -24,11 +24,98 @@
 //! [2]: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.69.9548&rep=rep1&type=pdf
 
 use ndarray::{Array2, ArrayView2};
-use num_traits::PrimInt;
+use num_traits::{Float, PrimInt};
 use std::cmp::min;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+
+use super::fixed;
+
+/// A wrapper for Chunk that adapts it to use floating point data
+///
+/// Floating point numbers are stored in a fixed point representation and converted back to
+/// floating point using `fractional_bits` to determine the number of bits that are used to
+/// represent the fractional part of the number.
+///
+struct FChunk<F>
+where
+    F: Float + Debug,
+{
+    _marker: PhantomData<F>,
+
+    /// Number of bits in the fixed point number representation that represent the fractional part
+    fractional_bits: usize,
+
+    /// Wrapped Chunk
+    chunk: Chunk<i64>,
+}
+
+impl<F> FChunk<F>
+where
+    F: Float + Debug,
+{
+    fn new(chunk: Chunk<i64>, fractional_bits: usize) -> Self {
+        Self {
+            _marker: PhantomData,
+            fractional_bits: fractional_bits,
+            chunk: chunk,
+        }
+    }
+
+    fn iter_cell<'a>(
+        &'a self,
+        start: usize,
+        end: usize,
+        row: usize,
+        col: usize,
+    ) -> Box<dyn Iterator<Item = F> + 'a> {
+        Box::new(
+            self.chunk
+                .iter_cell(start, end, row, col)
+                .map(|i| fixed::from_fixed(i, self.fractional_bits)),
+        )
+    }
+
+    fn iter_window<'a>(
+        &'a self,
+        start: usize,
+        end: usize,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+    ) -> Box<dyn Iterator<Item = Array2<F>> + 'a> {
+        Box::new(
+            self.chunk
+                .iter_window(start, end, top, bottom, left, right)
+                .map(|w| w.map(|i| fixed::from_fixed(*i, self.fractional_bits))),
+        )
+    }
+
+    pub fn iter_search(
+        &self,
+        start: usize,
+        end: usize,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        lower: F,
+        upper: F,
+    ) -> SearchIter<i64> {
+        self.chunk.iter_search(
+            start,
+            end,
+            top,
+            bottom,
+            left,
+            right,
+            fixed::to_fixed_round(lower, self.fractional_bits),
+            fixed::to_fixed_round(upper, self.fractional_bits),
+        )
+    }
+}
 
 /// A series of time instants stored in a single file on disk.
 ///
@@ -57,10 +144,7 @@ where
             index.push(count);
         }
 
-        Self {
-            blocks,
-            index,
-        }
+        Self { blocks, index }
     }
 }
 
