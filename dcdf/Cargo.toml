@@ -11,3 +11,4 @@ ndarray = "0.15"
 
 [dev-dependencies]
 rand = "0.8"
+tempfile = "3.3"

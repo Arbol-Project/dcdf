@@ -28,6 +28,9 @@ use num_traits::{Float, PrimInt};
 use std::cmp::min;
 use std::collections::VecDeque;
 use std::fmt::Debug;
+use std::fs::File;
+use std::io;
+use std::io::{Read, Write};
 use std::marker::PhantomData;
 
 use super::fixed;
@@ -93,7 +96,7 @@ where
         )
     }
 
-    pub fn iter_search(
+    fn iter_search(
         &self,
         start: usize,
         end: usize,
@@ -114,6 +117,17 @@ where
             fixed::to_fixed_round(lower, self.fractional_bits),
             fixed::to_fixed_round(upper, self.fractional_bits),
         )
+    }
+
+    fn serialize(&self, stream: &mut File) -> io::Result<()> {
+        write_byte(stream, self.fractional_bits as u8)?;
+        self.chunk.serialize(stream)?;
+        Ok(())
+    }
+
+    fn deserialize(stream: &mut File) -> io::Result<Self> {
+        let fractional_bits = read_byte(stream)? as usize;
+        Ok(FChunk::new(Chunk::deserialize(stream)?, fractional_bits))
     }
 }
 
@@ -235,6 +249,28 @@ where
             lower,
             upper,
         }
+    }
+
+    fn serialize(&self, stream: &mut File) -> io::Result<()> {
+        write_u32(stream, self.blocks.len() as u32)?;
+        for block in &self.blocks {
+            block.serialize(stream)?;
+        }
+        Ok(())
+    }
+
+    fn deserialize(stream: &mut File) -> io::Result<Self> {
+        let n_blocks = read_u32(stream)? as usize;
+        let mut blocks = Vec::with_capacity(n_blocks);
+        let mut index = Vec::with_capacity(n_blocks);
+        let mut count = 0;
+        for _ in 0..n_blocks {
+            let block = Block::deserialize(stream)?;
+            count += block.logs.len() + 1;
+            blocks.push(block);
+            index.push(count);
+        }
+        Ok(Self { blocks, index })
     }
 }
 
@@ -363,7 +399,10 @@ where
 /// A short series of time instants made up of one Snapshot encoding the first time instant and
 /// Logs encoding subsequent time instants.
 ///
-struct Block<I> {
+struct Block<I>
+where
+    I: PrimInt + Debug,
+{
     /// Snapshot of first time instant
     snapshot: Snapshot<I>,
 
@@ -371,7 +410,11 @@ struct Block<I> {
     logs: Vec<Log<I>>,
 }
 
-impl<I> Block<I> {
+impl<I> Block<I>
+where
+    I: PrimInt + Debug,
+{
+    /// Snapshot of first time instant
     fn new(snapshot: Snapshot<I>, logs: Vec<Log<I>>) -> Self {
         Self {
             snapshot: snapshot,
@@ -434,6 +477,27 @@ impl<I> Block<I> {
             ),
         }
     }
+
+    fn serialize(&self, stream: &mut File) -> io::Result<()> {
+        write_byte(stream, (self.logs.len() + 1) as u8)?;
+        self.snapshot.serialize(stream)?;
+        for log in &self.logs {
+            log.serialize(stream)?;
+        }
+        Ok(())
+    }
+
+    fn deserialize(stream: &mut File) -> io::Result<Self> {
+        let n_instants = read_byte(stream)? as usize;
+        let snapshot = Snapshot::deserialize(stream)?;
+        let mut logs: Vec<Log<I>> = Vec::with_capacity(n_instants - 1);
+        for _ in 0..n_instants - 1 {
+            let log = Log::deserialize(stream)?;
+            logs.push(log);
+        }
+
+        Ok(Self { snapshot, logs })
+    }
 }
 
 /// K²-Raster encoded Snapshot
@@ -441,7 +505,10 @@ impl<I> Block<I> {
 /// A Snapshot stores raster data for a particular time instant in a raster time series. Data is
 /// stored standalone without reference to any other time instant.
 ///
-pub struct Snapshot<I> {
+pub struct Snapshot<I>
+where
+    I: PrimInt + Debug,
+{
     _marker: PhantomData<I>,
 
     /// Bitmap of tree structure, known as T in Silva-Coira
@@ -471,6 +538,37 @@ impl<I> Snapshot<I>
 where
     I: PrimInt + Debug,
 {
+    fn serialize(&self, stream: &mut File) -> io::Result<()> {
+        write_byte(stream, self.k as u8)?;
+        write_u32(stream, self.shape[0] as u32)?;
+        write_u32(stream, self.shape[1] as u32)?;
+        write_u32(stream, self.sidelen as u32)?;
+        self.nodemap.serialize(stream)?;
+        self.max.serialize(stream)?;
+        self.min.serialize(stream)?;
+
+        Ok(())
+    }
+
+    fn deserialize(stream: &mut File) -> io::Result<Self> {
+        let k = read_byte(stream)? as i32;
+        let shape = [read_u32(stream)? as usize, read_u32(stream)? as usize];
+        let sidelen = read_u32(stream)? as usize;
+        let nodemap = BitMap::deserialize(stream)?;
+        let max = Dacs::deserialize(stream)?;
+        let min = Dacs::deserialize(stream)?;
+
+        Ok(Self {
+            _marker: PhantomData,
+            nodemap,
+            max,
+            min,
+            k,
+            shape,
+            sidelen,
+        })
+    }
+
     /// Build a snapshot from a two-dimensional array.
     ///
     pub fn from_array(data: ArrayView2<I>, k: i32) -> Self {
@@ -871,7 +969,10 @@ where
 /// A Log stores raster data for a particular time instant in a raster time series as the
 /// difference between this time instant and a reference Snapshot.
 ///
-pub struct Log<I> {
+pub struct Log<I>
+where
+    I: PrimInt + Debug,
+{
     _marker: PhantomData<I>,
 
     /// Bitmap of tree structure, known as T in Silva-Coira
@@ -905,6 +1006,40 @@ impl<I> Log<I>
 where
     I: PrimInt + Debug,
 {
+    fn serialize(&self, stream: &mut File) -> io::Result<()> {
+        write_byte(stream, self.k as u8)?;
+        write_u32(stream, self.shape[0] as u32)?;
+        write_u32(stream, self.shape[1] as u32)?;
+        write_u32(stream, self.sidelen as u32)?;
+        self.nodemap.serialize(stream)?;
+        self.equal.serialize(stream)?;
+        self.max.serialize(stream)?;
+        self.min.serialize(stream)?;
+
+        Ok(())
+    }
+
+    fn deserialize(stream: &mut File) -> io::Result<Self> {
+        let k = read_byte(stream)? as i32;
+        let shape = [read_u32(stream)? as usize, read_u32(stream)? as usize];
+        let sidelen = read_u32(stream)? as usize;
+        let nodemap = BitMap::deserialize(stream)?;
+        let equal = BitMap::deserialize(stream)?;
+        let max = Dacs::deserialize(stream)?;
+        let min = Dacs::deserialize(stream)?;
+
+        Ok(Self {
+            _marker: PhantomData,
+            nodemap,
+            equal,
+            max,
+            min,
+            k,
+            shape,
+            sidelen,
+        })
+    }
+
     /// Build a snapshot from a pair of two-dimensional arrays.
     ///
     pub fn from_arrays(snapshot: ArrayView2<I>, log: ArrayView2<I>, k: i32) -> Self {
@@ -1602,20 +1737,21 @@ impl From<BitMapBuilder> for BitMap {
         let mut index: Vec<u32> = Vec::with_capacity(blocks);
 
         // Convert vector of u8 to vector of u32
-        let words = div_ceil(bitmap.bitmap.len(), 4);
+        let words = div_ceil(bitmap.length, 32);
         let mut bitmap32: Vec<u32> = Vec::with_capacity(words);
         if words > 0 {
             let mut shift = 24;
             let mut word_index = 0;
 
-            bitmap32.push(0);
             for byte in bitmap.bitmap {
+                if shift == 24 {
+                    bitmap32.push(0);
+                }
                 let mut word: u32 = byte.into();
                 word <<= shift;
                 bitmap32[word_index] |= word;
 
                 if shift == 0 {
-                    bitmap32.push(0);
                     word_index += 1;
                     shift = 24;
                 } else {
@@ -1643,6 +1779,42 @@ impl From<BitMapBuilder> for BitMap {
 }
 
 impl BitMap {
+    fn serialize(&self, stream: &mut File) -> io::Result<()> {
+        write_u32(stream, self.length as u32)?;
+        write_u32(stream, self.k as u32)?;
+        for index_block in &self.index {
+            write_u32(stream, *index_block)?;
+        }
+        for bitmap_block in &self.bitmap {
+            write_u32(stream, *bitmap_block)?;
+        }
+        Ok(())
+    }
+
+    fn deserialize(stream: &mut File) -> io::Result<Self> {
+        let length = read_u32(stream)? as usize;
+        let k = read_u32(stream)? as usize;
+
+        let blocks = length / 32 / k;
+        let mut index = Vec::with_capacity(blocks as usize);
+        for _ in 0..blocks {
+            index.push(read_u32(stream)?);
+        }
+
+        let words = div_ceil(length, 32);
+        let mut bitmap = Vec::with_capacity(words);
+        for _ in 0..words {
+            bitmap.push(read_u32(stream)?);
+        }
+
+        Ok(Self {
+            length,
+            k,
+            index,
+            bitmap,
+        })
+    }
+
     /// Get the bit at position i
     fn get(&self, i: usize) -> bool {
         let word_index = i / 32;
@@ -1694,6 +1866,29 @@ struct Dacs {
 }
 
 impl Dacs {
+    fn serialize(&self, stream: &mut File) -> io::Result<()> {
+        write_byte(stream, self.levels.len() as u8)?;
+        for (bitmap, bytes) in &self.levels {
+            bitmap.serialize(stream)?;
+            stream.write_all(bytes)?;
+        }
+        Ok(())
+    }
+
+    fn deserialize(stream: &mut File) -> io::Result<Self> {
+        let n_levels = read_byte(stream)? as usize;
+        let mut levels = Vec::with_capacity(n_levels);
+        for _ in 0..n_levels {
+            let bitmap = BitMap::deserialize(stream)?;
+            let mut bytes = Vec::with_capacity(bitmap.length);
+            stream.take(bitmap.length as u64).read_to_end(&mut bytes)?;
+
+            levels.push((bitmap, bytes));
+        }
+
+        Ok(Self { levels })
+    }
+
     fn get<I>(&self, index: usize) -> I
     where
         I: PrimInt + Debug,
@@ -1890,6 +2085,38 @@ where
     } else {
         (lower, upper)
     }
+}
+
+/// Write a byte to a stream
+fn write_byte(stream: &mut File, byte: u8) -> io::Result<()> {
+    let buffer = [byte];
+    stream.write_all(&buffer)?;
+
+    Ok(())
+}
+
+/// Read a byte from a stream
+fn read_byte(stream: &mut File) -> io::Result<u8> {
+    let mut buffer = [0; 1];
+    stream.read_exact(&mut buffer)?;
+
+    Ok(buffer[0])
+}
+
+/// Write a u32 to a stream
+fn write_u32(stream: &mut File, word: u32) -> io::Result<()> {
+    let buffer = word.to_be_bytes();
+    stream.write_all(&buffer)?;
+
+    Ok(())
+}
+
+/// Read a u32 from a stream
+fn read_u32(stream: &mut File) -> io::Result<u32> {
+    let mut buffer = [0; 4];
+    stream.read_exact(&mut buffer)?;
+
+    Ok(u32::from_be_bytes(buffer))
 }
 
 #[cfg(test)]

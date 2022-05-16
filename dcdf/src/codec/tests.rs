@@ -1,5 +1,8 @@
 use num_traits::Num;
 use std::collections::HashSet;
+use std::io;
+use std::io::Seek;
+use tempfile::tempfile;
 
 use super::*;
 
@@ -215,6 +218,31 @@ mod fchunk {
                 }
             }
         }
+    }
+
+    #[test]
+    fn serialize_deserialize() -> io::Result<()> {
+        let data = array();
+        let chunk = chunk(data.clone());
+        let mut file = tempfile()?;
+        chunk.serialize(&mut file)?;
+
+        file.rewind()?;
+        let chunk: FChunk<f32> = FChunk::deserialize(&mut file)?;
+
+        for row in 0..8 {
+            for col in 0..8 {
+                let start = row * col;
+                let end = 100 - col;
+                let values: Vec<f32> = chunk.iter_cell(start, end, row, col).collect();
+                assert_eq!(values.len(), end - start);
+                for i in 0..values.len() {
+                    assert_eq!(values[i], data[i + start][[row, col]]);
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
