@@ -226,6 +226,10 @@ mod fchunk {
         let chunk = chunk(data.clone());
         let mut file = tempfile()?;
         chunk.serialize(&mut file)?;
+        file.sync_all()?;
+        
+        let metadata = file.metadata()?;
+        assert_eq!(metadata.len(), chunk.size());
 
         file.rewind()?;
         let chunk: FChunk<f32> = FChunk::deserialize(&mut file)?;

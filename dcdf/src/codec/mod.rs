@@ -129,6 +129,10 @@ where
         let fractional_bits = read_byte(stream)? as usize;
         Ok(FChunk::new(Chunk::deserialize(stream)?, fractional_bits))
     }
+
+    fn size(&self) -> u64 {
+        1 + self.chunk.size()
+    }
 }
 
 /// A series of time instants stored in a single file on disk.
@@ -271,6 +275,10 @@ where
             index.push(count);
         }
         Ok(Self { blocks, index })
+    }
+
+    fn size(&self) -> u64 {
+        4 + self.blocks.iter().map(|b| b.size()).sum::<u64>()
     }
 }
 
@@ -498,6 +506,10 @@ where
 
         Ok(Self { snapshot, logs })
     }
+
+    fn size(&self) -> u64 {
+        1 + self.snapshot.size() + self.logs.iter().map(|l| l.size()).sum::<u64>()
+    }
 }
 
 /// K²-Raster encoded Snapshot
@@ -567,6 +579,10 @@ where
             shape,
             sidelen,
         })
+    }
+
+    fn size(&self) -> u64 {
+        1 + 4 + 4 + 4 + self.nodemap.size() + self.max.size() + self.min.size()
     }
 
     /// Build a snapshot from a two-dimensional array.
@@ -1038,6 +1054,10 @@ where
             shape,
             sidelen,
         })
+    }
+
+    fn size(&self) -> u64 {
+        1 + 4 + 4 + 4 + self.nodemap.size() + self.equal.size() + self.max.size() + self.min.size()
     }
 
     /// Build a snapshot from a pair of two-dimensional arrays.
@@ -1815,6 +1835,10 @@ impl BitMap {
         })
     }
 
+    fn size(&self) -> u64 {
+        (4 + 4 + self.index.len() * 4 + self.bitmap.len() * 4) as u64
+    }
+
     /// Get the bit at position i
     fn get(&self, i: usize) -> bool {
         let word_index = i / 32;
@@ -1887,6 +1911,10 @@ impl Dacs {
         }
 
         Ok(Self { levels })
+    }
+
+    fn size(&self) -> u64 {
+        1 + self.levels.iter().map(|(bitmap, bytes)| bitmap.size() + bytes.len() as u64).sum::<u64>()
     }
 
     fn get<I>(&self, index: usize) -> I
