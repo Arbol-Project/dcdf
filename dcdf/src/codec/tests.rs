@@ -31,11 +31,41 @@ impl Dacs {
         self.levels[0].0.length
     }
 
-    fn collect<T>(&self) -> Vec<T>
+    fn collect<I>(&self) -> Vec<I>
     where
-        T: PrimInt + Debug,
+        I: PrimInt + Debug,
     {
         (0..self.len()).into_iter().map(|i| self.get(i)).collect()
+    }
+}
+
+impl<I> Snapshot<I>
+where
+    I: PrimInt + Debug,
+{
+    /// So I don't have to create a closure in every test
+    fn from_array(data: ArrayView2<I>, k: i32) -> Self 
+    {
+        let get = |row, col| data[[row, col]].to_i64().unwrap();
+        let shape = data.shape();
+        let rows = shape[0];
+        let cols = shape[1];
+        Self::build(get, [rows, cols], k)
+    }
+}
+
+impl<I> Log<I>
+where
+    I: PrimInt + Debug,
+{
+    /// So I don't have to create closures in every test
+    fn from_arrays(snapshot: ArrayView2<I>, log: ArrayView2<I>, k: i32) -> Self {
+        let get_s = |row, col| snapshot[[row, col]].to_i64().unwrap();
+        let get_t = |row, col| log[[row, col]].to_i64().unwrap();
+        let shape = snapshot.shape();
+        let rows = shape[0];
+        let cols = shape[1];
+        Self::build(get_s, get_t, [rows, cols], k)
     }
 }
 
@@ -575,7 +605,7 @@ mod snapshot {
     }
 
     #[test]
-    fn from_array() {
+    fn build() {
         let data = array8();
         let snapshot = Snapshot::from_array(data.view(), 2);
 
@@ -1044,7 +1074,7 @@ mod log {
     }
 
     #[test]
-    fn from_arrays() {
+    fn build() {
         let data = array8();
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
         assert_eq!(log.nodemap.length, 17);
@@ -1080,7 +1110,7 @@ mod log {
     }
 
     #[test]
-    fn from_arrays_unsigned() {
+    fn build_unsigned() {
         let data = array8_unsigned();
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
         assert_eq!(log.nodemap.length, 17);

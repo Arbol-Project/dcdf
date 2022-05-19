@@ -41,7 +41,7 @@ use super::fixed;
 /// floating point using `fractional_bits` to determine the number of bits that are used to
 /// represent the fractional part of the number.
 ///
-struct FChunk<F>
+pub struct FChunk<F>
 where
     F: Float + Debug,
 {
@@ -58,7 +58,7 @@ impl<F> FChunk<F>
 where
     F: Float + Debug,
 {
-    fn new(chunk: Chunk<i64>, fractional_bits: usize) -> Self {
+    pub fn new(chunk: Chunk<i64>, fractional_bits: usize) -> Self {
         Self {
             _marker: PhantomData,
             fractional_bits: fractional_bits,
@@ -66,7 +66,7 @@ where
         }
     }
 
-    fn iter_cell<'a>(
+    pub fn iter_cell<'a>(
         &'a self,
         start: usize,
         end: usize,
@@ -80,7 +80,7 @@ where
         )
     }
 
-    fn iter_window<'a>(
+    pub fn iter_window<'a>(
         &'a self,
         start: usize,
         end: usize,
@@ -96,7 +96,7 @@ where
         )
     }
 
-    fn iter_search(
+    pub fn iter_search(
         &self,
         start: usize,
         end: usize,
@@ -119,18 +119,18 @@ where
         )
     }
 
-    fn serialize(&self, stream: &mut File) -> io::Result<()> {
+    pub fn serialize(&self, stream: &mut File) -> io::Result<()> {
         write_byte(stream, self.fractional_bits as u8)?;
         self.chunk.serialize(stream)?;
         Ok(())
     }
 
-    fn deserialize(stream: &mut File) -> io::Result<Self> {
+    pub fn deserialize(stream: &mut File) -> io::Result<Self> {
         let fractional_bits = read_byte(stream)? as usize;
         Ok(FChunk::new(Chunk::deserialize(stream)?, fractional_bits))
     }
 
-    fn size(&self) -> u64 {
+    pub fn size(&self) -> u64 {
         1 + self.chunk.size()
     }
 }
@@ -139,7 +139,7 @@ where
 ///
 /// Made up of a series of blocks.
 ///
-struct Chunk<I>
+pub struct Chunk<I>
 where
     I: PrimInt + Debug,
 {
@@ -207,7 +207,7 @@ where
         }
     }
 
-    fn iter_cell(&self, start: usize, end: usize, row: usize, col: usize) -> CellIter<I> {
+    pub fn iter_cell(&self, start: usize, end: usize, row: usize, col: usize) -> CellIter<I> {
         CellIter {
             iter: self.iter(start, end),
             row,
@@ -215,7 +215,7 @@ where
         }
     }
 
-    fn iter_window(
+    pub fn iter_window(
         &self,
         start: usize,
         end: usize,
@@ -255,7 +255,7 @@ where
         }
     }
 
-    fn serialize(&self, stream: &mut File) -> io::Result<()> {
+    pub fn serialize(&self, stream: &mut File) -> io::Result<()> {
         write_u32(stream, self.blocks.len() as u32)?;
         for block in &self.blocks {
             block.serialize(stream)?;
@@ -263,7 +263,7 @@ where
         Ok(())
     }
 
-    fn deserialize(stream: &mut File) -> io::Result<Self> {
+    pub fn deserialize(stream: &mut File) -> io::Result<Self> {
         let n_blocks = read_u32(stream)? as usize;
         let mut blocks = Vec::with_capacity(n_blocks);
         let mut index = Vec::with_capacity(n_blocks);
@@ -277,7 +277,7 @@ where
         Ok(Self { blocks, index })
     }
 
-    fn size(&self) -> u64 {
+    pub fn size(&self) -> u64 {
         4 + self.blocks.iter().map(|b| b.size()).sum::<u64>()
     }
 }
@@ -319,7 +319,7 @@ where
     }
 }
 
-struct CellIter<'a, I>
+pub struct CellIter<'a, I>
 where
     I: PrimInt + Debug,
 {
@@ -342,7 +342,7 @@ where
     }
 }
 
-struct WindowIter<'a, I>
+pub struct WindowIter<'a, I>
 where
     I: PrimInt + Debug,
 {
@@ -369,7 +369,7 @@ where
     }
 }
 
-struct SearchIter<'a, I>
+pub struct SearchIter<'a, I>
 where
     I: PrimInt + Debug,
 {
@@ -407,7 +407,7 @@ where
 /// A short series of time instants made up of one Snapshot encoding the first time instant and
 /// Logs encoding subsequent time instants.
 ///
-struct Block<I>
+pub struct Block<I>
 where
     I: PrimInt + Debug,
 {
@@ -423,7 +423,7 @@ where
     I: PrimInt + Debug,
 {
     /// Snapshot of first time instant
-    fn new(snapshot: Snapshot<I>, logs: Vec<Log<I>>) -> Self {
+    pub fn new(snapshot: Snapshot<I>, logs: Vec<Log<I>>) -> Self {
         Self {
             snapshot: snapshot,
             logs: logs,
@@ -507,7 +507,7 @@ where
         Ok(Self { snapshot, logs })
     }
 
-    fn size(&self) -> u64 {
+    pub fn size(&self) -> u64 {
         1 + self.snapshot.size() + self.logs.iter().map(|l| l.size()).sum::<u64>()
     }
 }
@@ -581,24 +581,26 @@ where
         })
     }
 
-    fn size(&self) -> u64 {
+    pub fn size(&self) -> u64 {
         1 + 4 + 4 + 4 + self.nodemap.size() + self.max.size() + self.min.size()
     }
 
     /// Build a snapshot from a two-dimensional array.
     ///
-    pub fn from_array(data: ArrayView2<I>, k: i32) -> Self {
+    pub fn build<G>(get: G, shape: [usize; 2], k: i32) -> Self 
+    where
+        G: Fn(usize, usize) -> i64,
+    {
         let mut nodemap = BitMapBuilder::new();
-        let mut max: Vec<I> = vec![];
-        let mut min: Vec<I> = vec![];
+        let mut max: Vec<i64> = vec![];
+        let mut min: Vec<i64> = vec![];
 
         // Compute the smallest square with sides whose length is a power of K that will contain
         // the passed in data.
-        let shape = data.shape();
         let sidelen = *shape.iter().max().unwrap() as f64;
         let sidelen = k.pow(sidelen.log(k as f64).ceil() as u32) as usize;
 
-        let root = K2TreeNode::from_array(data, k, sidelen);
+        let root = K2TreeNode::build(get, shape, k, sidelen);
         let mut to_traverse = VecDeque::new();
         to_traverse.push_back((root.max, root.min, &root));
 
@@ -918,34 +920,34 @@ where
 }
 
 /// Temporary tree structure for building K^2 raster
-struct K2TreeNode<I>
-where
-    I: PrimInt + Debug,
+struct K2TreeNode
 {
-    max: I,
-    min: I,
-    children: Vec<K2TreeNode<I>>,
+    max: i64,
+    min: i64,
+    children: Vec<K2TreeNode>,
 }
 
-impl<I> K2TreeNode<I>
-where
-    I: PrimInt + Debug,
+impl K2TreeNode
 {
-    fn from_array(data: ArrayView2<I>, k: i32, sidelen: usize) -> Self {
-        Self::_from_array(data, k as usize, sidelen, 0, 0)
+    fn build<G>(get: G, shape: [usize; 2], k: i32, sidelen: usize) -> Self 
+    where
+        G: Fn(usize, usize) -> i64
+    {
+        Self::_build(&get, shape, k as usize, sidelen, 0, 0)
     }
 
-    fn _from_array(data: ArrayView2<I>, k: usize, sidelen: usize, row: usize, col: usize) -> Self {
+    fn _build<G>(get: &G, shape: [usize; 2], k: usize, sidelen: usize, row: usize, col: usize) -> Self 
+    where
+        G: Fn(usize, usize) -> i64
+    {
         // Leaf node
         if sidelen == 1 {
             // Fill cells that lay outside of original raster with 0s
-            let shape = data.shape();
-            let rows = shape[0];
-            let cols = shape[1];
+            let [rows, cols] = shape;
             let value = if row < rows && col < cols {
-                data[[row, col]]
+                get(row, col)
             } else {
-                I::zero()
+                0
             };
             return K2TreeNode {
                 max: value,
@@ -955,13 +957,13 @@ where
         }
 
         // Branch
-        let mut children: Vec<K2TreeNode<I>> = vec![];
+        let mut children: Vec<K2TreeNode> = vec![];
         let sidelen = sidelen / k;
         for i in 0..k {
             let row_ = row + i * sidelen;
             for j in 0..k {
                 let col_ = col + j * sidelen;
-                children.push(K2TreeNode::_from_array(data, k, sidelen, row_, col_));
+                children.push(K2TreeNode::_build(get, shape, k, sidelen, row_, col_));
             }
         }
 
@@ -1056,13 +1058,17 @@ where
         })
     }
 
-    fn size(&self) -> u64 {
+    pub fn size(&self) -> u64 {
         1 + 4 + 4 + 4 + self.nodemap.size() + self.equal.size() + self.max.size() + self.min.size()
     }
 
-    /// Build a snapshot from a pair of two-dimensional arrays.
+    /// Build a log from a pair of two-dimensional arrays.
     ///
-    pub fn from_arrays(snapshot: ArrayView2<I>, log: ArrayView2<I>, k: i32) -> Self {
+    pub fn build<GS, GT>(get_s: GS, get_t: GT, shape: [usize; 2], k: i32) -> Self 
+    where
+        GS: Fn(usize, usize) -> i64,
+        GT: Fn(usize, usize) -> i64,
+    {
         let mut nodemap = BitMapBuilder::new();
         let mut equal = BitMapBuilder::new();
         let mut max: Vec<i64> = vec![];
@@ -1070,19 +1076,16 @@ where
 
         // Compute the smallest square with sides whose length is a power of K that will contain
         // the passed in data.
-        let shape = snapshot.shape();
         let sidelen = *shape.iter().max().unwrap() as f64;
         let sidelen = k.pow(sidelen.log(k as f64).ceil() as u32) as usize;
 
-        let root = K2PTreeNode::from_arrays(snapshot, log, k, sidelen);
+        let root = K2PTreeNode::build(get_s, get_t, shape, k, sidelen);
         let mut to_traverse = VecDeque::new();
         to_traverse.push_back(&root);
 
         // Breadth first traversal
         while let Some(node) = to_traverse.pop_front() {
-            let max_t = node.max_t.to_i64().unwrap();
-            let max_s = node.max_s.to_i64().unwrap();
-            max.push(max_t - max_s);
+            max.push(node.max_t - node.max_s);
 
             if !node.children.is_empty() {
                 // Non-leaf node
@@ -1097,9 +1100,7 @@ where
                 } else {
                     // Regular old internal node, keep going
                     nodemap.push(true);
-                    let min_t = node.min_t.to_i64().unwrap();
-                    let min_s = node.min_s.to_i64().unwrap();
-                    min.push(min_t - min_s);
+                    min.push(node.min_t - node.min_s);
                     for child in &node.children {
                         to_traverse.push_back(child);
                     }
@@ -1985,52 +1986,55 @@ fn zigzag_decode(zz: u64) -> i64 {
 }
 
 // Temporary tree structure for building T - K^2 raster
-struct K2PTreeNode<I>
-where
-    I: PrimInt + Debug,
+struct K2PTreeNode
 {
-    max_t: I,
-    min_t: I,
-    max_s: I,
-    min_s: I,
+    max_t: i64,
+    min_t: i64,
+    max_s: i64,
+    min_s: i64,
     diff: i64,
     equal: bool,
-    children: Vec<K2PTreeNode<I>>,
+    children: Vec<K2PTreeNode>,
 }
 
-impl<I> K2PTreeNode<I>
-where
-    I: PrimInt + Debug,
+impl K2PTreeNode
 {
-    fn from_arrays(snapshot: ArrayView2<I>, log: ArrayView2<I>, k: i32, sidelen: usize) -> Self {
-        Self::_from_arrays(snapshot, log, k as usize, sidelen, 0, 0)
+    fn build<GS, GT>(get_s: GS, get_t: GT, shape: [usize; 2], k: i32, sidelen: usize) -> Self 
+    where
+        GS: Fn(usize, usize) -> i64,
+        GT: Fn(usize, usize) -> i64,
+    {
+        Self::_build(&get_s, &get_t, shape, k as usize, sidelen, 0, 0)
     }
 
-    fn _from_arrays(
-        snapshot: ArrayView2<I>,
-        log: ArrayView2<I>,
+    fn _build<GS, GT>(
+        get_s: &GS,
+        get_t: &GT,
+        shape: [usize; 2],
         k: usize,
         sidelen: usize,
         row: usize,
         col: usize,
-    ) -> Self {
+    ) -> Self 
+    where
+        GS: Fn(usize, usize) -> i64,
+        GT: Fn(usize, usize) -> i64,
+    {
         // Leaf node
         if sidelen == 1 {
             // Fill cells that lay outside of original raster with 0s
-            let shape = snapshot.shape();
-            let rows = shape[0];
-            let cols = shape[1];
+            let [rows, cols] = shape;
             let value_s = if row < rows && col < cols {
-                snapshot[[row, col]]
+                get_s(row, col)
             } else {
-                I::zero()
+                0
             };
             let value_t = if row < rows && col < cols {
-                log[[row, col]]
+                get_t(row, col)
             } else {
-                I::zero()
+                0
             };
-            let diff = value_t.to_i64().unwrap() - value_s.to_i64().unwrap();
+            let diff = value_t - value_s;
             return K2PTreeNode {
                 max_t: value_t,
                 min_t: value_t,
@@ -2043,14 +2047,14 @@ where
         }
 
         // Branch
-        let mut children: Vec<K2PTreeNode<I>> = vec![];
+        let mut children: Vec<K2PTreeNode> = vec![];
         let sidelen = sidelen / k;
         for i in 0..k {
             let row_ = row + i * sidelen;
             for j in 0..k {
                 let col_ = col + j * sidelen;
-                children.push(K2PTreeNode::_from_arrays(
-                    snapshot, log, k, sidelen, row_, col_,
+                children.push(K2PTreeNode::_build(
+                    get_s, get_t, shape, k, sidelen, row_, col_,
                 ));
             }
         }
