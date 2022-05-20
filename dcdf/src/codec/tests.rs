@@ -44,8 +44,7 @@ where
     I: PrimInt + Debug,
 {
     /// So I don't have to create a closure in every test
-    fn from_array(data: ArrayView2<I>, k: i32) -> Self 
-    {
+    fn from_array(data: ArrayView2<I>, k: i32) -> Self {
         let get = |row, col| data[[row, col]].to_i64().unwrap();
         let shape = data.shape();
         let rows = shape[0];
@@ -257,7 +256,7 @@ mod fchunk {
         let mut file = tempfile()?;
         chunk.serialize(&mut file)?;
         file.sync_all()?;
-        
+
         let metadata = file.metadata()?;
         assert_eq!(metadata.len(), chunk.size());
 

@@ -587,7 +587,7 @@ where
 
     /// Build a snapshot from a two-dimensional array.
     ///
-    pub fn build<G>(get: G, shape: [usize; 2], k: i32) -> Self 
+    pub fn build<G>(get: G, shape: [usize; 2], k: i32) -> Self
     where
         G: Fn(usize, usize) -> i64,
     {
@@ -920,25 +920,30 @@ where
 }
 
 /// Temporary tree structure for building K^2 raster
-struct K2TreeNode
-{
+struct K2TreeNode {
     max: i64,
     min: i64,
     children: Vec<K2TreeNode>,
 }
 
-impl K2TreeNode
-{
-    fn build<G>(get: G, shape: [usize; 2], k: i32, sidelen: usize) -> Self 
+impl K2TreeNode {
+    fn build<G>(get: G, shape: [usize; 2], k: i32, sidelen: usize) -> Self
     where
-        G: Fn(usize, usize) -> i64
+        G: Fn(usize, usize) -> i64,
     {
         Self::_build(&get, shape, k as usize, sidelen, 0, 0)
     }
 
-    fn _build<G>(get: &G, shape: [usize; 2], k: usize, sidelen: usize, row: usize, col: usize) -> Self 
+    fn _build<G>(
+        get: &G,
+        shape: [usize; 2],
+        k: usize,
+        sidelen: usize,
+        row: usize,
+        col: usize,
+    ) -> Self
     where
-        G: Fn(usize, usize) -> i64
+        G: Fn(usize, usize) -> i64,
     {
         // Leaf node
         if sidelen == 1 {
@@ -1064,7 +1069,7 @@ where
 
     /// Build a log from a pair of two-dimensional arrays.
     ///
-    pub fn build<GS, GT>(get_s: GS, get_t: GT, shape: [usize; 2], k: i32) -> Self 
+    pub fn build<GS, GT>(get_s: GS, get_t: GT, shape: [usize; 2], k: i32) -> Self
     where
         GS: Fn(usize, usize) -> i64,
         GT: Fn(usize, usize) -> i64,
@@ -1915,7 +1920,11 @@ impl Dacs {
     }
 
     fn size(&self) -> u64 {
-        1 + self.levels.iter().map(|(bitmap, bytes)| bitmap.size() + bytes.len() as u64).sum::<u64>()
+        1 + self
+            .levels
+            .iter()
+            .map(|(bitmap, bytes)| bitmap.size() + bytes.len() as u64)
+            .sum::<u64>()
     }
 
     fn get<I>(&self, index: usize) -> I
@@ -1986,8 +1995,7 @@ fn zigzag_decode(zz: u64) -> i64 {
 }
 
 // Temporary tree structure for building T - K^2 raster
-struct K2PTreeNode
-{
+struct K2PTreeNode {
     max_t: i64,
     min_t: i64,
     max_s: i64,
@@ -1997,9 +2005,8 @@ struct K2PTreeNode
     children: Vec<K2PTreeNode>,
 }
 
-impl K2PTreeNode
-{
-    fn build<GS, GT>(get_s: GS, get_t: GT, shape: [usize; 2], k: i32, sidelen: usize) -> Self 
+impl K2PTreeNode {
+    fn build<GS, GT>(get_s: GS, get_t: GT, shape: [usize; 2], k: i32, sidelen: usize) -> Self
     where
         GS: Fn(usize, usize) -> i64,
         GT: Fn(usize, usize) -> i64,
@@ -2015,7 +2022,7 @@ impl K2PTreeNode
         sidelen: usize,
         row: usize,
         col: usize,
-    ) -> Self 
+    ) -> Self
     where
         GS: Fn(usize, usize) -> i64,
         GT: Fn(usize, usize) -> i64,
