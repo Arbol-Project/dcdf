@@ -1,5 +1,5 @@
 use super::codec::{Block, Chunk, FChunk, Log, Snapshot};
-use super::fixed::to_fixed;
+use super::fixed::{to_fixed, to_fixed_round};
 
 use ndarray::ArrayView2;
 use num_traits::{Float, Num, PrimInt};
@@ -88,6 +88,57 @@ where
     }
 }
 
+enum Fraction {
+    Precise(usize),
+    Round(usize),
+}
+
+use Fraction::{Precise, Round};
+
+fn suggest_fraction<'a, F, T>(instants: T, max_value: F) -> Fraction
+where
+    F: 'a + Float + Debug,
+    T: Iterator<Item = ArrayView2<'a, F>>,
+{
+    // Basic gist is figure out how many bits we need for the whole number part, using the
+    // max_value passed in. From there shift each value in the dataset as far to the left as
+    // possible given the number of whole number bits needed, then look at the number of trailing
+    // zeros on each shifted value to determine how many actual fractional bits we need for that
+    // number, and return the maximum number.
+    const total_bits: usize = 63;
+    let whole_bits = 1 + max_value.to_f64().unwrap().log2().floor() as usize;
+    let max_fraction_bits = total_bits - whole_bits;
+    let mut fraction_bits = 0;
+    let mut precise = true;
+
+    for instant in instants {
+        for n in instant {
+            let n: f64 = n.to_f64().unwrap();
+            let shifted = n * (1_i64 << max_fraction_bits) as f64;
+
+            // If we've left shifted a number as far as it will go and we still have a fractional
+            // part, then this dataset will need to be rounded and there will be some loss of
+            // precision.
+            if shifted.fract() != 0.0 {
+                return Round(max_fraction_bits);
+            }
+
+            let shifted = shifted as i64;
+            if shifted == i64::MAX {
+                // Conversion from float to int saturates on overflow, so assume there was an
+                // overflow if result is MAX
+                panic!("Value {n} is greater than max_value {max_value:?}");
+            }
+
+            let these_bits = max_fraction_bits.saturating_sub(shifted.trailing_zeros() as usize);
+            if these_bits > fraction_bits {
+                fraction_bits = these_bits;
+            }
+        }
+    }
+    Precise(fraction_bits)
+}
+
 struct FBuild<F>
 where
     F: Float + Debug,
@@ -98,7 +149,7 @@ where
     compression: f32,
 }
 
-fn buildf<'a, F, T>(instants: T, k: i32, fractional_bits: usize) -> FBuild<F>
+fn buildf<'a, F, T>(instants: T, k: i32, fraction: Fraction) -> FBuild<F>
 where
     F: 'a + Float + Debug,
     T: Iterator<Item = ArrayView2<'a, F>>,
@@ -118,15 +169,25 @@ where
     for instant in instants {
         match cur_snapshot {
             None => {
-                let get = |row, col| to_fixed(instant[[row, col]], fractional_bits);
+                let get = |row, col| match fraction {
+                    Precise(bits) => to_fixed(instant[[row, col]], bits),
+                    Round(bits) => to_fixed_round(instant[[row, col]], bits),
+                };
                 cur_snapshot = Some((instant, Snapshot::build(get, [rows, cols], k)));
             }
             Some((mut snap_array, mut snapshot)) => {
-                let get_t = |row, col| to_fixed(instant[[row, col]], fractional_bits);
+                let get_t = |row, col| match fraction {
+                    Precise(bits) => to_fixed(instant[[row, col]], bits),
+                    Round(bits) => to_fixed_round(instant[[row, col]], bits),
+                };
                 let new_snapshot = Snapshot::build(get_t, [rows, cols], k);
 
-                let get_s = |row, col| to_fixed(snap_array[[row, col]], fractional_bits);
+                let get_s = |row, col| match fraction {
+                    Precise(bits) => to_fixed(snap_array[[row, col]], bits),
+                    Round(bits) => to_fixed_round(snap_array[[row, col]], bits),
+                };
                 let new_log = Log::build(get_s, get_t, [rows, cols], k);
+
                 if new_snapshot.size() <= new_log.size() {
                     count_snapshots += 1;
                     count_logs += logs.len();
@@ -148,6 +209,10 @@ where
         blocks.push(Block::new(snapshot, logs));
     }
 
+    let fractional_bits = match fraction {
+        Precise(bits) => bits,
+        Round(bits) => bits,
+    };
     let chunk = FChunk::new(Chunk::from(blocks), fractional_bits);
     let count_instants = count_snapshots + count_logs;
     let word_size = size_of::<F>();
@@ -227,12 +292,7 @@ enum DataChunk {
     F64(FChunk<f64>),
 }
 
-use DataChunk::F32;
-use DataChunk::F64;
-use DataChunk::I32;
-use DataChunk::I64;
-use DataChunk::U32;
-use DataChunk::U64;
+use DataChunk::{F32, F64, I32, I64, U32, U64};
 
 fn load(stream: &mut File) -> io::Result<DataChunk> {
     let magic_number = read_u16(stream)?;
@@ -502,10 +562,82 @@ mod tests {
     }
 
     #[test]
+    fn suggest_fraction_3bits() {
+        let data = array_float();
+        let views = data.iter().map(|a| a.view());
+        let fraction = suggest_fraction(views, 15.0);
+        match fraction {
+            Precise(bits) => {
+                assert_eq!(bits, 3);
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+    }
+
+    #[test]
+    fn suggest_fraction_4bits() {
+        let data = vec![arr2(&[[16.0, 1.0 / 16.0]])];
+        let views = data.iter().map(|a| a.view());
+        let fraction = suggest_fraction(views, 16.0);
+        match fraction {
+            Precise(bits) => {
+                assert_eq!(bits, 4);
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+    }
+
+    #[test]
+    fn suggest_fraction_all_the_bits() {
+        let data = vec![
+            // 1/10 is infinite repeating digits in binary, like 1/3 in decimal. We still don't end
+            // up rounding, though, because we can represent all the bits that are in the f64
+            // representation. This doesn't introduce any more rounding error than is already
+            // there.
+            arr2(&[[16.0, 0.1]]),
+        ];
+        let views = data.iter().map(|a| a.view());
+        let fraction = suggest_fraction(views, 16.0);
+        match fraction {
+            Precise(bits) => {
+                assert_eq!(bits, 55);
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+    }
+
+    #[test]
+    fn suggest_fraction_loss_of_precision() {
+        let data = vec![
+            // 1/10 is infinite repeating digits in binary, like 1/3 in decimal. Unlike the test
+            // just before this one, we do have a loss of precision as the 9 bits needed for the
+            // whole number part of 316 will push some bits off the right hand side of the fixed
+            // point representation for 0.1.
+            arr2(&[[316.0, 0.1]]),
+        ];
+        let views = data.iter().map(|a| a.view());
+        let fraction = suggest_fraction(views, 316.0);
+        match fraction {
+            Round(bits) => {
+                assert_eq!(bits, 54);
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+    }
+
+    #[test]
     fn buildf_f32() {
         let data = array_float();
         let views = data.iter().map(|a| a.view());
-        let built = buildf(views, 2, 3);
+        let built = buildf(views, 2, Precise(3));
         assert_eq!(
             built.data.iter_cell(0, 5, 0, 0).collect::<Vec<f32>>(),
             vec![9.5, 9.5, 9.5, 9.5, 9.5]
@@ -519,7 +651,7 @@ mod tests {
     fn save_load_f32() -> io::Result<()> {
         let data = array_float();
         let views = data.iter().map(|a| a.view());
-        let built = buildf(views, 2, 3);
+        let built = buildf(views, 2, Precise(3));
 
         let mut file = tempfile()?;
         built.save(&mut file);
@@ -546,7 +678,7 @@ mod tests {
         let data = array_float();
         let data: Vec<Array2<f64>> = data.into_iter().map(|a| a.map(|n| *n as f64)).collect();
         let views = data.iter().map(|a| a.view());
-        let built = buildf(views, 2, 3);
+        let built = buildf(views, 2, Precise(3));
 
         let mut file = tempfile()?;
         built.save(&mut file);
@@ -558,6 +690,33 @@ mod tests {
                 assert_eq!(
                     built.data.iter_cell(0, 5, 0, 0).collect::<Vec<f64>>(),
                     vec![9.5, 9.5, 9.5, 9.5, 9.5]
+                );
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn save_load_f64_round() -> io::Result<()> {
+        let data = array_float();
+        let data: Vec<Array2<f64>> = data.into_iter().map(|a| a.map(|n| *n as f64)).collect();
+        let views = data.iter().map(|a| a.view());
+        let built = buildf(views, 2, Round(2));
+
+        let mut file = tempfile()?;
+        built.save(&mut file);
+        file.sync_all()?;
+        file.rewind()?;
+
+        match load(&mut file)? {
+            F64(chunk) => {
+                assert_eq!(
+                    built.data.iter_cell(0, 5, 2, 4).collect::<Vec<f64>>(),
+                    vec![3.5, 5.0, 5.0, 3.5, 5.0]
                 );
             }
             _ => {
