@@ -1,3 +1,4 @@
+use ndarray::ArrayView2;
 use num_traits::Num;
 use std::collections::HashSet;
 use std::io;

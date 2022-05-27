@@ -23,7 +23,7 @@
 //! [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
 //! [2]: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.69.9548&rep=rep1&type=pdf
 
-use ndarray::{Array2, ArrayView2};
+use ndarray::Array2;
 use num_traits::{Float, PrimInt};
 use std::cmp::min;
 use std::collections::VecDeque;

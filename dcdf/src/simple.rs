@@ -1,115 +1,144 @@
 use super::codec::{Block, Chunk, FChunk, Log, Snapshot};
 use super::fixed::{to_fixed, to_fixed_round};
 
-use ndarray::ArrayView2;
-use num_traits::{Float, Num, PrimInt};
+use ndarray::Array2;
+use num_traits::{Float, PrimInt};
 use std::any::TypeId;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
-use std::marker::PhantomData;
-use std::mem::size_of;
+use std::mem::{replace, size_of};
 
 const MAGIC_NUMBER: u16 = 0xDCDF;
 const FORMAT_VERSION: u32 = 0;
 
-struct Build<I>
+pub struct Build<I>
 where
     I: PrimInt + Debug,
 {
-    data: Chunk<I>,
-    logs: usize,
-    snapshots: usize,
-    compression: f32,
+    pub data: Chunk<I>,
+    pub logs: usize,
+    pub snapshots: usize,
+    pub compression: f32,
 }
 
-fn build<'a, I, T>(instants: T, k: i32) -> Build<I>
+pub struct Builder<I>
 where
-    I: 'a + PrimInt + Debug,
-    T: Iterator<Item = ArrayView2<'a, I>>,
+    I: PrimInt + Debug,
 {
-    let mut count_snapshots = 0;
-    let mut count_logs = 0;
-    let mut cur_snapshot = None;
-    let mut blocks = vec![];
-    let mut logs = vec![];
+    count_snapshots: usize,
+    count_logs: usize,
+    snap_array: Array2<I>,
+    snapshot: Snapshot<I>,
+    blocks: Vec<Block<I>>,
+    logs: Vec<Log<I>>,
+    rows: usize,
+    cols: usize,
+    k: i32,
+}
 
-    let mut instants = instants.peekable();
-    let first = instants.peek().expect("No time instants to encode.");
-    let shape = first.shape();
-    let rows = shape[0];
-    let cols = shape[1];
+impl<I> Builder<I>
+where
+    I: PrimInt + Debug,
+{
+    pub fn new(first: Array2<I>, k: i32) -> Self {
+        let shape = first.shape();
+        let rows = shape[0];
+        let cols = shape[1];
 
-    for instant in instants {
-        match cur_snapshot {
-            None => {
-                let get = |row, col| instant[[row, col]].to_i64().unwrap();
-                cur_snapshot = Some((instant, Snapshot::build(get, [rows, cols], k)));
-            }
-            Some((mut snap_array, mut snapshot)) => {
-                let get_t = |row, col| instant[[row, col]].to_i64().unwrap();
-                let new_snapshot = Snapshot::build(get_t, [rows, cols], k);
+        let get = |row, col| first[[row, col]].to_i64().unwrap();
+        let snapshot = Snapshot::build(get, [rows, cols], k);
 
-                let get_s = |row, col| snap_array[[row, col]].to_i64().unwrap();
-                let new_log = Log::build(get_s, get_t, [rows, cols], k);
-                if new_snapshot.size() <= new_log.size() {
-                    count_snapshots += 1;
-                    count_logs += logs.len();
-                    blocks.push(Block::new(snapshot, logs));
-                    logs = vec![];
-                    snap_array = instant;
-                    snapshot = new_snapshot;
-                } else {
-                    logs.push(new_log);
-                }
-                cur_snapshot = Some((snap_array, snapshot));
-            }
+        Builder {
+            count_snapshots: 0,
+            count_logs: 0,
+            snap_array: first,
+            snapshot,
+            blocks: vec![],
+            logs: vec![],
+            rows,
+            cols,
+            k,
         }
     }
 
-    if let Some((_, snapshot)) = cur_snapshot {
-        count_snapshots += 1;
-        count_logs += logs.len();
-        blocks.push(Block::new(snapshot, logs));
+    pub fn push(&mut self, instant: Array2<I>) {
+        let get_t = |row, col| instant[[row, col]].to_i64().unwrap();
+        let new_snapshot = Snapshot::build(get_t, [self.rows, self.cols], self.k);
+
+        let get_s = |row, col| self.snap_array[[row, col]].to_i64().unwrap();
+        let new_log = Log::build(get_s, get_t, [self.rows, self.cols], self.k);
+
+        if new_snapshot.size() <= new_log.size() {
+            self.count_snapshots += 1;
+            self.count_logs += self.logs.len();
+
+            let snapshot = replace(&mut self.snapshot, new_snapshot);
+            let logs = replace(&mut self.logs, vec![]);
+            self.snap_array = instant;
+            self.blocks.push(Block::new(snapshot, logs));
+        } else {
+            self.logs.push(new_log);
+        }
     }
 
-    let chunk = Chunk::from(blocks);
-    let count_instants = count_snapshots + count_logs;
-    let word_size = size_of::<I>();
-    let uncompressed = count_instants * rows * cols * word_size;
-    let compression = chunk.size() as f32 / uncompressed as f32;
+    pub fn finish(mut self) -> Build<I> {
+        self.count_snapshots += 1;
+        self.count_logs += self.logs.len();
+        self.blocks.push(Block::new(self.snapshot, self.logs));
 
-    Build {
-        data: chunk,
-        logs: count_logs,
-        snapshots: count_snapshots,
-        compression: compression,
+        let chunk = Chunk::from(self.blocks);
+        let count_instants = self.count_snapshots + self.count_logs;
+        let word_size = size_of::<I>();
+
+        let compressed = chunk.size() + 2 /* magic number */ + 4 /* version */;
+        let uncompressed = count_instants * self.rows * self.cols * word_size;
+        let compression = compressed as f32 / uncompressed as f32;
+
+        Build {
+            data: chunk,
+            logs: self.count_logs,
+            snapshots: self.count_snapshots,
+            compression: compression,
+        }
     }
 }
 
-enum Fraction {
+pub fn build<I, T>(mut instants: T, k: i32) -> Build<I>
+where
+    I: PrimInt + Debug,
+    T: Iterator<Item = Array2<I>>,
+{
+    let first = instants.next().expect("No time instants to encode");
+    let mut builder = Builder::new(first, k);
+    for instant in instants {
+        builder.push(instant);
+    }
+    builder.finish()
+}
+
+pub enum Fraction {
     Precise(usize),
     Round(usize),
 }
 
-use Fraction::{Precise, Round};
+pub use Fraction::{Precise, Round};
 
-fn suggest_fraction<'a, F, T>(instants: T, max_value: F) -> Fraction
+fn suggest_fraction<F, T>(instants: T, max_value: F) -> Fraction
 where
-    F: 'a + Float + Debug,
-    T: Iterator<Item = ArrayView2<'a, F>>,
+    F: Float + Debug,
+    T: Iterator<Item = Array2<F>>,
 {
     // Basic gist is figure out how many bits we need for the whole number part, using the
     // max_value passed in. From there shift each value in the dataset as far to the left as
     // possible given the number of whole number bits needed, then look at the number of trailing
     // zeros on each shifted value to determine how many actual fractional bits we need for that
     // number, and return the maximum number.
-    const total_bits: usize = 63;
+    const TOTAL_BITS: usize = 63;
     let whole_bits = 1 + max_value.to_f64().unwrap().log2().floor() as usize;
-    let max_fraction_bits = total_bits - whole_bits;
+    let max_fraction_bits = TOTAL_BITS - whole_bits;
     let mut fraction_bits = 0;
-    let mut precise = true;
 
     for instant in instants {
         for n in instant {
@@ -139,7 +168,7 @@ where
     Precise(fraction_bits)
 }
 
-struct FBuild<F>
+pub struct FBuild<F>
 where
     F: Float + Debug,
 {
@@ -149,83 +178,113 @@ where
     compression: f32,
 }
 
-fn buildf<'a, F, T>(instants: T, k: i32, fraction: Fraction) -> FBuild<F>
+pub struct FBuilder<F>
 where
-    F: 'a + Float + Debug,
-    T: Iterator<Item = ArrayView2<'a, F>>,
+    F: Float + Debug,
 {
-    let mut count_snapshots = 0;
-    let mut count_logs = 0;
-    let mut cur_snapshot = None;
-    let mut blocks = vec![];
-    let mut logs = vec![];
+    count_snapshots: usize,
+    count_logs: usize,
+    snap_array: Array2<F>,
+    snapshot: Snapshot<i64>,
+    blocks: Vec<Block<i64>>,
+    logs: Vec<Log<i64>>,
+    rows: usize,
+    cols: usize,
+    k: i32,
+    fraction: Fraction,
+}
 
-    let mut instants = instants.peekable();
-    let first = instants.peek().expect("No time instants to encode.");
-    let shape = first.shape();
-    let rows = shape[0];
-    let cols = shape[1];
+impl<F> FBuilder<F>
+where
+    F: Float + Debug,
+{
+    fn new(first: Array2<F>, k: i32, fraction: Fraction) -> Self {
+        let shape = first.shape();
+        let rows = shape[0];
+        let cols = shape[1];
 
-    for instant in instants {
-        match cur_snapshot {
-            None => {
-                let get = |row, col| match fraction {
-                    Precise(bits) => to_fixed(instant[[row, col]], bits),
-                    Round(bits) => to_fixed_round(instant[[row, col]], bits),
-                };
-                cur_snapshot = Some((instant, Snapshot::build(get, [rows, cols], k)));
-            }
-            Some((mut snap_array, mut snapshot)) => {
-                let get_t = |row, col| match fraction {
-                    Precise(bits) => to_fixed(instant[[row, col]], bits),
-                    Round(bits) => to_fixed_round(instant[[row, col]], bits),
-                };
-                let new_snapshot = Snapshot::build(get_t, [rows, cols], k);
+        let get = |row, col| match fraction {
+            Precise(bits) => to_fixed(first[[row, col]], bits),
+            Round(bits) => to_fixed_round(first[[row, col]], bits),
+        };
+        let snapshot = Snapshot::build(get, [rows, cols], k);
 
-                let get_s = |row, col| match fraction {
-                    Precise(bits) => to_fixed(snap_array[[row, col]], bits),
-                    Round(bits) => to_fixed_round(snap_array[[row, col]], bits),
-                };
-                let new_log = Log::build(get_s, get_t, [rows, cols], k);
-
-                if new_snapshot.size() <= new_log.size() {
-                    count_snapshots += 1;
-                    count_logs += logs.len();
-                    blocks.push(Block::new(snapshot, logs));
-                    logs = vec![];
-                    snap_array = instant;
-                    snapshot = new_snapshot;
-                } else {
-                    logs.push(new_log);
-                }
-                cur_snapshot = Some((snap_array, snapshot));
-            }
+        FBuilder {
+            count_snapshots: 0,
+            count_logs: 0,
+            snap_array: first,
+            snapshot,
+            blocks: vec![],
+            logs: vec![],
+            rows,
+            cols,
+            k,
+            fraction,
         }
     }
 
-    if let Some((_, snapshot)) = cur_snapshot {
-        count_snapshots += 1;
-        count_logs += logs.len();
-        blocks.push(Block::new(snapshot, logs));
+    fn push(&mut self, instant: Array2<F>) {
+        let get_t = |row, col| match self.fraction {
+            Precise(bits) => to_fixed(instant[[row, col]], bits),
+            Round(bits) => to_fixed_round(instant[[row, col]], bits),
+        };
+        let new_snapshot = Snapshot::build(get_t, [self.rows, self.cols], self.k);
+
+        let get_s = |row, col| match self.fraction {
+            Precise(bits) => to_fixed(self.snap_array[[row, col]], bits),
+            Round(bits) => to_fixed_round(self.snap_array[[row, col]], bits),
+        };
+        let new_log = Log::build(get_s, get_t, [self.rows, self.cols], self.k);
+
+        if new_snapshot.size() <= new_log.size() {
+            self.count_snapshots += 1;
+            self.count_logs += self.logs.len();
+
+            let snapshot = replace(&mut self.snapshot, new_snapshot);
+            let logs = replace(&mut self.logs, vec![]);
+            self.snap_array = instant;
+            self.blocks.push(Block::new(snapshot, logs));
+        } else {
+            self.logs.push(new_log);
+        }
     }
 
-    let fractional_bits = match fraction {
-        Precise(bits) => bits,
-        Round(bits) => bits,
-    };
-    let chunk = FChunk::new(Chunk::from(blocks), fractional_bits);
-    let count_instants = count_snapshots + count_logs;
-    let word_size = size_of::<F>();
-    let uncompressed = count_instants * rows * cols * word_size;
-    let compressed = chunk.size() + 2 /* magic number */ + 4 /* version */;
-    let compression = chunk.size() as f32 / uncompressed as f32;
+    fn finish(mut self) -> FBuild<F> {
+        self.count_snapshots += 1;
+        self.count_logs += self.logs.len();
+        self.blocks.push(Block::new(self.snapshot, self.logs));
 
-    FBuild {
-        data: chunk,
-        logs: count_logs,
-        snapshots: count_snapshots,
-        compression: compression,
+        let fractional_bits = match self.fraction {
+            Precise(bits) => bits,
+            Round(bits) => bits,
+        };
+        let chunk = FChunk::new(Chunk::from(self.blocks), fractional_bits);
+        let count_instants = self.count_snapshots + self.count_logs;
+        let word_size = size_of::<F>();
+        let compressed = chunk.size() + 2 /* magic number */ + 4 /* version */;
+        let uncompressed = count_instants * self.rows * self.cols * word_size;
+        let compression = compressed as f32 / uncompressed as f32;
+
+        FBuild {
+            data: chunk,
+            logs: self.count_logs,
+            snapshots: self.count_snapshots,
+            compression: compression,
+        }
     }
+}
+
+pub fn buildf<F, T>(mut instants: T, k: i32, fraction: Fraction) -> FBuild<F>
+where
+    F: Float + Debug,
+    T: Iterator<Item = Array2<F>>,
+{
+    let first = instants.next().expect("No time instants to encode");
+    let mut builder = FBuilder::new(first, k, fraction);
+    for instant in instants {
+        builder.push(instant);
+    }
+    builder.finish()
 }
 
 const TYPE_I32: i32 = -4;
@@ -319,21 +378,21 @@ fn load(stream: &mut File) -> io::Result<DataChunk> {
 
 fn write_i32(stream: &mut File, word: i32) -> io::Result<()> {
     let buffer = word.to_be_bytes();
-    stream.write_all(&buffer);
+    stream.write_all(&buffer)?;
 
     Ok(())
 }
 
 fn write_u16(stream: &mut File, word: u16) -> io::Result<()> {
     let buffer = word.to_be_bytes();
-    stream.write_all(&buffer);
+    stream.write_all(&buffer)?;
 
     Ok(())
 }
 
 fn write_u32(stream: &mut File, word: u32) -> io::Result<()> {
     let buffer = word.to_be_bytes();
-    stream.write_all(&buffer);
+    stream.write_all(&buffer)?;
 
     Ok(())
 }
@@ -362,7 +421,7 @@ fn read_u32(stream: &mut File) -> io::Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::{arr2, s, Array2};
+    use ndarray::{arr2, Array2};
     use std::io::Seek;
     use tempfile::tempfile;
 
@@ -443,22 +502,20 @@ mod tests {
     #[test]
     fn build_i32() {
         let data = array();
-        let views = data.iter().map(|a| a.view());
-        let built = build(views, 2);
+        let built = build(data.into_iter(), 2);
         assert_eq!(
             built.data.iter_cell(0, 5, 0, 0).collect::<Vec<i32>>(),
             vec![9, 9, 9, 9, 9]
         );
         assert_eq!(built.snapshots, 1);
         assert_eq!(built.logs, 99);
-        assert_eq!(built.compression, 0.34464845);
+        assert_eq!(built.compression, 0.34488282);
     }
 
     #[test]
     fn save_load_i32() -> io::Result<()> {
         let data = array();
-        let views = data.iter().map(|a| a.view());
-        let built = build(views, 2);
+        let built = build(data.into_iter(), 2);
 
         let mut file = tempfile()?;
         built.save(&mut file);
@@ -484,8 +541,7 @@ mod tests {
     fn save_load_u32() -> io::Result<()> {
         let data = array();
         let data: Vec<Array2<u32>> = data.into_iter().map(|a| a.map(|n| *n as u32)).collect();
-        let views = data.iter().map(|a| a.view());
-        let built = build(views, 2);
+        let built = build(data.into_iter(), 2);
 
         let mut file = tempfile()?;
         built.save(&mut file);
@@ -511,8 +567,7 @@ mod tests {
     fn save_load_i64() -> io::Result<()> {
         let data = array();
         let data: Vec<Array2<i64>> = data.into_iter().map(|a| a.map(|n| *n as i64)).collect();
-        let views = data.iter().map(|a| a.view());
-        let built = build(views, 2);
+        let built = build(data.into_iter(), 2);
 
         let mut file = tempfile()?;
         built.save(&mut file);
@@ -538,8 +593,7 @@ mod tests {
     fn save_load_u64() -> io::Result<()> {
         let data = array();
         let data: Vec<Array2<u64>> = data.into_iter().map(|a| a.map(|n| *n as u64)).collect();
-        let views = data.iter().map(|a| a.view());
-        let built = build(views, 2);
+        let built = build(data.into_iter(), 2);
 
         let mut file = tempfile()?;
         built.save(&mut file);
@@ -564,8 +618,7 @@ mod tests {
     #[test]
     fn suggest_fraction_3bits() {
         let data = array_float();
-        let views = data.iter().map(|a| a.view());
-        let fraction = suggest_fraction(views, 15.0);
+        let fraction = suggest_fraction(data.into_iter(), 15.0);
         match fraction {
             Precise(bits) => {
                 assert_eq!(bits, 3);
@@ -579,8 +632,7 @@ mod tests {
     #[test]
     fn suggest_fraction_4bits() {
         let data = vec![arr2(&[[16.0, 1.0 / 16.0]])];
-        let views = data.iter().map(|a| a.view());
-        let fraction = suggest_fraction(views, 16.0);
+        let fraction = suggest_fraction(data.into_iter(), 16.0);
         match fraction {
             Precise(bits) => {
                 assert_eq!(bits, 4);
@@ -600,8 +652,7 @@ mod tests {
             // there.
             arr2(&[[16.0, 0.1]]),
         ];
-        let views = data.iter().map(|a| a.view());
-        let fraction = suggest_fraction(views, 16.0);
+        let fraction = suggest_fraction(data.into_iter(), 16.0);
         match fraction {
             Precise(bits) => {
                 assert_eq!(bits, 55);
@@ -621,8 +672,7 @@ mod tests {
             // point representation for 0.1.
             arr2(&[[316.0, 0.1]]),
         ];
-        let views = data.iter().map(|a| a.view());
-        let fraction = suggest_fraction(views, 316.0);
+        let fraction = suggest_fraction(data.into_iter(), 316.0);
         match fraction {
             Round(bits) => {
                 assert_eq!(bits, 54);
@@ -636,22 +686,20 @@ mod tests {
     #[test]
     fn buildf_f32() {
         let data = array_float();
-        let views = data.iter().map(|a| a.view());
-        let built = buildf(views, 2, Precise(3));
+        let built = buildf(data.into_iter(), 2, Precise(3));
         assert_eq!(
             built.data.iter_cell(0, 5, 0, 0).collect::<Vec<f32>>(),
             vec![9.5, 9.5, 9.5, 9.5, 9.5]
         );
         assert_eq!(built.snapshots, 1);
         assert_eq!(built.logs, 99);
-        assert_eq!(built.compression, 0.3511328);
+        assert_eq!(built.compression, 0.35136718);
     }
 
     #[test]
     fn save_load_f32() -> io::Result<()> {
         let data = array_float();
-        let views = data.iter().map(|a| a.view());
-        let built = buildf(views, 2, Precise(3));
+        let built = buildf(data.into_iter(), 2, Precise(3));
 
         let mut file = tempfile()?;
         built.save(&mut file);
@@ -677,8 +725,7 @@ mod tests {
     fn save_load_f64() -> io::Result<()> {
         let data = array_float();
         let data: Vec<Array2<f64>> = data.into_iter().map(|a| a.map(|n| *n as f64)).collect();
-        let views = data.iter().map(|a| a.view());
-        let built = buildf(views, 2, Precise(3));
+        let built = buildf(data.into_iter(), 2, Precise(3));
 
         let mut file = tempfile()?;
         built.save(&mut file);
@@ -704,8 +751,7 @@ mod tests {
     fn save_load_f64_round() -> io::Result<()> {
         let data = array_float();
         let data: Vec<Array2<f64>> = data.into_iter().map(|a| a.map(|n| *n as f64)).collect();
-        let views = data.iter().map(|a| a.view());
-        let built = buildf(views, 2, Round(2));
+        let built = buildf(data.into_iter(), 2, Round(2));
 
         let mut file = tempfile()?;
         built.save(&mut file);
