@@ -172,10 +172,10 @@ pub struct FBuild<F>
 where
     F: Float + Debug,
 {
-    data: FChunk<F>,
-    logs: usize,
-    snapshots: usize,
-    compression: f32,
+    pub data: FChunk<F>,
+    pub logs: usize,
+    pub snapshots: usize,
+    pub compression: f32,
 }
 
 pub struct FBuilder<F>
@@ -198,7 +198,7 @@ impl<F> FBuilder<F>
 where
     F: Float + Debug,
 {
-    fn new(first: Array2<F>, k: i32, fraction: Fraction) -> Self {
+    pub fn new(first: Array2<F>, k: i32, fraction: Fraction) -> Self {
         let shape = first.shape();
         let rows = shape[0];
         let cols = shape[1];
@@ -223,7 +223,7 @@ where
         }
     }
 
-    fn push(&mut self, instant: Array2<F>) {
+    pub fn push(&mut self, instant: Array2<F>) {
         let get_t = |row, col| match self.fraction {
             Precise(bits) => to_fixed(instant[[row, col]], bits),
             Round(bits) => to_fixed_round(instant[[row, col]], bits),
@@ -249,7 +249,7 @@ where
         }
     }
 
-    fn finish(mut self) -> FBuild<F> {
+    pub fn finish(mut self) -> FBuild<F> {
         self.count_snapshots += 1;
         self.count_logs += self.logs.len();
         self.blocks.push(Block::new(self.snapshot, self.logs));

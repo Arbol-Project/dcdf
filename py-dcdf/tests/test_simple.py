@@ -86,14 +86,14 @@ def get_data(dtype):
 
 
 def get_chunk(tmpdir, data):
-    built = dcdf.build(data)
+    built = dcdf.build(data, fraction=3)
     path = str(tmpdir / "tmpdata.dcdf")
     built.save(path)
 
     return dcdf.load(path)
 
 
-dtypes = (numpy.int32,)
+dtypes = (numpy.int32, numpy.float32,)
 
 
 @pytest.mark.parametrize("dtype", dtypes)
