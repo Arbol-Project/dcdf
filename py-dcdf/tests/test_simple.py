@@ -93,7 +93,10 @@ def get_chunk(tmpdir, data):
     return dcdf.load(path)
 
 
-dtypes = (numpy.int32, numpy.float32,)
+dtypes = (
+    numpy.int32,
+    numpy.float32,
+)
 
 
 @pytest.mark.parametrize("dtype", dtypes)

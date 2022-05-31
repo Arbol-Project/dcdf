@@ -1,8 +1,8 @@
 use ndarray::Array;
 use numpy::{IntoPyArray, PyArray1, PyArray3, PyReadonlyArray2};
 use pyo3::prelude::*;
-use std::mem;
 use std::fs::File;
+use std::mem;
 use std::path::Path;
 
 use dcdf;
@@ -75,7 +75,6 @@ impl PyBuildI32 {
         Ok(())
     }
 }
-
 
 #[pyclass]
 struct PyChunkI32 {
@@ -171,7 +170,11 @@ struct PyBuilderF32 {
 impl PyBuilderF32 {
     #[new]
     fn new(first: PyReadonlyArray2<f32>, k: i32, fraction: usize, round: bool) -> Self {
-        let fraction = if round { dcdf::Round(fraction) } else { dcdf::Precise(fraction) };
+        let fraction = if round {
+            dcdf::Round(fraction)
+        } else {
+            dcdf::Precise(fraction)
+        };
         let first = first.to_owned_array();
         Self {
             inner: Some(dcdf::FBuilder::new(first, k, fraction)),
@@ -229,7 +232,6 @@ impl PyBuildF32 {
         Ok(())
     }
 }
-
 
 #[pyclass]
 struct PyChunkF32 {
@@ -322,9 +324,9 @@ fn load(py: Python, path: &str) -> PyResult<PyObject> {
     let chunk = match inner {
         dcdf::I32(chunk) => Py::new(py, PyChunkI32::new(chunk))?.to_object(py),
         dcdf::F32(chunk) => Py::new(py, PyChunkF32::new(chunk))?.to_object(py),
-        _ => panic!("Unsupported data type.")
+        _ => panic!("Unsupported data type."),
     };
-    
+
     Ok(chunk)
 }
 
