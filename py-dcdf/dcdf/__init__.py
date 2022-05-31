@@ -1,6 +1,7 @@
 from dcdf import _dcdf
+from dcdf._dcdf import load
 
-BUILDERS = {
+_BUILDERS = {
     "int32": _dcdf.PyBuilderI32,
 }
 
@@ -8,7 +9,7 @@ BUILDERS = {
 def build(instants, k=2):
     instants = iter(instants)
     first = next(instants)
-    Builder = BUILDERS.get(first.dtype.name)
+    Builder = _BUILDERS.get(first.dtype.name)
     if Builder is None:
         raise ValueError(f"Unsupported dtype: {first.dtype}")
 

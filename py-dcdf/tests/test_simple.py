@@ -85,14 +85,22 @@ def get_data(dtype):
     return data
 
 
+def get_chunk(tmpdir, data):
+    built = dcdf.build(data)
+    path = str(tmpdir / "tmpdata.dcdf")
+    built.save(path)
+
+    return dcdf.load(path)
+
+
 dtypes = (numpy.int32,)
 
 
 @pytest.mark.parametrize("dtype", dtypes)
-def test_cell(dtype):
+def test_cell(tmpdir, dtype):
     data = get_data(dtype)
-    built = dcdf.build(data)
-    chunk = built.data
+    chunk = get_chunk(tmpdir, data)
+
     for row in range(8):
         for col in range(8):
             for i, n in enumerate(chunk.cell(0, 100, row, col)):
@@ -108,10 +116,9 @@ def windows():
 
 
 @pytest.mark.parametrize("dtype", dtypes)
-def test_window(dtype):
+def test_window(tmpdir, dtype):
     data = get_data(dtype)
-    built = dcdf.build(data)
-    chunk = built.data
+    chunk = get_chunk(tmpdir, data)
     for top, bottom, left, right in windows():
         for i, window in enumerate(chunk.window(0, 100, top, bottom, left, right)):
             assert numpy.array_equal(data[i][top:bottom, left:right], window)
@@ -139,10 +146,9 @@ def search(data, top, bottom, left, right, lower, upper):
 
 
 @pytest.mark.parametrize("dtype", dtypes)
-def test_search(dtype):
+def test_search(tmpdir, dtype):
     data = get_data(dtype)
-    built = dcdf.build(data)
-    chunk = built.data
+    chunk = get_chunk(tmpdir, data)
     for top, bottom, left, right, lower, upper in searches():
         expecteds = search(data, top, bottom, left, right, lower, upper)
         results = map(set, chunk.search(0, 100, top, bottom, left, right, lower, upper))

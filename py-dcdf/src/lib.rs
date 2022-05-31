@@ -2,6 +2,8 @@ use ndarray::Array;
 use numpy::{IntoPyArray, PyArray1, PyArray3, PyReadonlyArray2};
 use pyo3::prelude::*;
 use std::mem;
+use std::fs::File;
+use std::path::Path;
 
 use dcdf;
 
@@ -27,10 +29,10 @@ impl PyBuilderI32 {
         }
     }
 
-    fn finish(&mut self, py: Python) -> PyResult<PyBuildI32> {
+    fn finish(&mut self) -> PyResult<PyBuildI32> {
         let inner = mem::replace(&mut self.inner, None);
         match inner {
-            Some(build) => PyBuildI32::new(py, build.finish()),
+            Some(build) => PyBuildI32::new(build.finish()),
             None => panic!("finish called twice"),
         }
     }
@@ -39,9 +41,6 @@ impl PyBuilderI32 {
 #[pyclass]
 struct PyBuildI32 {
     #[pyo3(get)]
-    pub data: Py<PyChunkI32>,
-
-    #[pyo3(get)]
     pub logs: usize,
 
     #[pyo3(get)]
@@ -49,17 +48,43 @@ struct PyBuildI32 {
 
     #[pyo3(get)]
     pub compression: f32,
+
+    inner: dcdf::Build<i32>,
 }
 
 impl PyBuildI32 {
-    fn new(py: Python, build: dcdf::Build<i32>) -> PyResult<Self> {
+    fn new(build: dcdf::Build<i32>) -> PyResult<Self> {
         Ok(Self {
-            data: Py::new(py, PyChunkI32::new(build.data))?,
             logs: build.logs,
             snapshots: build.snapshots,
             compression: build.compression,
+            inner: build,
         })
     }
+}
+
+#[pymethods]
+impl PyBuildI32 {
+    fn save(&self, path: &str) -> PyResult<()> {
+        let path = Path::new(path);
+        let mut file = File::create(&path)?;
+        self.inner.save(&mut file)?;
+
+        Ok(())
+    }
+}
+
+#[pyfunction]
+fn load(py: Python, path: &str) -> PyResult<PyObject> {
+    let path = Path::new(path);
+    let mut file = File::open(&path)?;
+    let inner = dcdf::load(&mut file)?;
+    let chunk = match inner {
+        dcdf::I32(chunk) => Py::new(py, PyChunkI32::new(chunk))?.to_object(py),
+        _ => panic!("Unsupported data type.")
+    };
+    
+    Ok(chunk)
 }
 
 #[pyclass]
@@ -148,6 +173,7 @@ impl PyChunkI32 {
 /// A Python module implemented in Rust.
 #[pymodule]
 fn _dcdf(_py: Python, m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(load, m)?)?;
     m.add_class::<PyBuilderI32>()?;
     m.add_class::<PyBuildI32>()?;
     m.add_class::<PyChunkI32>()?;

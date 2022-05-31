@@ -298,7 +298,7 @@ impl<I: 'static> Build<I>
 where
     I: PrimInt + Debug,
 {
-    fn save(&self, stream: &mut File) -> io::Result<()> {
+    pub fn save(&self, stream: &mut File) -> io::Result<()> {
         write_u16(stream, MAGIC_NUMBER)?;
         write_u32(stream, FORMAT_VERSION)?;
         write_i32(stream, self.type_code())?;
@@ -331,7 +331,7 @@ impl<F> FBuild<F>
 where
     F: Float + Debug,
 {
-    fn save(&self, stream: &mut File) -> io::Result<()> {
+    pub fn save(&self, stream: &mut File) -> io::Result<()> {
         let type_code = size_of::<F>() as i32 * 8;
         write_u16(stream, MAGIC_NUMBER)?;
         write_u32(stream, FORMAT_VERSION)?;
@@ -342,7 +342,7 @@ where
     }
 }
 
-enum DataChunk {
+pub enum DataChunk {
     I32(Chunk<i32>),
     U32(Chunk<u32>),
     I64(Chunk<i64>),
@@ -351,9 +351,9 @@ enum DataChunk {
     F64(FChunk<f64>),
 }
 
-use DataChunk::{F32, F64, I32, I64, U32, U64};
+pub use DataChunk::{F32, F64, I32, I64, U32, U64};
 
-fn load(stream: &mut File) -> io::Result<DataChunk> {
+pub fn load(stream: &mut File) -> io::Result<DataChunk> {
     let magic_number = read_u16(stream)?;
     if magic_number != MAGIC_NUMBER {
         panic!("File is not a DCDF file.");
@@ -518,14 +518,14 @@ mod tests {
         let built = build(data.into_iter(), 2);
 
         let mut file = tempfile()?;
-        built.save(&mut file);
+        built.save(&mut file)?;
         file.sync_all()?;
         file.rewind()?;
 
         match load(&mut file)? {
             I32(chunk) => {
                 assert_eq!(
-                    built.data.iter_cell(0, 5, 0, 0).collect::<Vec<i32>>(),
+                    chunk.iter_cell(0, 5, 0, 0).collect::<Vec<i32>>(),
                     vec![9, 9, 9, 9, 9]
                 );
             }
@@ -544,14 +544,14 @@ mod tests {
         let built = build(data.into_iter(), 2);
 
         let mut file = tempfile()?;
-        built.save(&mut file);
+        built.save(&mut file)?;
         file.sync_all()?;
         file.rewind()?;
 
         match load(&mut file)? {
             U32(chunk) => {
                 assert_eq!(
-                    built.data.iter_cell(0, 5, 0, 0).collect::<Vec<u32>>(),
+                    chunk.iter_cell(0, 5, 0, 0).collect::<Vec<u32>>(),
                     vec![9, 9, 9, 9, 9]
                 );
             }
@@ -570,14 +570,14 @@ mod tests {
         let built = build(data.into_iter(), 2);
 
         let mut file = tempfile()?;
-        built.save(&mut file);
+        built.save(&mut file)?;
         file.sync_all()?;
         file.rewind()?;
 
         match load(&mut file)? {
             I64(chunk) => {
                 assert_eq!(
-                    built.data.iter_cell(0, 5, 0, 0).collect::<Vec<i64>>(),
+                    chunk.iter_cell(0, 5, 0, 0).collect::<Vec<i64>>(),
                     vec![9, 9, 9, 9, 9]
                 );
             }
@@ -596,14 +596,14 @@ mod tests {
         let built = build(data.into_iter(), 2);
 
         let mut file = tempfile()?;
-        built.save(&mut file);
+        built.save(&mut file)?;
         file.sync_all()?;
         file.rewind()?;
 
         match load(&mut file)? {
             U64(chunk) => {
                 assert_eq!(
-                    built.data.iter_cell(0, 5, 0, 0).collect::<Vec<u64>>(),
+                    chunk.iter_cell(0, 5, 0, 0).collect::<Vec<u64>>(),
                     vec![9, 9, 9, 9, 9]
                 );
             }
@@ -702,14 +702,14 @@ mod tests {
         let built = buildf(data.into_iter(), 2, Precise(3));
 
         let mut file = tempfile()?;
-        built.save(&mut file);
+        built.save(&mut file)?;
         file.sync_all()?;
         file.rewind()?;
 
         match load(&mut file)? {
             F32(chunk) => {
                 assert_eq!(
-                    built.data.iter_cell(0, 5, 0, 0).collect::<Vec<f32>>(),
+                    chunk.iter_cell(0, 5, 0, 0).collect::<Vec<f32>>(),
                     vec![9.5, 9.5, 9.5, 9.5, 9.5]
                 );
             }
@@ -728,14 +728,14 @@ mod tests {
         let built = buildf(data.into_iter(), 2, Precise(3));
 
         let mut file = tempfile()?;
-        built.save(&mut file);
+        built.save(&mut file)?;
         file.sync_all()?;
         file.rewind()?;
 
         match load(&mut file)? {
             F64(chunk) => {
                 assert_eq!(
-                    built.data.iter_cell(0, 5, 0, 0).collect::<Vec<f64>>(),
+                    chunk.iter_cell(0, 5, 0, 0).collect::<Vec<f64>>(),
                     vec![9.5, 9.5, 9.5, 9.5, 9.5]
                 );
             }
@@ -754,14 +754,14 @@ mod tests {
         let built = buildf(data.into_iter(), 2, Round(2));
 
         let mut file = tempfile()?;
-        built.save(&mut file);
+        built.save(&mut file)?;
         file.sync_all()?;
         file.rewind()?;
 
         match load(&mut file)? {
             F64(chunk) => {
                 assert_eq!(
-                    built.data.iter_cell(0, 5, 2, 4).collect::<Vec<f64>>(),
+                    chunk.iter_cell(0, 5, 2, 4).collect::<Vec<f64>>(),
                     vec![3.5, 5.0, 5.0, 3.5, 5.0]
                 );
             }
