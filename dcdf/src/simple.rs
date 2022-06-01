@@ -125,47 +125,103 @@ pub enum Fraction {
 
 pub use Fraction::{Precise, Round};
 
-fn suggest_fraction<F, T>(instants: T, max_value: F) -> Fraction
+pub enum Continue {
+    Yes,
+    No,
+}
+
+pub struct FractionSuggester<F>
 where
     F: Float + Debug,
-    T: Iterator<Item = Array2<F>>,
+{
+    max_value: F,
+    max_fraction_bits: usize,
+    fraction_bits: usize,
+    round: bool,
+}
+
+impl<F> FractionSuggester<F>
+where
+    F: Float + Debug,
 {
     // Basic gist is figure out how many bits we need for the whole number part, using the
     // max_value passed in. From there shift each value in the dataset as far to the left as
     // possible given the number of whole number bits needed, then look at the number of trailing
     // zeros on each shifted value to determine how many actual fractional bits we need for that
     // number, and return the maximum number.
-    const TOTAL_BITS: usize = 63;
-    let whole_bits = 1 + max_value.to_f64().unwrap().log2().floor() as usize;
-    let max_fraction_bits = TOTAL_BITS - whole_bits;
-    let mut fraction_bits = 0;
 
-    for instant in instants {
+    pub fn new(max_value: F) -> Self {
+        const TOTAL_BITS: usize = 63;
+        let whole_bits = 1 + max_value.to_f64().unwrap().log2().floor() as usize;
+
+        Self {
+            max_value,
+            max_fraction_bits: TOTAL_BITS - whole_bits,
+            fraction_bits: 0,
+            round: false,
+        }
+    }
+
+    pub fn push(&mut self, instant: Array2<F>) -> Continue {
+        if self.round {
+            panic!("FractionSuggester.push() called again after returning Continue::No");
+        }
+
         for n in instant {
             let n: f64 = n.to_f64().unwrap();
-            let shifted = n * (1_i64 << max_fraction_bits) as f64;
+            let shifted = n * (1_i64 << self.max_fraction_bits) as f64;
 
             // If we've left shifted a number as far as it will go and we still have a fractional
             // part, then this dataset will need to be rounded and there will be some loss of
             // precision.
             if shifted.fract() != 0.0 {
-                return Round(max_fraction_bits);
+                self.fraction_bits = self.max_fraction_bits;
+                self.round = true;
+                return Continue::No;
             }
 
             let shifted = shifted as i64;
             if shifted == i64::MAX {
                 // Conversion from float to int saturates on overflow, so assume there was an
                 // overflow if result is MAX
-                panic!("Value {n} is greater than max_value {max_value:?}");
+                panic!("Value {n} is greater than max_value {:?}", self.max_value);
             }
 
-            let these_bits = max_fraction_bits.saturating_sub(shifted.trailing_zeros() as usize);
-            if these_bits > fraction_bits {
-                fraction_bits = these_bits;
+            let these_bits = self
+                .max_fraction_bits
+                .saturating_sub(shifted.trailing_zeros() as usize);
+            if these_bits > self.fraction_bits {
+                self.fraction_bits = these_bits;
             }
         }
+
+        Continue::Yes
     }
-    Precise(fraction_bits)
+
+    pub fn finish(self) -> Fraction {
+        if self.round {
+            Round(self.fraction_bits)
+        } else {
+            Precise(self.fraction_bits)
+        }
+    }
+}
+
+pub fn suggest_fraction<F, T>(instants: T, max_value: F) -> Fraction
+where
+    F: Float + Debug,
+    T: Iterator<Item = Array2<F>>,
+{
+    let mut suggester = FractionSuggester::new(max_value);
+
+    for instant in instants {
+        match suggester.push(instant) {
+            Continue::No => break,
+            Continue::Yes => continue,
+        }
+    }
+
+    suggester.finish()
 }
 
 pub struct FBuild<F>

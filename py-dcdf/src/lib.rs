@@ -316,6 +316,43 @@ impl PyChunkF32 {
     }
 }
 
+#[pyclass]
+struct PyFractionSuggesterF32 {
+    inner: Option<dcdf::FractionSuggester<f32>>,
+}
+
+#[pymethods]
+impl PyFractionSuggesterF32 {
+    #[new]
+    fn new(max_value: f32) -> Self {
+        Self {
+            inner: Some(dcdf::FractionSuggester::new(max_value)),
+        }
+    }
+
+    fn push(&mut self, instant: PyReadonlyArray2<f32>) -> bool {
+        let instant = instant.to_owned_array();
+        match &mut self.inner {
+            Some(inner) => match inner.push(instant) {
+                dcdf::Continue::Yes => true,
+                dcdf::Continue::No => false,
+            },
+            None => false,
+        }
+    }
+
+    fn finish(&mut self) -> PyResult<(usize, bool)> {
+        let inner = mem::replace(&mut self.inner, None);
+        match inner {
+            Some(inner) => match inner.finish() {
+                dcdf::Precise(fraction_bits) => Ok((fraction_bits, false)),
+                dcdf::Round(fraction_bits) => Ok((fraction_bits, true)),
+            },
+            None => panic!("finish called twice"),
+        }
+    }
+}
+
 #[pyfunction]
 fn load(py: Python, path: &str) -> PyResult<PyObject> {
     let path = Path::new(path);
@@ -342,6 +379,7 @@ fn _dcdf(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyBuilderF32>()?;
     m.add_class::<PyBuildF32>()?;
     m.add_class::<PyChunkF32>()?;
+    m.add_class::<PyFractionSuggesterF32>()?;
 
     Ok(())
 }

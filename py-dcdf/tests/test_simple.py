@@ -79,8 +79,8 @@ def get_data(dtype):
             dtype,
         )
 
-    data = list(itertools.islice(itertools.cycle(data), 100))
-    assert len(data) == 100
+    data = numpy.array(list(itertools.islice(itertools.cycle(data), 100)))
+    assert data.shape == (100, 8, 8)
 
     return data
 
@@ -157,3 +157,17 @@ def test_search(tmpdir, dtype):
         results = map(set, chunk.search(0, 100, top, bottom, left, right, lower, upper))
         for expected, result in zip(expecteds, results):
             assert expected == result
+
+
+def test_suggest_fraction_3bits():
+    data = get_data(numpy.float32)
+    suggestion = dcdf.suggest_fraction(data, 15.0)
+    assert suggestion.fractional_bits == 3
+    assert suggestion.round is False
+
+
+def test_suggest_fraction_4bits():
+    data = numpy.array([[[16.0, 1.0 / 16.0]]], dtype=numpy.float32)
+    suggestion = dcdf.suggest_fraction(data, 16.0)
+    assert suggestion.fractional_bits == 4
+    assert suggestion.round is False

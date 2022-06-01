@@ -1,3 +1,5 @@
+import itertools
+
 from dcdf import _dcdf
 from dcdf._dcdf import load
 
@@ -24,3 +26,31 @@ def build(instants, k=2, fraction=24, round=False):
         builder.push(instant)
 
     return builder.finish()
+
+
+_SUGGESTERS = {
+    "float32": _dcdf.PyFractionSuggesterF32,
+}
+
+
+def suggest_fraction(instants, max_value):
+    instants = iter(instants)
+    first = next(instants)
+    dtype = first.dtype.name
+    Suggester = _SUGGESTERS.get(dtype)
+    if Suggester is None:
+        raise ValueError(f"Unsupported dtype: {dtype}")
+
+    instants = itertools.chain((first,), instants)
+    suggester = Suggester(max_value)
+    for instant in instants:
+        if not suggester.push(instant):
+            break
+
+    return Suggestion(*suggester.finish())
+
+
+class Suggestion:
+    def __init__(self, fractional_bits, round):
+        self.fractional_bits = fractional_bits
+        self.round = round
