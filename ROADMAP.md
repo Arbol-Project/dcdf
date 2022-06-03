@@ -26,10 +26,6 @@ call frames. For each frame a decision will be made to encode it and store it in
   between the current frame and the nearest preceding snapshot. (Obviously not an option
   for the first in a series.)
 
-- **uncompressed array** For some datasets with low uniformity, K^2 raster may not do
-  better than a plain, uncompressed array. In those cases, just use the uncompressed
-  array. 
-
 Each call to the Layer 1 algorithm will produce one binary file which stores the logical
 3-dimensional array provided.
 
@@ -76,7 +72,7 @@ The high level structure of data will be as follows:
       Because this is stored in an IPLD based datastore, identical maps that are used
       across many spans will only be stored once.
         
-    - Directory
+    - Superchunk
 
       This is a file which will be encoded similarly to the K^2 Raster used in the low
       level format, but instead of encoding the entire space, it will just contain the
@@ -127,12 +123,3 @@ contract needed by the software is just:
 For development we might use an implementation that just uses the local filesystem, and
 then later use an implementation that stores to IPFS or any other compatible system that
 might emerge.
-
-## Data Prep
-
-It seems highly likely that the data sources we'd consume for this use data types of a
-much higher precision than their actual data. For instance, we might have an array of 64
-bit floating point numbers when the data could be represented in 32 bit floats or 32,
-24, or 16 bit integer or fixed pointed numbers. There's potentially some utility in
-looking at incoming data and seeing if the raw numbers can be stored in a more compact
-way, before encoding them using K^2 raster.

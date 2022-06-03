@@ -1,6 +1,7 @@
 *.pyc
 *.swp
 *.egg-info
+*.dcdf
 __pycache__
 .coverage
 venv
