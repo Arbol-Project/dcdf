@@ -190,11 +190,11 @@ mod fchunk {
         let data = array();
         let chunk = chunk(data.clone());
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let start = top * left;
-                        let end = bottom * right + 51;
+                        let end = bottom * right + 36;
                         let windows: Vec<Array2<f32>> = chunk
                             .iter_window(start, end, top, bottom, left, right)
                             .collect();
@@ -217,11 +217,11 @@ mod fchunk {
         let data = array();
         let chunk = chunk(data.clone());
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let start = top * left;
-                        let end = bottom * right + 51;
+                        let end = bottom * right + 36;
                         let lower = (start / 5) as f32;
                         let upper = (end / 10) as f32;
                         let results: Vec<Vec<(usize, usize)>> = chunk
@@ -374,11 +374,11 @@ mod chunk {
         let data = array();
         let chunk = chunk(data.clone());
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let start = top * left;
-                        let end = bottom * right + 51;
+                        let end = bottom * right + 36;
                         let windows: Vec<Array2<i32>> = chunk
                             .iter_window(start, end, top, bottom, left, right)
                             .collect();
@@ -401,11 +401,11 @@ mod chunk {
         let data = array();
         let chunk = chunk(data.clone());
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let start = top * left;
-                        let end = bottom * right + 51;
+                        let end = bottom * right + 36;
                         let lower: i32 = (start / 5).try_into().unwrap();
                         let upper: i32 = (end / 10).try_into().unwrap();
                         let results: Vec<Vec<(usize, usize)>> = chunk
@@ -521,9 +521,9 @@ mod block {
 
         for t in 0..3 {
             for top in 0..8 {
-                for bottom in top + 1..8 {
+                for bottom in top + 1..=8 {
                     for left in 0..8 {
-                        for right in left + 1..8 {
+                        for right in left + 1..=8 {
                             let expected = data[t].slice(s![top..bottom, left..right]);
                             assert_eq!(block.get_window(t, top, bottom, left, right), expected,);
                         }
@@ -552,9 +552,9 @@ mod block {
 
         for t in 0..3 {
             for top in 0..8 {
-                for bottom in top + 1..8 {
+                for bottom in top + 1..=8 {
                     for left in 0..8 {
-                        for right in left + 1..8 {
+                        for right in left + 1..=8 {
                             for lower in 0..10 {
                                 for upper in lower..10 {
                                     let expected = array_search_window(
@@ -707,9 +707,9 @@ mod snapshot {
         let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let window = snapshot.get_window(top, bottom, left, right);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -734,9 +734,9 @@ mod snapshot {
         let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..9 {
-            for bottom in top + 1..9 {
+            for bottom in top + 1..=9 {
                 for left in 0..9 {
-                    for right in left + 1..9 {
+                    for right in left + 1..=9 {
                         let window = snapshot.get_window(top, bottom, left, right);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -752,9 +752,9 @@ mod snapshot {
         let snapshot = Snapshot::from_array(data.view(), 3);
 
         for top in 0..9 {
-            for bottom in top + 1..9 {
+            for bottom in top + 1..=9 {
                 for left in 0..9 {
-                    for right in left + 1..9 {
+                    for right in left + 1..=9 {
                         let window = snapshot.get_window(top, bottom, left, right);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -770,9 +770,9 @@ mod snapshot {
         let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let window = snapshot.get_window(bottom, top, right, left);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -788,9 +788,9 @@ mod snapshot {
         let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..16 {
-            for bottom in top + 1..16 {
+            for bottom in top + 1..=16 {
                 for left in 0..16 {
-                    for right in left + 1..16 {
+                    for right in left + 1..=16 {
                         let window = snapshot.get_window(top, bottom, left, right);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -806,9 +806,9 @@ mod snapshot {
         let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -842,9 +842,9 @@ mod snapshot {
         let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..9 {
-            for bottom in top + 1..9 {
+            for bottom in top + 1..=9 {
                 for left in 0..9 {
-                    for right in left + 1..9 {
+                    for right in left + 1..=9 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -878,9 +878,9 @@ mod snapshot {
         let snapshot = Snapshot::from_array(data.view(), 3);
 
         for top in 0..9 {
-            for bottom in top + 1..9 {
+            for bottom in top + 1..=9 {
                 for left in 0..9 {
-                    for right in left + 1..9 {
+                    for right in left + 1..=9 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -914,9 +914,9 @@ mod snapshot {
         let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -959,9 +959,9 @@ mod snapshot {
         let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let mut expected: HashSet<(usize, usize)> = HashSet::new();
                         for row in top..bottom {
                             for col in left..right {
@@ -984,9 +984,9 @@ mod snapshot {
         let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..16 {
-            for bottom in top + 1..16 {
+            for bottom in top + 1..=16 {
                 for left in 0..16 {
-                    for right in left + 1..16 {
+                    for right in left + 1..=16 {
                         let coords = snapshot.search_window(top, bottom, left, right, 0, 41);
 
                         assert_eq!(coords, vec![]);
@@ -1320,9 +1320,9 @@ mod log {
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![1, top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -1333,9 +1333,9 @@ mod log {
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -1352,9 +1352,9 @@ mod log {
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![1, top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -1365,9 +1365,9 @@ mod log {
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -1394,9 +1394,9 @@ mod log {
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
         for top in 0..9 {
-            for bottom in top + 1..9 {
+            for bottom in top + 1..=9 {
                 for left in 0..9 {
-                    for right in left + 1..9 {
+                    for right in left + 1..=9 {
                         let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![1, top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -1407,9 +1407,9 @@ mod log {
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
         for top in 0..9 {
-            for bottom in top + 1..9 {
+            for bottom in top + 1..=9 {
                 for left in 0..9 {
-                    for right in left + 1..9 {
+                    for right in left + 1..=9 {
                         let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -1426,9 +1426,9 @@ mod log {
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 3);
         for top in 0..9 {
-            for bottom in top + 1..9 {
+            for bottom in top + 1..=9 {
                 for left in 0..9 {
-                    for right in left + 1..9 {
+                    for right in left + 1..=9 {
                         let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![1, top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -1439,9 +1439,9 @@ mod log {
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 3);
         for top in 0..9 {
-            for bottom in top + 1..9 {
+            for bottom in top + 1..=9 {
                 for left in 0..9 {
-                    for right in left + 1..9 {
+                    for right in left + 1..=9 {
                         let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -1458,9 +1458,9 @@ mod log {
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let window = log.get_window(&snapshot, bottom, top, right, left);
                         let expected = data.slice(s![1, top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -1471,9 +1471,9 @@ mod log {
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let window = log.get_window(&snapshot, bottom, top, right, left);
                         let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -1491,9 +1491,9 @@ mod log {
         let snapshot = Snapshot::from_array(data_s.view(), 2);
         let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data_t.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -1512,9 +1512,9 @@ mod log {
         let snapshot = Snapshot::from_array(data_s.view(), 2);
         let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data_t.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -1533,9 +1533,9 @@ mod log {
         let snapshot = Snapshot::from_array(data_s.view(), 2);
         let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data_t.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -1553,9 +1553,9 @@ mod log {
         let snapshot = Snapshot::from_array(data_s.view(), 2);
         let log = Log::from_arrays(data_s.view(), data_s.view(), 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         let window = log.get_window(&snapshot, top, bottom, left, right);
                         let expected = data_s.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
@@ -1574,9 +1574,9 @@ mod log {
         let data1 = data.slice(s![1, .., ..]);
         let log = Log::from_arrays(data0, data1, 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -1601,9 +1601,9 @@ mod log {
         let data2 = data.slice(s![2, .., ..]);
         let log = Log::from_arrays(data0, data2, 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -1635,9 +1635,9 @@ mod log {
         let data1 = data.slice(s![1, .., ..]);
         let log = Log::from_arrays(data0, data1, 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -1662,9 +1662,9 @@ mod log {
         let data2 = data.slice(s![2, .., ..]);
         let log = Log::from_arrays(data0, data2, 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -1696,9 +1696,9 @@ mod log {
         let data1 = data.slice(s![1, .., ..]);
         let log = Log::from_arrays(data0, data1, 2);
         for top in 0..9 {
-            for bottom in top + 1..9 {
+            for bottom in top + 1..=9 {
                 for left in 0..9 {
-                    for right in left + 1..9 {
+                    for right in left + 1..=9 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -1723,9 +1723,9 @@ mod log {
         let data2 = data.slice(s![2, .., ..]);
         let log = Log::from_arrays(data0, data2, 2);
         for top in 0..9 {
-            for bottom in top + 1..9 {
+            for bottom in top + 1..=9 {
                 for left in 0..9 {
-                    for right in left + 1..9 {
+                    for right in left + 1..=9 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -1757,9 +1757,9 @@ mod log {
         let data1 = data.slice(s![1, .., ..]);
         let log = Log::from_arrays(data0, data1, 3);
         for top in 0..9 {
-            for bottom in top + 1..9 {
+            for bottom in top + 1..=9 {
                 for left in 0..9 {
-                    for right in left + 1..9 {
+                    for right in left + 1..=9 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -1784,9 +1784,9 @@ mod log {
         let data2 = data.slice(s![2, .., ..]);
         let log = Log::from_arrays(data0, data2, 3);
         for top in 0..9 {
-            for bottom in top + 1..9 {
+            for bottom in top + 1..=9 {
                 for left in 0..9 {
-                    for right in left + 1..9 {
+                    for right in left + 1..=9 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -1818,9 +1818,9 @@ mod log {
         let data1 = data.slice(s![1, .., ..]);
         let log = Log::from_arrays(data0, data1, 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -1845,9 +1845,9 @@ mod log {
         let data2 = data.slice(s![1, .., ..]);
         let log = Log::from_arrays(data0, data2, 2);
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -1891,9 +1891,9 @@ mod log {
         let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
 
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -1931,9 +1931,9 @@ mod log {
         let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
 
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -1971,9 +1971,9 @@ mod log {
         let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
 
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -2010,9 +2010,9 @@ mod log {
         let log = Log::from_arrays(data_s.view(), data_s.view(), 2);
 
         for top in 0..8 {
-            for bottom in top + 1..8 {
+            for bottom in top + 1..=8 {
                 for left in 0..8 {
-                    for right in left + 1..8 {
+                    for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(

@@ -696,7 +696,7 @@ where
     pub fn get_window(&self, top: usize, bottom: usize, left: usize, right: usize) -> Array2<I> {
         let (left, right) = rearrange(left, right);
         let (top, bottom) = rearrange(top, bottom);
-        self.check_bounds(bottom, right);
+        self.check_bounds(bottom - 1, right - 1);
 
         let rows = bottom - top;
         let cols = right - left;
@@ -812,7 +812,7 @@ where
         let (left, right) = rearrange(left, right);
         let (top, bottom) = rearrange(top, bottom);
         let (lower, upper) = rearrange(lower, upper);
-        self.check_bounds(bottom, right);
+        self.check_bounds(bottom - 1, right - 1);
 
         let mut cells: Vec<(usize, usize)> = vec![];
 
@@ -1292,7 +1292,7 @@ where
     ) -> Array2<I> {
         let (left, right) = rearrange(left, right);
         let (top, bottom) = rearrange(top, bottom);
-        self.check_bounds(bottom, right);
+        self.check_bounds(bottom - 1, right - 1);
 
         let rows = bottom - top;
         let cols = right - left;
@@ -1513,7 +1513,7 @@ where
         let (left, right) = rearrange(left, right);
         let (top, bottom) = rearrange(top, bottom);
         let (lower, upper) = rearrange(lower, upper);
-        self.check_bounds(bottom, right);
+        self.check_bounds(bottom - 1, right - 1);
 
         let mut cells: Vec<(usize, usize)> = vec![];
         let single_t = !self.nodemap.get(0);
