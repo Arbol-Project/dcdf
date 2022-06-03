@@ -14,3 +14,4 @@ dependencies = ["numpy"]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov"]
+examples = ["docopt", "xarray", "netCDF4"]

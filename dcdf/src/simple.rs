@@ -151,7 +151,9 @@ where
     // number, and return the maximum number.
 
     pub fn new(max_value: F) -> Self {
-        const TOTAL_BITS: usize = 63;
+        // DACs can store 64 bits. We lose 1 bit to the sign for signed numbers, and we lose
+        // another bit to the encoding used by "fixed" to differentiate finite numbers from NaN.
+        const TOTAL_BITS: usize = 62;
         let whole_bits = 1 + max_value.to_f64().unwrap().log2().floor() as usize;
 
         Self {
@@ -169,6 +171,9 @@ where
 
         for n in instant {
             let n: f64 = n.to_f64().unwrap();
+            if n.is_nan() {
+                continue;
+            }
             let shifted = n * (1_i64 << self.max_fraction_bits) as f64;
 
             // If we've left shifted a number as far as it will go and we still have a fractional
@@ -731,7 +736,7 @@ mod tests {
         let fraction = suggest_fraction(data.into_iter(), 316.0);
         match fraction {
             Round(bits) => {
-                assert_eq!(bits, 54);
+                assert_eq!(bits, 53);
             }
             _ => {
                 assert!(false);
@@ -749,7 +754,7 @@ mod tests {
         );
         assert_eq!(built.snapshots, 1);
         assert_eq!(built.logs, 99);
-        assert_eq!(built.compression, 0.35136718);
+        assert_eq!(built.compression, 0.351875);
     }
 
     #[test]
