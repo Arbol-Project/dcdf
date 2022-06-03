@@ -995,6 +995,23 @@ mod snapshot {
             }
         }
     }
+
+    #[test]
+    fn search_window_no_values_in_range() {
+        let data = array8();
+        let snapshot = Snapshot::from_array(data.view(), 2);
+
+        for top in 0..8 {
+            for bottom in top + 1..=8 {
+                for left in 0..8 {
+                    for right in left + 1..=8 {
+                        let coords = snapshot.search_window(top, bottom, left, right, 100, 200);
+                        assert_eq!(coords.len(), 0);
+                    }
+                }
+            }
+        }
+    }
 }
 
 mod log {
@@ -2035,6 +2052,27 @@ mod log {
                                 assert_eq!(coords, expected);
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn search_window_no_values_in_range() {
+        let data = array8();
+        let data0 = data.slice(s![0, .., ..]);
+        let snapshot = Snapshot::from_array(data0, 2);
+
+        let data1 = data.slice(s![1, .., ..]);
+        let log = Log::from_arrays(data0, data1, 2);
+        for top in 0..8 {
+            for bottom in top + 1..=8 {
+                for left in 0..8 {
+                    for right in left + 1..=8 {
+                        let coords =
+                            log.search_window(&snapshot, top, bottom, left, right, 100, 200);
+                        assert_eq!(coords.len(), 0);
                     }
                 }
             }

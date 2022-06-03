@@ -899,7 +899,7 @@ where
                                 cells.push((top_offset_ + row, left_offset_ + col));
                             }
                         }
-                    } else if upper >= min_value_ || lower <= max_value_ {
+                    } else if upper >= min_value_ && lower <= max_value_ {
                         // Some, but not all, values in branch are within bounds.
                         // Recurse into branch
                         self._search_window(
