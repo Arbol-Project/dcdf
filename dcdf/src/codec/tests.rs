@@ -165,6 +165,7 @@ mod fchunk {
     fn test_new() {
         let chunk = chunk(array());
         assert_eq!(chunk.fractional_bits, 3);
+        assert_eq!(chunk.shape(), [100, 8, 8]);
     }
 
     #[test]
@@ -348,6 +349,7 @@ mod chunk {
     fn from_blocks() {
         let chunk = chunk(array());
         assert_eq!(chunk.blocks.len(), 25);
+        assert_eq!(chunk.shape(), [100, 8, 8]);
     }
 
     #[test]
@@ -489,6 +491,7 @@ mod block {
                 Log::from_arrays(data[0], data[2], 2),
             ],
         );
+        assert_eq!(block.shape(), [3, 8, 8]);
 
         for t in 0..3 {
             for r in 0..8 {
@@ -625,6 +628,8 @@ mod snapshot {
             snapshot.min.collect::<i32>(),
             vec![2, 3, 0, 1, 2, 0, 0, 0, 0, 0,]
         );
+
+        assert_eq!(snapshot.shape, [8, 8]);
     }
 
     #[test]
@@ -1107,6 +1112,8 @@ mod log {
         );
 
         assert_eq!(log.min.collect::<i32>(), vec![1, 1, 1, 0, 0, 1, 0, 1, 0,]);
+
+        assert_eq!(log.shape, [8, 8]);
     }
 
     #[test]

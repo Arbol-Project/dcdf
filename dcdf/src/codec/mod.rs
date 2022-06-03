@@ -66,6 +66,10 @@ where
         }
     }
 
+    pub fn shape(&self) -> [usize; 3] {
+        self.chunk.shape()
+    }
+
     pub fn iter_cell<'a>(
         &'a self,
         start: usize,
@@ -170,6 +174,12 @@ impl<I> Chunk<I>
 where
     I: PrimInt + Debug,
 {
+    pub fn shape(&self) -> [usize; 3] {
+        let [rows, cols] = self.blocks[0].snapshot.shape;
+        let instants = self.blocks.iter().map(|i| 1 + i.logs.len()).sum();
+        [instants, rows, cols]
+    }
+
     // Iterate over time instants in this chunk.
     fn iter(&self, start: usize, end: usize) -> ChunkIter<I> {
         let (block, block_index) = if start < self.index[0] {
@@ -423,11 +433,16 @@ where
     I: PrimInt + Debug,
 {
     /// Snapshot of first time instant
-    pub fn new(snapshot: Snapshot<I>, logs: Vec<Log<I>>) -> Self {
+    pub(crate) fn new(snapshot: Snapshot<I>, logs: Vec<Log<I>>) -> Self {
         Self {
             snapshot: snapshot,
             logs: logs,
         }
+    }
+
+    fn shape(&self) -> [usize; 3] {
+        let [rows, cols] = self.snapshot.shape;
+        [1 + self.logs.len(), rows, cols]
     }
 
     fn get(&self, instant: usize, row: usize, col: usize) -> I

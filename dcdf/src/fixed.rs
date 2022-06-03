@@ -105,7 +105,7 @@ where
 pub(crate) fn from_fixed<F: Float>(n: i64, fractional_bits: usize) -> F {
     match n {
         0 => F::nan(),
-        _ => F::from(n - 1).unwrap() / F::from(1 << (fractional_bits + 1)).unwrap()
+        _ => F::from(n - 1).unwrap() / F::from(1 << (fractional_bits + 1)).unwrap(),
     }
 }
 

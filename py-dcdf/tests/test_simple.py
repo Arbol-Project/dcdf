@@ -103,6 +103,7 @@ dtypes = (
 def test_cell(tmpdir, dtype):
     data = get_data(dtype)
     chunk = get_chunk(tmpdir, data)
+    assert chunk.shape == (100, 8, 8)
 
     for row in range(8):
         for col in range(8):

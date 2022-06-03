@@ -99,6 +99,12 @@ impl PyChunkI32 {
     // https://github.com/PyO3/pyo3/issues/1085
     //
 
+    #[getter]
+    fn shape(&self) -> (usize, usize, usize) {
+        let [instants, rows, cols] = self.inner.shape();
+        (instants, rows, cols)
+    }
+
     fn cell<'py>(
         &self,
         py: Python<'py>,
@@ -255,6 +261,12 @@ impl PyChunkF32 {
     //
     // https://github.com/PyO3/pyo3/issues/1085
     //
+
+    #[getter]
+    fn shape(&self) -> (usize, usize, usize) {
+        let [instants, rows, cols] = self.inner.shape();
+        (instants, rows, cols)
+    }
 
     fn cell<'py>(
         &self,
