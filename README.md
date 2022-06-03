@@ -38,8 +38,8 @@ library. Install and activate a Python virtual environment using your preferred 
 
 Then:
 
-$ pip install -U pip setuptools
-$ pip install -e py-dcdf[dev,examples]
+    $ pip install -U pip setuptools
+    $ pip install -e py-dcdf[dev,examples]
 
 From there, you should be able to run anything in the "examples" directory. There is an
 example, currently, of converting a netcdf file from the cpc daily global precipitation
