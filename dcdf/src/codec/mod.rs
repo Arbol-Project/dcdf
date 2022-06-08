@@ -28,11 +28,11 @@ use num_traits::{Float, PrimInt};
 use std::cmp::min;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 
+use super::extio::{ExtendedRead, ExtendedWrite};
 use super::fixed;
 
 /// A wrapper for Chunk that adapts it to use floating point data
@@ -123,14 +123,14 @@ where
         )
     }
 
-    pub fn serialize(&self, stream: &mut File) -> io::Result<()> {
-        write_byte(stream, self.fractional_bits as u8)?;
+    pub fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
+        stream.write_byte(self.fractional_bits as u8)?;
         self.chunk.serialize(stream)?;
         Ok(())
     }
 
-    pub fn deserialize(stream: &mut File) -> io::Result<Self> {
-        let fractional_bits = read_byte(stream)? as usize;
+    pub fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
+        let fractional_bits = stream.read_byte()? as usize;
         Ok(FChunk::new(Chunk::deserialize(stream)?, fractional_bits))
     }
 
@@ -265,16 +265,16 @@ where
         }
     }
 
-    pub fn serialize(&self, stream: &mut File) -> io::Result<()> {
-        write_u32(stream, self.blocks.len() as u32)?;
+    pub fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
+        stream.write_u32(self.blocks.len() as u32)?;
         for block in &self.blocks {
             block.serialize(stream)?;
         }
         Ok(())
     }
 
-    pub fn deserialize(stream: &mut File) -> io::Result<Self> {
-        let n_blocks = read_u32(stream)? as usize;
+    pub fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
+        let n_blocks = stream.read_u32()? as usize;
         let mut blocks = Vec::with_capacity(n_blocks);
         let mut index = Vec::with_capacity(n_blocks);
         let mut count = 0;
@@ -496,8 +496,8 @@ where
         }
     }
 
-    fn serialize(&self, stream: &mut File) -> io::Result<()> {
-        write_byte(stream, (self.logs.len() + 1) as u8)?;
+    fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
+        stream.write_byte((self.logs.len() + 1) as u8)?;
         self.snapshot.serialize(stream)?;
         for log in &self.logs {
             log.serialize(stream)?;
@@ -505,8 +505,8 @@ where
         Ok(())
     }
 
-    fn deserialize(stream: &mut File) -> io::Result<Self> {
-        let n_instants = read_byte(stream)? as usize;
+    fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
+        let n_instants = stream.read_byte()? as usize;
         let snapshot = Snapshot::deserialize(stream)?;
         let mut logs: Vec<Log<I>> = Vec::with_capacity(n_instants - 1);
         for _ in 0..n_instants - 1 {
@@ -560,11 +560,11 @@ impl<I> Snapshot<I>
 where
     I: PrimInt + Debug,
 {
-    fn serialize(&self, stream: &mut File) -> io::Result<()> {
-        write_byte(stream, self.k as u8)?;
-        write_u32(stream, self.shape[0] as u32)?;
-        write_u32(stream, self.shape[1] as u32)?;
-        write_u32(stream, self.sidelen as u32)?;
+    fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
+        stream.write_byte(self.k as u8)?;
+        stream.write_u32(self.shape[0] as u32)?;
+        stream.write_u32(self.shape[1] as u32)?;
+        stream.write_u32(self.sidelen as u32)?;
         self.nodemap.serialize(stream)?;
         self.max.serialize(stream)?;
         self.min.serialize(stream)?;
@@ -572,10 +572,10 @@ where
         Ok(())
     }
 
-    fn deserialize(stream: &mut File) -> io::Result<Self> {
-        let k = read_byte(stream)? as i32;
-        let shape = [read_u32(stream)? as usize, read_u32(stream)? as usize];
-        let sidelen = read_u32(stream)? as usize;
+    fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
+        let k = stream.read_byte()? as i32;
+        let shape = [stream.read_u32()? as usize, stream.read_u32()? as usize];
+        let sidelen = stream.read_u32()? as usize;
         let nodemap = BitMap::deserialize(stream)?;
         let max = Dacs::deserialize(stream)?;
         let min = Dacs::deserialize(stream)?;
@@ -1039,11 +1039,11 @@ impl<I> Log<I>
 where
     I: PrimInt + Debug,
 {
-    fn serialize(&self, stream: &mut File) -> io::Result<()> {
-        write_byte(stream, self.k as u8)?;
-        write_u32(stream, self.shape[0] as u32)?;
-        write_u32(stream, self.shape[1] as u32)?;
-        write_u32(stream, self.sidelen as u32)?;
+    fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
+        stream.write_byte(self.k as u8)?;
+        stream.write_u32(self.shape[0] as u32)?;
+        stream.write_u32(self.shape[1] as u32)?;
+        stream.write_u32(self.sidelen as u32)?;
         self.nodemap.serialize(stream)?;
         self.equal.serialize(stream)?;
         self.max.serialize(stream)?;
@@ -1052,10 +1052,10 @@ where
         Ok(())
     }
 
-    fn deserialize(stream: &mut File) -> io::Result<Self> {
-        let k = read_byte(stream)? as i32;
-        let shape = [read_u32(stream)? as usize, read_u32(stream)? as usize];
-        let sidelen = read_u32(stream)? as usize;
+    fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
+        let k = stream.read_byte()? as i32;
+        let shape = [stream.read_u32()? as usize, stream.read_u32()? as usize];
+        let sidelen = stream.read_u32()? as usize;
         let nodemap = BitMap::deserialize(stream)?;
         let equal = BitMap::deserialize(stream)?;
         let max = Dacs::deserialize(stream)?;
@@ -1815,32 +1815,32 @@ impl From<BitMapBuilder> for BitMap {
 }
 
 impl BitMap {
-    fn serialize(&self, stream: &mut File) -> io::Result<()> {
-        write_u32(stream, self.length as u32)?;
-        write_u32(stream, self.k as u32)?;
+    fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
+        stream.write_u32(self.length as u32)?;
+        stream.write_u32(self.k as u32)?;
         for index_block in &self.index {
-            write_u32(stream, *index_block)?;
+            stream.write_u32(*index_block)?;
         }
         for bitmap_block in &self.bitmap {
-            write_u32(stream, *bitmap_block)?;
+            stream.write_u32(*bitmap_block)?;
         }
         Ok(())
     }
 
-    fn deserialize(stream: &mut File) -> io::Result<Self> {
-        let length = read_u32(stream)? as usize;
-        let k = read_u32(stream)? as usize;
+    fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
+        let length = stream.read_u32()? as usize;
+        let k = stream.read_u32()? as usize;
 
         let blocks = length / 32 / k;
         let mut index = Vec::with_capacity(blocks as usize);
         for _ in 0..blocks {
-            index.push(read_u32(stream)?);
+            index.push(stream.read_u32()?);
         }
 
         let words = div_ceil(length, 32);
         let mut bitmap = Vec::with_capacity(words);
         for _ in 0..words {
-            bitmap.push(read_u32(stream)?);
+            bitmap.push(stream.read_u32()?);
         }
 
         Ok(Self {
@@ -1906,8 +1906,8 @@ struct Dacs {
 }
 
 impl Dacs {
-    fn serialize(&self, stream: &mut File) -> io::Result<()> {
-        write_byte(stream, self.levels.len() as u8)?;
+    fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
+        stream.write_byte(self.levels.len() as u8)?;
         for (bitmap, bytes) in &self.levels {
             bitmap.serialize(stream)?;
             stream.write_all(bytes)?;
@@ -1915,8 +1915,8 @@ impl Dacs {
         Ok(())
     }
 
-    fn deserialize(stream: &mut File) -> io::Result<Self> {
-        let n_levels = read_byte(stream)? as usize;
+    fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
+        let n_levels = stream.read_byte()? as usize;
         let mut levels = Vec::with_capacity(n_levels);
         for _ in 0..n_levels {
             let bitmap = BitMap::deserialize(stream)?;
@@ -2134,38 +2134,6 @@ where
     } else {
         (lower, upper)
     }
-}
-
-/// Write a byte to a stream
-fn write_byte(stream: &mut File, byte: u8) -> io::Result<()> {
-    let buffer = [byte];
-    stream.write_all(&buffer)?;
-
-    Ok(())
-}
-
-/// Read a byte from a stream
-fn read_byte(stream: &mut File) -> io::Result<u8> {
-    let mut buffer = [0; 1];
-    stream.read_exact(&mut buffer)?;
-
-    Ok(buffer[0])
-}
-
-/// Write a u32 to a stream
-fn write_u32(stream: &mut File, word: u32) -> io::Result<()> {
-    let buffer = word.to_be_bytes();
-    stream.write_all(&buffer)?;
-
-    Ok(())
-}
-
-/// Read a u32 from a stream
-fn read_u32(stream: &mut File) -> io::Result<u32> {
-    let mut buffer = [0; 4];
-    stream.read_exact(&mut buffer)?;
-
-    Ok(u32::from_be_bytes(buffer))
 }
 
 #[cfg(test)]

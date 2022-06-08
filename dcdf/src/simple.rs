@@ -1,11 +1,11 @@
 use super::codec::{Block, Chunk, FChunk, Log, Snapshot};
+use super::extio::{ExtendedRead, ExtendedWrite};
 use super::fixed::to_fixed;
 
 use ndarray::Array2;
 use num_traits::{Float, PrimInt};
 use std::any::TypeId;
 use std::fmt::Debug;
-use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
 use std::mem::{replace, size_of};
@@ -359,10 +359,10 @@ impl<I: 'static> Build<I>
 where
     I: PrimInt + Debug,
 {
-    pub fn save(&self, stream: &mut File) -> io::Result<()> {
-        write_u16(stream, MAGIC_NUMBER)?;
-        write_u32(stream, FORMAT_VERSION)?;
-        write_i32(stream, self.type_code())?;
+    pub fn save(&self, stream: &mut impl Write) -> io::Result<()> {
+        stream.write_u16(MAGIC_NUMBER)?;
+        stream.write_u32(FORMAT_VERSION)?;
+        stream.write_i32(self.type_code())?;
         self.data.serialize(stream)?;
 
         Ok(())
@@ -392,11 +392,11 @@ impl<F> FBuild<F>
 where
     F: Float + Debug,
 {
-    pub fn save(&self, stream: &mut File) -> io::Result<()> {
+    pub fn save(&self, stream: &mut impl Write) -> io::Result<()> {
         let type_code = size_of::<F>() as i32 * 8;
-        write_u16(stream, MAGIC_NUMBER)?;
-        write_u32(stream, FORMAT_VERSION)?;
-        write_i32(stream, type_code)?;
+        stream.write_u16(MAGIC_NUMBER)?;
+        stream.write_u32(FORMAT_VERSION)?;
+        stream.write_i32(type_code)?;
         self.data.serialize(stream)?;
 
         Ok(())
@@ -414,16 +414,16 @@ pub enum DataChunk {
 
 pub use DataChunk::{F32, F64, I32, I64, U32, U64};
 
-pub fn load(stream: &mut File) -> io::Result<DataChunk> {
-    let magic_number = read_u16(stream)?;
+pub fn load(stream: &mut impl Read) -> io::Result<DataChunk> {
+    let magic_number = stream.read_u16()?;
     if magic_number != MAGIC_NUMBER {
         panic!("File is not a DCDF file.");
     }
-    let version = read_u32(stream)?;
+    let version = stream.read_u32()?;
     if version != FORMAT_VERSION {
         panic!("Unrecognized file format.");
     }
-    let type_code = read_i32(stream)?;
+    let type_code = stream.read_i32()?;
     let chunk = match type_code {
         TYPE_I32 => I32(Chunk::deserialize(stream)?),
         TYPE_U32 => U32(Chunk::deserialize(stream)?),
@@ -435,48 +435,6 @@ pub fn load(stream: &mut File) -> io::Result<DataChunk> {
     };
 
     Ok(chunk)
-}
-
-fn write_i32(stream: &mut File, word: i32) -> io::Result<()> {
-    let buffer = word.to_be_bytes();
-    stream.write_all(&buffer)?;
-
-    Ok(())
-}
-
-fn write_u16(stream: &mut File, word: u16) -> io::Result<()> {
-    let buffer = word.to_be_bytes();
-    stream.write_all(&buffer)?;
-
-    Ok(())
-}
-
-fn write_u32(stream: &mut File, word: u32) -> io::Result<()> {
-    let buffer = word.to_be_bytes();
-    stream.write_all(&buffer)?;
-
-    Ok(())
-}
-
-fn read_i32(stream: &mut File) -> io::Result<i32> {
-    let mut buffer = [0; 4];
-    stream.read_exact(&mut buffer)?;
-
-    Ok(i32::from_be_bytes(buffer))
-}
-
-fn read_u16(stream: &mut File) -> io::Result<u16> {
-    let mut buffer = [0; 2];
-    stream.read_exact(&mut buffer)?;
-
-    Ok(u16::from_be_bytes(buffer))
-}
-
-fn read_u32(stream: &mut File) -> io::Result<u32> {
-    let mut buffer = [0; 4];
-    stream.read_exact(&mut buffer)?;
-
-    Ok(u32::from_be_bytes(buffer))
 }
 
 #[cfg(test)]

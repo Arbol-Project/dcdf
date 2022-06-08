@@ -491,7 +491,6 @@ mod block {
                 Log::from_arrays(data[0], data[2], 2),
             ],
         );
-        assert_eq!(block.shape(), [3, 8, 8]);
 
         for t in 0..3 {
             for r in 0..8 {

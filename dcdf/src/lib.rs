@@ -1,4 +1,5 @@
 mod codec;
+mod extio;
 mod fixed;
 mod simple;
 
