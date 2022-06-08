@@ -1,5 +1,5 @@
 use super::codec::{Block, Chunk, FChunk, Log, Snapshot};
-use super::fixed::{to_fixed, to_fixed_round};
+use super::fixed::to_fixed;
 
 use ndarray::Array2;
 use num_traits::{Float, PrimInt};
@@ -265,8 +265,8 @@ where
         let cols = shape[1];
 
         let get = |row, col| match fraction {
-            Precise(bits) => to_fixed(first[[row, col]], bits),
-            Round(bits) => to_fixed_round(first[[row, col]], bits),
+            Precise(bits) => to_fixed(first[[row, col]], bits, false),
+            Round(bits) => to_fixed(first[[row, col]], bits, true),
         };
         let snapshot = Snapshot::build(get, [rows, cols], k);
 
@@ -286,14 +286,14 @@ where
 
     pub fn push(&mut self, instant: Array2<F>) {
         let get_t = |row, col| match self.fraction {
-            Precise(bits) => to_fixed(instant[[row, col]], bits),
-            Round(bits) => to_fixed_round(instant[[row, col]], bits),
+            Precise(bits) => to_fixed(instant[[row, col]], bits, false),
+            Round(bits) => to_fixed(instant[[row, col]], bits, true),
         };
         let new_snapshot = Snapshot::build(get_t, [self.rows, self.cols], self.k);
 
         let get_s = |row, col| match self.fraction {
-            Precise(bits) => to_fixed(self.snap_array[[row, col]], bits),
-            Round(bits) => to_fixed_round(self.snap_array[[row, col]], bits),
+            Precise(bits) => to_fixed(self.snap_array[[row, col]], bits, false),
+            Round(bits) => to_fixed(self.snap_array[[row, col]], bits, true),
         };
         let new_log = Log::build(get_s, get_t, [self.rows, self.cols], self.k);
 

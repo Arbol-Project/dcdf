@@ -143,7 +143,7 @@ mod fchunk {
         let mut blocks: Vec<Block<i64>> = vec![];
 
         for instant in instants {
-            let instant = instant.map(|n| fixed::to_fixed(*n, 3));
+            let instant = instant.map(|n| fixed::to_fixed(*n, 3, false));
             current.push(instant);
             if current.len() == 4 {
                 blocks.push(Block::new(

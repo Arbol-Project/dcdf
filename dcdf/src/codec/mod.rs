@@ -118,8 +118,8 @@ where
             bottom,
             left,
             right,
-            fixed::to_fixed_round(lower, self.fractional_bits),
-            fixed::to_fixed_round(upper, self.fractional_bits),
+            fixed::to_fixed(lower, self.fractional_bits, true),
+            fixed::to_fixed(upper, self.fractional_bits, true),
         )
     }
 

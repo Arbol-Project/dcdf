@@ -18,14 +18,16 @@ use std::fmt::Debug;
 ///
 /// * `n` - A floating point number to convert to fixed point
 /// * `fractional_bits` - The number of bits to use for the fractional part.
+/// * `round` - Whether values should be rounded or not. If `false`, loss of numeric precision will
+///     cause a panic. Otherwise, values are rounded to fit in the number of fractional bits.
 ///
 /// # Panics
 ///
-/// * When a loss of precision would occur. For lossy conversion see `to_fixed_round`.
+/// * When `round` is `false` and  a loss of precision would occur.
 /// * When fixed point representation overflows as i64 (ie the number is too big)
 /// * When `n` is inf, or -inf.
 ///
-pub(crate) fn to_fixed<F>(n: F, fractional_bits: usize) -> i64
+pub(crate) fn to_fixed<F>(n: F, fractional_bits: usize, round: bool) -> i64
 where
     F: Float + Debug,
 {
@@ -38,58 +40,29 @@ where
     }
 
     // Shift the point fractional_bits bits to the left
-    let shifted = n * F::from(1 << fractional_bits).unwrap();
+    let mut shifted = n * F::from(1 << fractional_bits).unwrap();
 
     // Check to make sure we don't have any bits to the right of the point after shifting
     if shifted.fract() > F::zero() {
-        panic!(
-            "\
-            Converting {:?} to fixed point representation with {} fractional bits \
-            results in loss of precision. For lossy conversion you can use `to_fixed_round`. \
-        ",
-            n, fractional_bits
-        );
+        if round {
+            shifted = shifted.round();
+        }
+        else {
+            panic!(
+                "\
+                Converting {:?} to fixed point representation with {} fractional bits \
+                results in loss of precision. For lossy conversion you can pass `true` for \
+                `round`.",
+                n, fractional_bits
+            );
+        }
     }
 
-    let shifted = shifted * F::from(2).unwrap();
+    // Shift left one more bit so that LSB can be used to indicate NaN
+    shifted = shifted * F::from(2).unwrap();
+
     match shifted.to_i64() {
-        Some(number) => number + 1,
-        None => panic!("Overflow converting {n:?} to fixed point representation."),
-    }
-}
-
-/// Convert floating point number to fixed point format
-///
-/// Will round do the nearest integer in cases when a loss of precision might occur.
-///
-/// # Arguments
-///
-/// * `n` - A floating point number to convert to fixed point
-/// * `fractional_bits` - The number of bits to use for the fractional part.
-///
-/// # Panics
-///
-/// * When fixed point representation overflows as i64 (ie the number is too big)
-/// * When `n` is inf, or -inf.
-///
-pub(crate) fn to_fixed_round<F>(n: F, fractional_bits: usize) -> i64
-where
-    F: Float + Debug,
-{
-    if n.is_nan() {
-        return 0;
-    }
-
-    if !n.is_finite() {
-        panic!("Cannot convert {n:?} to fixed point representation.");
-    }
-
-    // Shift the point fractional_bits bits to the left
-    let shifted = n * F::from(1 << fractional_bits).unwrap();
-
-    let shifted = shifted.round() * F::from(2).unwrap();
-    match shifted.to_i64() {
-        Some(number) => number + 1,
+        Some(number) => number + 1,  // Set LSB to 1 to indicate not a NaN
         None => panic!("Overflow converting {n:?} to fixed point representation."),
     }
 }
@@ -116,39 +89,39 @@ mod tests {
     #[test]
     fn test_to_fixed() {
         let n = 1.5; // 0b1.1
-        assert_eq!(to_fixed(n, 1), 7); // 0b111
-        assert_eq!(to_fixed(n, 8), 769); // 0b1100000001
+        assert_eq!(to_fixed(n, 1, false), 7); // 0b111
+        assert_eq!(to_fixed(n, 8, false), 769); // 0b1100000001
 
         let n = 0.0625; // 0b0.0001
-        assert_eq!(to_fixed(n, 4), 3); // 0b11
+        assert_eq!(to_fixed(n, 4, false), 3); // 0b11
 
         let n = 0.0;
-        assert_eq!(to_fixed(n, 16), 1); // 0b1
+        assert_eq!(to_fixed(n, 16, false), 1); // 0b1
 
         let n = -0.0;
-        assert_eq!(to_fixed(n, 16), 1); // 0b1
+        assert_eq!(to_fixed(n, 16, false), 1); // 0b1
     }
 
     #[test]
     fn test_to_fixed_round() {
         let n = 1.5;
-        assert_eq!(to_fixed_round(n, 1), 7);
-        assert_eq!(to_fixed_round(n, 8), 769);
+        assert_eq!(to_fixed(n, 1, true), 7);
+        assert_eq!(to_fixed(n, 8, true), 769);
 
         let n = 0.0625;
-        assert_eq!(to_fixed_round(n, 4), 3);
-        assert_eq!(to_fixed_round(n, 3), 3);
-        assert_eq!(to_fixed_round(n, 2), 1);
+        assert_eq!(to_fixed(n, 4, true), 3);
+        assert_eq!(to_fixed(n, 3, true), 3);
+        assert_eq!(to_fixed(n, 2, true), 1);
 
         // 1/10 cannot be precisely represented in binary
         let n = 0.1;
-        assert_eq!(to_fixed_round(n, 16), 6554 * 2 + 1);
+        assert_eq!(to_fixed(n, 16, true), 6554 * 2 + 1);
 
         let n = 0.0;
-        assert_eq!(to_fixed_round(n, 16), 1);
+        assert_eq!(to_fixed(n, 16, true), 1);
 
         let n = -0.0;
-        assert_eq!(to_fixed_round(n, 16), 1);
+        assert_eq!(to_fixed(n, 16, true), 1);
     }
 
     #[test]
@@ -167,67 +140,40 @@ mod tests {
     #[should_panic]
     fn test_to_fixed_loss_of_precision_off_by_1() {
         let n = 0.0625; // 0b0.0001
-        to_fixed(n, 3);
+        to_fixed(n, 3, false);
     }
 
     #[test]
     #[should_panic]
     fn test_to_fixed_loss_of_precision_off_by_more() {
         let n = 1.0625; // 0b1.0001
-        to_fixed(n, 3);
+        to_fixed(n, 3, false);
     }
 
     #[test]
     fn test_to_fixed_nan() {
         let n = std::f64::NAN;
-        assert_eq!(to_fixed(n, 12), 0);
+        assert_eq!(to_fixed(n, 12, false), 0);
     }
 
     #[test]
     #[should_panic]
     fn test_to_fixed_inf() {
         let n = std::f64::INFINITY;
-        to_fixed(n, 14);
+        to_fixed(n, 14, false);
     }
 
     #[test]
     #[should_panic]
     fn test_to_fixed_neg_inf() {
         let n = std::f64::NEG_INFINITY;
-        to_fixed(n, 14);
+        to_fixed(n, 14, false);
     }
 
     #[test]
     #[should_panic]
     fn test_to_fixed_overflow() {
         let n = 1.5e100;
-        to_fixed(n, 1);
-    }
-
-    #[test]
-    fn test_to_fixed_round_nan() {
-        let n = std::f64::NAN;
-        assert_eq!(to_fixed(n, 12), 0);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_to_fixed_round_inf() {
-        let n = std::f64::INFINITY;
-        to_fixed_round(n, 14);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_to_fixed_round_neg_inf() {
-        let n = std::f64::NEG_INFINITY;
-        to_fixed_round(n, 14);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_to_fixed_round_overflow() {
-        let n = 1.5e100;
-        to_fixed_round(n, 1);
+        to_fixed(n, 1, false);
     }
 }
