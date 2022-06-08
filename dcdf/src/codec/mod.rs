@@ -433,16 +433,11 @@ where
     I: PrimInt + Debug,
 {
     /// Snapshot of first time instant
-    pub(crate) fn new(snapshot: Snapshot<I>, logs: Vec<Log<I>>) -> Self {
+    pub fn new(snapshot: Snapshot<I>, logs: Vec<Log<I>>) -> Self {
         Self {
             snapshot: snapshot,
             logs: logs,
         }
-    }
-
-    fn shape(&self) -> [usize; 3] {
-        let [rows, cols] = self.snapshot.shape;
-        [1 + self.logs.len(), rows, cols]
     }
 
     fn get(&self, instant: usize, row: usize, col: usize) -> I

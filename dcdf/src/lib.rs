@@ -1,7 +1,5 @@
-#[allow(dead_code)]
 mod codec;
 mod fixed;
-#[allow(dead_code)]
 mod simple;
 
 pub use codec::CellIter;

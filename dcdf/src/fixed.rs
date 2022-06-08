@@ -27,7 +27,7 @@ use std::fmt::Debug;
 /// * When fixed point representation overflows as i64 (ie the number is too big)
 /// * When `n` is inf, or -inf.
 ///
-pub(crate) fn to_fixed<F>(n: F, fractional_bits: usize, round: bool) -> i64
+pub fn to_fixed<F>(n: F, fractional_bits: usize, round: bool) -> i64
 where
     F: Float + Debug,
 {
@@ -75,7 +75,7 @@ where
 /// * `fractional_bits` - The number of bits used for the fractional part in the fixed point
 ///     representation.
 ///
-pub(crate) fn from_fixed<F: Float>(n: i64, fractional_bits: usize) -> F {
+pub fn from_fixed<F: Float>(n: i64, fractional_bits: usize) -> F {
     match n {
         0 => F::nan(),
         _ => F::from(n - 1).unwrap() / F::from(1 << (fractional_bits + 1)).unwrap(),
