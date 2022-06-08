@@ -46,8 +46,7 @@ where
     if shifted.fract() > F::zero() {
         if round {
             shifted = shifted.round();
-        }
-        else {
+        } else {
             panic!(
                 "\
                 Converting {:?} to fixed point representation with {} fractional bits \
@@ -62,7 +61,7 @@ where
     shifted = shifted * F::from(2).unwrap();
 
     match shifted.to_i64() {
-        Some(number) => number + 1,  // Set LSB to 1 to indicate not a NaN
+        Some(number) => number + 1, // Set LSB to 1 to indicate not a NaN
         None => panic!("Overflow converting {n:?} to fixed point representation."),
     }
 }
