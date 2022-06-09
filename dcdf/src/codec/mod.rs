@@ -23,6 +23,10 @@
 //! [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
 //! [2]: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.69.9548&rep=rep1&type=pdf
 
+mod bitmap;
+
+use bitmap::{BitMap, BitMapBuilder};
+
 use ndarray::Array2;
 use num_traits::{Float, PrimInt};
 use std::cmp::min;
@@ -637,7 +641,7 @@ where
 
         Snapshot {
             _marker: PhantomData,
-            nodemap: BitMap::from(nodemap),
+            nodemap: nodemap.finish(),
             max: Dacs::from(max),
             min: Dacs::from(min),
             k,
@@ -1125,8 +1129,8 @@ where
 
         Log {
             _marker: PhantomData,
-            nodemap: BitMap::from(nodemap),
-            equal: BitMap::from(equal),
+            nodemap: nodemap.finish(),
+            equal: equal.finish(),
             max: Dacs::from(max),
             min: Dacs::from(min),
             k,
@@ -1699,207 +1703,6 @@ where
     }
 }
 
-/// An array of bits.
-///
-/// This unindexed version is used to build up a bitmap using the `push` method. Once a bitmap is
-/// built, it should be converted to an indexed type for performant rank queries.
-///
-/// Typical usage:
-///
-/// let mut builder = BitMapBuilder::new();
-///
-/// builder.push(...)
-/// builder.push(...)
-/// etc...
-///
-/// let bitmap = BitMap::from(builder);
-///
-struct BitMapBuilder {
-    length: usize,
-    bitmap: Vec<u8>,
-}
-
-impl BitMapBuilder {
-    /// Initialize an empty BitMapBuilder
-    fn new() -> BitMapBuilder {
-        BitMapBuilder {
-            length: 0,
-            bitmap: vec![],
-        }
-    }
-
-    /// Push a bit onto the BitMapBuilder
-    fn push(&mut self, bit: bool) {
-        // Which bit do we need to set in the relevant byte?
-        let position = self.length % 8;
-
-        // How much do we need to shift to the left to get to that position?
-        let shift = 7 - position;
-
-        // If position == 0, we start a new byte
-        if position == 0 {
-            self.bitmap.push(if bit { 1 << shift } else { 0 });
-        }
-        // Otherwise add bit to currently started byte
-        else if bit {
-            let last = self.bitmap.len() - 1;
-            self.bitmap[last] += 1 << shift;
-        }
-
-        self.length += 1;
-    }
-}
-
-/// An array of bits with a single level index for making fast rank queries.
-///
-struct BitMap {
-    length: usize,
-    k: usize,
-    index: Vec<u32>,
-    bitmap: Vec<u32>,
-}
-
-impl From<BitMapBuilder> for BitMap {
-    /// Generate an indexed bitmap from an unindexed one.
-    ///
-    /// Index is an array of bit counts for every k words in the bitmap, such that
-    /// rank(i) = index[i / k / wordlen] if i is an even multiple of k * wordlen. wordlen is 32 for
-    /// this implementation which uses 32 bit unsigned integers.
-    fn from(bitmap: BitMapBuilder) -> Self {
-        // Value of k is more or less arbitrary. Could be tuned via benchmarking.
-        // Index will add bitmap.length / k extra space to store the index
-        let k = 4; // 25% extra space to store the index
-        let blocks = bitmap.length / 32 / k;
-        let mut index: Vec<u32> = Vec::with_capacity(blocks);
-
-        // Convert vector of u8 to vector of u32
-        let words = div_ceil(bitmap.length, 32);
-        let mut bitmap32: Vec<u32> = Vec::with_capacity(words);
-        if words > 0 {
-            let mut shift = 24;
-            let mut word_index = 0;
-
-            for byte in bitmap.bitmap {
-                if shift == 24 {
-                    bitmap32.push(0);
-                }
-                let mut word: u32 = byte.into();
-                word <<= shift;
-                bitmap32[word_index] |= word;
-
-                if shift == 0 {
-                    word_index += 1;
-                    shift = 24;
-                } else {
-                    shift -= 8;
-                }
-            }
-        }
-
-        // Generate index
-        let mut count = 0;
-        for i in 0..blocks {
-            for j in 0..k {
-                count += bitmap32[i * k + j].count_ones();
-            }
-            index.push(count);
-        }
-
-        BitMap {
-            length: bitmap.length,
-            k,
-            index,
-            bitmap: bitmap32,
-        }
-    }
-}
-
-impl BitMap {
-    fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
-        stream.write_u32(self.length as u32)?;
-        stream.write_u32(self.k as u32)?;
-        for index_block in &self.index {
-            stream.write_u32(*index_block)?;
-        }
-        for bitmap_block in &self.bitmap {
-            stream.write_u32(*bitmap_block)?;
-        }
-        Ok(())
-    }
-
-    fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
-        let length = stream.read_u32()? as usize;
-        let k = stream.read_u32()? as usize;
-
-        let blocks = length / 32 / k;
-        let mut index = Vec::with_capacity(blocks as usize);
-        for _ in 0..blocks {
-            index.push(stream.read_u32()?);
-        }
-
-        let words = div_ceil(length, 32);
-        let mut bitmap = Vec::with_capacity(words);
-        for _ in 0..words {
-            bitmap.push(stream.read_u32()?);
-        }
-
-        Ok(Self {
-            length,
-            k,
-            index,
-            bitmap,
-        })
-    }
-
-    fn size(&self) -> u64 {
-        (4 + 4 + self.index.len() * 4 + self.bitmap.len() * 4) as u64
-    }
-
-    /// Get the bit at position i
-    fn get(&self, i: usize) -> bool {
-        let word_index = i / 32;
-        let bit_index = i % 32;
-        let shift = 31 - bit_index;
-        let word = self.bitmap[word_index];
-
-        (word >> shift) & 1 > 0
-    }
-
-    /// Count occurences of 1 in BitMap[0...i]
-    fn rank(&self, i: usize) -> usize {
-        if i > self.length {
-            // Can only happen if there is a programming error in this module
-            panic!("index out of bounds. length: {}, i: {}", self.length, i);
-        }
-
-        // Use the index
-        let block = i / 32 / self.k;
-        let mut count = if block > 0 { self.index[block - 1] } else { 0 };
-
-        // Use popcount/count_ones on any whole words not included in index
-        let start = block * self.k;
-        let end = i / 32;
-        for word in &self.bitmap[start..end] {
-            count += word.count_ones();
-        }
-
-        // Count last bits in remaining fraction of a word
-        let leftover_bits = i - end * 32;
-        if leftover_bits > 0 {
-            let word = &self.bitmap[end];
-            let shift = 32 - leftover_bits;
-            count += (word >> shift).count_ones();
-        }
-
-        count.try_into().unwrap()
-    }
-
-    /// Count occurences of 0 in BitMap[0...i]
-    fn rank0(&self, i: usize) -> usize {
-        i - self.rank(i)
-    }
-}
-
 /// Compact storage for integers (Directly Addressable Codes)
 struct Dacs {
     levels: Vec<(BitMap, Vec<u8>)>,
@@ -1987,7 +1790,7 @@ where
         let levels = levels
             .into_iter()
             .take_while(|(bitmap, _)| bitmap.length > 0)
-            .map(|(bitmap, bytes)| (BitMap::from(bitmap), bytes))
+            .map(|(bitmap, bytes)| (bitmap.finish(), bytes))
             .collect();
 
         Dacs { levels }
@@ -2107,19 +1910,6 @@ impl K2PTreeNode {
             equal,
             children,
         }
-    }
-}
-
-/// Returns n / m with remainder rounded up to nearest integer
-fn div_ceil<I>(m: I, n: I) -> I
-where
-    I: PrimInt + Debug,
-{
-    let a = m / n;
-    if m % n > I::zero() {
-        a + I::one()
-    } else {
-        a
     }
 }
 
