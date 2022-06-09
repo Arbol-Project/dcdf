@@ -24,8 +24,10 @@
 //! [2]: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.69.9548&rep=rep1&type=pdf
 
 mod bitmap;
+mod dacs;
 
 use bitmap::{BitMap, BitMapBuilder};
+use dacs::Dacs;
 
 use ndarray::Array2;
 use num_traits::{Float, PrimInt};
@@ -1701,110 +1703,6 @@ where
             );
         }
     }
-}
-
-/// Compact storage for integers (Directly Addressable Codes)
-struct Dacs {
-    levels: Vec<(BitMap, Vec<u8>)>,
-}
-
-impl Dacs {
-    fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
-        stream.write_byte(self.levels.len() as u8)?;
-        for (bitmap, bytes) in &self.levels {
-            bitmap.serialize(stream)?;
-            stream.write_all(bytes)?;
-        }
-        Ok(())
-    }
-
-    fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
-        let n_levels = stream.read_byte()? as usize;
-        let mut levels = Vec::with_capacity(n_levels);
-        for _ in 0..n_levels {
-            let bitmap = BitMap::deserialize(stream)?;
-            let mut bytes = Vec::with_capacity(bitmap.length);
-            stream.take(bitmap.length as u64).read_to_end(&mut bytes)?;
-
-            levels.push((bitmap, bytes));
-        }
-
-        Ok(Self { levels })
-    }
-
-    fn size(&self) -> u64 {
-        1 + self
-            .levels
-            .iter()
-            .map(|(bitmap, bytes)| bitmap.size() + bytes.len() as u64)
-            .sum::<u64>()
-    }
-
-    fn get<I>(&self, index: usize) -> I
-    where
-        I: PrimInt + Debug,
-    {
-        let mut index = index;
-        let mut n: u64 = 0;
-        for (i, (bitmap, bytes)) in self.levels.iter().enumerate() {
-            n |= (bytes[index] as u64) << i * 8;
-            if bitmap.get(index) {
-                index = bitmap.rank(index);
-            } else {
-                break;
-            }
-        }
-
-        let n = zigzag_decode(n);
-        I::from(n).unwrap()
-    }
-}
-
-impl<I> From<Vec<I>> for Dacs
-where
-    I: PrimInt + Debug,
-{
-    fn from(data: Vec<I>) -> Self {
-        // Set up levels. Probably won't need all of them
-        let mut levels = Vec::with_capacity(8);
-        for _ in 0..8 {
-            levels.push((BitMapBuilder::new(), Vec::new()));
-        }
-
-        // Chunk each datum into bytes, one per level, stopping when only 0s are left
-        for datum in data {
-            let mut datum = zigzag_encode(datum.to_i64().unwrap());
-            for (bitmap, bytes) in &mut levels {
-                bytes.push((datum & 0xff) as u8);
-                datum >>= 8;
-                if datum == 0 {
-                    bitmap.push(false);
-                    break;
-                } else {
-                    bitmap.push(true);
-                }
-            }
-        }
-
-        // Index bitmaps and prepare to return, stopping as soon as an empty level is encountered
-        let levels = levels
-            .into_iter()
-            .take_while(|(bitmap, _)| bitmap.length > 0)
-            .map(|(bitmap, bytes)| (bitmap.finish(), bytes))
-            .collect();
-
-        Dacs { levels }
-    }
-}
-
-fn zigzag_encode(n: i64) -> u64 {
-    let zz = (n >> 63) ^ (n << 1);
-    zz as u64
-}
-
-fn zigzag_decode(zz: u64) -> i64 {
-    let n = (zz >> 1) ^ if zz & 1 == 1 { 0xffffffffffffffff } else { 0 };
-    n as i64
 }
 
 // Temporary tree structure for building T - K^2 raster

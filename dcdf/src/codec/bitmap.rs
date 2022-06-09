@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 /// convert to a BitMap.
 ///
 /// # Example
-/// 
+///
 /// let mut builder = BitMapBuilder::new();
 ///
 /// builder.push(true);

@@ -7,19 +7,6 @@ use tempfile::tempfile;
 
 use super::*;
 
-impl Dacs {
-    fn len(&self) -> usize {
-        self.levels[0].0.length
-    }
-
-    fn collect<I>(&self) -> Vec<I>
-    where
-        I: PrimInt + Debug,
-    {
-        (0..self.len()).into_iter().map(|i| self.get(i)).collect()
-    }
-}
-
 impl<I> Snapshot<I>
 where
     I: PrimInt + Debug,
@@ -2056,27 +2043,5 @@ mod log {
                 }
             }
         }
-    }
-}
-
-mod dacs {
-    use super::*;
-
-    #[test]
-    fn get_i32() {
-        let data = vec![0, 2, -3, -2.pow(9), 2.pow(17) + 1, -2.pow(30) - 42];
-        let dacs = Dacs::from(data.clone());
-        for i in 0..data.len() {
-            assert_eq!(dacs.get::<i32>(i), data[i]);
-        }
-        assert_eq!(dacs.levels[0].0.get(2), false);
-    }
-
-    #[test]
-    fn this_one() {
-        let data: Vec<i32> = vec![-512];
-        let dacs = Dacs::from(data.clone());
-        assert_eq!(zigzag_decode(zigzag_encode(-512)), -512);
-        assert_eq!(dacs.get::<i32>(0), data[0]);
     }
 }
