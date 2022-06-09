@@ -1,7 +1,6 @@
 import itertools
 
 from dcdf import _dcdf
-from dcdf._dcdf import load
 
 _BUILDERS = {
     "int32": _dcdf.PyBuilderI32,
@@ -54,3 +53,10 @@ class Suggestion:
     def __init__(self, fractional_bits, round):
         self.fractional_bits = fractional_bits
         self.round = round
+
+
+def load(file_or_path):
+    if hasattr(file_or_path, "read"):
+        return _dcdf.load(file_or_path)
+
+    return _dcdf.load_from(file_or_path)

@@ -1,7 +1,9 @@
 use ndarray::Array;
 use numpy::{IntoPyArray, PyArray1, PyArray3, PyReadonlyArray2};
 use pyo3::prelude::*;
+use pyo3_file::PyFileLikeObject;
 use std::fs::File;
+use std::io::{Read, Seek, Write};
 use std::mem;
 use std::path::Path;
 
@@ -63,16 +65,27 @@ impl PyBuildI32 {
             inner: build,
         })
     }
+
+    fn _save(&self, mut file: impl Write) -> PyResult<()> {
+        self.inner.save(&mut file)?;
+
+        Ok(())
+    }
 }
 
 #[pymethods]
 impl PyBuildI32 {
-    fn save(&self, path: &str) -> PyResult<()> {
+    fn save_as(&self, path: &str) -> PyResult<()> {
         let path = Path::new(path);
-        let mut file = File::create(&path)?;
-        self.inner.save(&mut file)?;
+        let file = File::create(&path)?;
 
-        Ok(())
+        self._save(file)
+    }
+
+    fn save(&self, file: PyObject) -> PyResult<()> {
+        let file = PyFileLikeObject::with_requirements(file, false, true, false)?;
+
+        self._save(file)
     }
 }
 
@@ -226,16 +239,27 @@ impl PyBuildF32 {
             inner: build,
         })
     }
+
+    fn _save(&self, mut file: impl Write) -> PyResult<()> {
+        self.inner.save(&mut file)?;
+
+        Ok(())
+    }
 }
 
 #[pymethods]
 impl PyBuildF32 {
-    fn save(&self, path: &str) -> PyResult<()> {
+    fn save_as(&self, path: &str) -> PyResult<()> {
         let path = Path::new(path);
-        let mut file = File::create(&path)?;
-        self.inner.save(&mut file)?;
+        let file = File::create(&path)?;
 
-        Ok(())
+        self._save(file)
+    }
+
+    fn save(&self, file: PyObject) -> PyResult<()> {
+        let file = PyFileLikeObject::with_requirements(file, false, true, false)?;
+
+        self._save(file)
     }
 }
 
@@ -366,9 +390,21 @@ impl PyFractionSuggesterF32 {
 }
 
 #[pyfunction]
-fn load(py: Python, path: &str) -> PyResult<PyObject> {
+fn load(py: Python, file: PyObject) -> PyResult<PyObject> {
+    let file = PyFileLikeObject::with_requirements(file, true, false, true)?;
+
+    _load(py, file)
+}
+
+#[pyfunction]
+fn load_from(py: Python, path: &str) -> PyResult<PyObject> {
     let path = Path::new(path);
-    let mut file = File::open(&path)?;
+    let file = File::open(&path)?;
+
+    _load(py, file)
+}
+
+fn _load(py: Python, mut file: impl Read + Seek) -> PyResult<PyObject> {
     let inner = dcdf::load(&mut file)?;
     let chunk = match inner {
         dcdf::I32(chunk) => Py::new(py, PyChunkI32::new(chunk))?.to_object(py),
@@ -383,6 +419,7 @@ fn load(py: Python, path: &str) -> PyResult<PyObject> {
 #[pymodule]
 fn _dcdf(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load, m)?)?;
+    m.add_function(wrap_pyfunction!(load_from, m)?)?;
 
     m.add_class::<PyBuilderI32>()?;
     m.add_class::<PyBuildI32>()?;

@@ -88,7 +88,7 @@ def get_data(dtype):
 def get_chunk(tmpdir, data):
     built = dcdf.build(data, fraction=3)
     path = str(tmpdir / "tmpdata.dcdf")
-    built.save(path)
+    built.save_as(path)
 
     return dcdf.load(path)
 

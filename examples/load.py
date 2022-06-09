@@ -17,7 +17,8 @@ def main():
     args = docopt(__doc__)
 
     print("Loading...")
-    data = dcdf.load(args["<input_file>"])
+    with open(args["<input_file>"], "rb") as f:
+        data = dcdf.load(f)
 
     instants, rows, cols = data.shape
 

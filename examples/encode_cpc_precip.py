@@ -42,7 +42,8 @@ def main():
     print(f"\tLogs: {built.logs}")
 
     print("Saving...")
-    built.save(args["<output_file>"])
+    with open(args["<output_file>"], "wb") as f:
+        built.save(f)
 
 
 if __name__ == "__main__":
