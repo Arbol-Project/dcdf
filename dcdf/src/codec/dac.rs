@@ -20,12 +20,12 @@ use std::io;
 use std::io::{Read, Write};
 
 /// Compact storage for integers (Directly Addressable Codes)
-pub struct Dacs {
+pub struct Dac {
     pub levels: Vec<(BitMap, Vec<u8>)>,
 }
 
-impl Dacs {
-    /// Write the dacs to a stream
+impl Dac {
+    /// Write the dac to a stream
     ///
     pub fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
         stream.write_byte(self.levels.len() as u8)?;
@@ -36,7 +36,7 @@ impl Dacs {
         Ok(())
     }
 
-    /// Read the dacs from a stream
+    /// Read the dac from a stream
     ///
     pub fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
         let n_levels = stream.read_byte()? as usize;
@@ -52,7 +52,7 @@ impl Dacs {
         Ok(Self { levels })
     }
 
-    /// Get number of bytes of serialized dacs
+    /// Get number of bytes of serialized dac
     pub fn size(&self) -> u64 {
         1 + self
             .levels
@@ -83,11 +83,11 @@ impl Dacs {
     }
 }
 
-impl<I> From<Vec<I>> for Dacs
+impl<I> From<Vec<I>> for Dac
 where
     I: PrimInt + Debug,
 {
-    /// Compress a vector of integers into a dacs data structure
+    /// Compress a vector of integers into a dac data structure
     fn from(data: Vec<I>) -> Self {
         // Set up levels. Probably won't need all of them
         let mut levels = Vec::with_capacity(8);
@@ -117,7 +117,7 @@ where
             .map(|(bitmap, bytes)| (bitmap.finish(), bytes))
             .collect();
 
-        Dacs { levels }
+        Dac { levels }
     }
 }
 
@@ -135,10 +135,10 @@ fn zigzag_decode(zz: u64) -> i64 {
 mod tests {
     use super::*;
 
-    impl Dacs {
+    impl Dac {
         // Some functions that are useful for testing but not needed otherwise.
 
-        /// Get number of integers stored in this dacs
+        /// Get number of integers stored in this dac
         fn len(&self) -> usize {
             self.levels[0].0.length
         }
@@ -155,18 +155,18 @@ mod tests {
     #[test]
     fn get_i32() {
         let data = vec![0, 2, -3, -2.pow(9), 2.pow(17) + 1, -2.pow(30) - 42];
-        let dacs = Dacs::from(data.clone());
+        let dac = Dac::from(data.clone());
         for i in 0..data.len() {
-            assert_eq!(dacs.get::<i32>(i), data[i]);
+            assert_eq!(dac.get::<i32>(i), data[i]);
         }
-        assert_eq!(dacs.levels[0].0.get(2), false);
+        assert_eq!(dac.levels[0].0.get(2), false);
     }
 
     #[test]
     fn this_one() {
         let data: Vec<i32> = vec![-512];
-        let dacs = Dacs::from(data.clone());
+        let dac = Dac::from(data.clone());
         assert_eq!(zigzag_decode(zigzag_encode(-512)), -512);
-        assert_eq!(dacs.get::<i32>(0), data[0]);
+        assert_eq!(dac.get::<i32>(0), data[0]);
     }
 }

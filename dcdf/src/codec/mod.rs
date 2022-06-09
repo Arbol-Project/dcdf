@@ -24,10 +24,10 @@
 //! [2]: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.69.9548&rep=rep1&type=pdf
 
 mod bitmap;
-mod dacs;
+mod dac;
 
 use bitmap::{BitMap, BitMapBuilder};
-use dacs::Dacs;
+use dac::Dac;
 
 use ndarray::Array2;
 use num_traits::{Float, PrimInt};
@@ -543,10 +543,10 @@ where
     nodemap: BitMap,
 
     /// Tree node maximum values, known as Lmax in Silva-Coira
-    max: Dacs,
+    max: Dac,
 
     /// Tree node minimum values, known as Lmin in Silva-Coira
-    min: Dacs,
+    min: Dac,
 
     /// The K in K²-Raster. Each level of the tree structure is divided into k² subtrees.
     /// In practice, this will almost always be 2.
@@ -583,8 +583,8 @@ where
         let shape = [stream.read_u32()? as usize, stream.read_u32()? as usize];
         let sidelen = stream.read_u32()? as usize;
         let nodemap = BitMap::deserialize(stream)?;
-        let max = Dacs::deserialize(stream)?;
-        let min = Dacs::deserialize(stream)?;
+        let max = Dac::deserialize(stream)?;
+        let min = Dac::deserialize(stream)?;
 
         Ok(Self {
             _marker: PhantomData,
@@ -644,8 +644,8 @@ where
         Snapshot {
             _marker: PhantomData,
             nodemap: nodemap.finish(),
-            max: Dacs::from(max),
-            min: Dacs::from(min),
+            max: Dac::from(max),
+            min: Dac::from(min),
             k,
             shape: [shape[0], shape[1]],
             sidelen,
@@ -1022,10 +1022,10 @@ where
     equal: BitMap,
 
     /// Tree node maximum values, known as Lmax in Silva-Coira
-    max: Dacs,
+    max: Dac,
 
     /// Tree node minimum values, known as Lmin in Silva-Coira
-    min: Dacs,
+    min: Dac,
 
     /// The K in K²-Raster. Each level of the tree structure is divided into k² subtrees.
     /// In practice, this will almost always be 2.
@@ -1064,8 +1064,8 @@ where
         let sidelen = stream.read_u32()? as usize;
         let nodemap = BitMap::deserialize(stream)?;
         let equal = BitMap::deserialize(stream)?;
-        let max = Dacs::deserialize(stream)?;
-        let min = Dacs::deserialize(stream)?;
+        let max = Dac::deserialize(stream)?;
+        let min = Dac::deserialize(stream)?;
 
         Ok(Self {
             _marker: PhantomData,
@@ -1133,8 +1133,8 @@ where
             _marker: PhantomData,
             nodemap: nodemap.finish(),
             equal: equal.finish(),
-            max: Dacs::from(max),
-            min: Dacs::from(min),
+            max: Dac::from(max),
+            min: Dac::from(min),
             k,
             shape: [shape[0], shape[1]],
             sidelen,
