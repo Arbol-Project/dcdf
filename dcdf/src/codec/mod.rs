@@ -24,11 +24,13 @@
 //! [2]: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.69.9548&rep=rep1&type=pdf
 
 mod bitmap;
+mod block;
 mod dac;
 mod helpers;
 mod log;
 mod snapshot;
 
+pub use block::Block;
 pub use log::Log;
 pub use snapshot::Snapshot;
 
@@ -418,114 +420,6 @@ where
             )),
             None => None,
         }
-    }
-}
-
-/// A short series of time instants made up of one Snapshot encoding the first time instant and
-/// Logs encoding subsequent time instants.
-///
-pub struct Block<I>
-where
-    I: PrimInt + Debug,
-{
-    /// Snapshot of first time instant
-    snapshot: Snapshot<I>,
-
-    /// Successive time instants as logs
-    logs: Vec<Log<I>>,
-}
-
-impl<I> Block<I>
-where
-    I: PrimInt + Debug,
-{
-    /// Snapshot of first time instant
-    pub fn new(snapshot: Snapshot<I>, logs: Vec<Log<I>>) -> Self {
-        Self {
-            snapshot: snapshot,
-            logs: logs,
-        }
-    }
-
-    fn get(&self, instant: usize, row: usize, col: usize) -> I
-    where
-        I: PrimInt + Debug,
-    {
-        match instant {
-            0 => self.snapshot.get(row, col),
-            _ => self.logs[instant - 1].get(&self.snapshot, row, col),
-        }
-    }
-
-    fn get_window(
-        &self,
-        instant: usize,
-        top: usize,
-        bottom: usize,
-        left: usize,
-        right: usize,
-    ) -> Array2<I>
-    where
-        I: PrimInt + Debug,
-    {
-        match instant {
-            0 => self.snapshot.get_window(top, bottom, left, right),
-            _ => self.logs[instant - 1].get_window(&self.snapshot, top, bottom, left, right),
-        }
-    }
-
-    pub fn search_window(
-        &self,
-        instant: usize,
-        top: usize,
-        bottom: usize,
-        left: usize,
-        right: usize,
-        lower: I,
-        upper: I,
-    ) -> Vec<(usize, usize)>
-    where
-        I: PrimInt + Debug,
-    {
-        match instant {
-            0 => self
-                .snapshot
-                .search_window(top, bottom, left, right, lower, upper),
-            _ => self.logs[instant - 1].search_window(
-                &self.snapshot,
-                top,
-                bottom,
-                left,
-                right,
-                lower,
-                upper,
-            ),
-        }
-    }
-
-    fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
-        stream.write_byte((self.logs.len() + 1) as u8)?;
-        self.snapshot.serialize(stream)?;
-        for log in &self.logs {
-            log.serialize(stream)?;
-        }
-        Ok(())
-    }
-
-    fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
-        let n_instants = stream.read_byte()? as usize;
-        let snapshot = Snapshot::deserialize(stream)?;
-        let mut logs: Vec<Log<I>> = Vec::with_capacity(n_instants - 1);
-        for _ in 0..n_instants - 1 {
-            let log = Log::deserialize(stream)?;
-            logs.push(log);
-        }
-
-        Ok(Self { snapshot, logs })
-    }
-
-    pub fn size(&self) -> u64 {
-        1 + self.snapshot.size() + self.logs.iter().map(|l| l.size()).sum::<u64>()
     }
 }
 
