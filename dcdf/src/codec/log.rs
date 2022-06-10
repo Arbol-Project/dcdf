@@ -10,7 +10,7 @@ use std::marker::PhantomData;
 use super::bitmap::{BitMap, BitMapBuilder};
 use super::dac::Dac;
 use super::helpers::rearrange;
-use super::Snapshot;
+use super::snapshot::Snapshot;
 use crate::extio::{ExtendedRead, ExtendedWrite};
 
 /// K²-Raster encoded Log
