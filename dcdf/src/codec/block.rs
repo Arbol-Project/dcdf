@@ -118,7 +118,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::array_search_window;
+    use super::super::testing::array_search_window;
     use super::*;
     use ndarray::{arr3, s, Array3};
     use std::collections::HashSet;

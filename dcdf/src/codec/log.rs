@@ -823,37 +823,10 @@ impl K2PTreeNode {
 
 #[cfg(test)]
 mod tests {
+    use super::super::testing::array_search_window;
     use super::*;
-    use ndarray::{arr3, s, Array3, ArrayView2};
-    use num_traits::Num;
+    use ndarray::{arr3, s, Array3};
     use std::collections::HashSet;
-
-    /// Reference implementation for search_window that works on an ndarray::Array2, for comparison
-    /// to the K^2 raster implementations.
-    fn array_search_window<T>(
-        data: ArrayView2<T>,
-        top: usize,
-        bottom: usize,
-        left: usize,
-        right: usize,
-        lower: T,
-        upper: T,
-    ) -> Vec<(usize, usize)>
-    where
-        T: Num + Debug + Copy + PartialOrd,
-    {
-        let mut coords: Vec<(usize, usize)> = vec![];
-        for row in top..bottom {
-            for col in left..right {
-                let cell_value = data[[row, col]];
-                if lower <= cell_value && cell_value <= upper {
-                    coords.push((row, col));
-                }
-            }
-        }
-
-        coords
-    }
 
     fn array8() -> Array3<i32> {
         arr3(&[
