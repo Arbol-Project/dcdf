@@ -1,4 +1,3 @@
-use ndarray::Array2;
 use num_traits::PrimInt;
 use std::cmp::min;
 use std::collections::VecDeque;
@@ -55,6 +54,8 @@ impl<I> Log<I>
 where
     I: PrimInt + Debug,
 {
+    /// Write a log to a stream
+    ///
     pub fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
         stream.write_byte(self.k as u8)?;
         stream.write_u32(self.shape[0] as u32)?;
@@ -68,6 +69,8 @@ where
         Ok(())
     }
 
+    /// Read a log from a stream
+    ///
     pub fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
         let k = stream.read_byte()? as i32;
         let shape = [stream.read_u32()? as usize, stream.read_u32()? as usize];
@@ -89,12 +92,23 @@ where
         })
     }
 
+    /// Return number of bytes in serialized representation
+    ///
     pub fn size(&self) -> u64 {
         1 + 4 + 4 + 4 + self.nodemap.size() + self.equal.size() + self.max.size() + self.min.size()
     }
 
     /// Build a log from a pair of two-dimensional arrays.
     ///
+    /// The notional two-dimensional arrays are represented by `get_s' and `get_t`, which are
+    /// functions that take a row and column as arguments and return an i64. The dimensions of the
+    /// two-dimensional arrays are given by `shape`. `k` is the K from K²-Raster. The recommended
+    /// value is 2. See the literature.
+    ///
+    /// See the documentation for `Snapshot::build` for the rationale behind the `get_s` and
+    /// `get_t` indirection.
+    ///
+
     pub fn build<GS, GT>(get_s: GS, get_t: GT, shape: [usize; 2], k: i32) -> Self
     where
         GS: Fn(usize, usize) -> i64,
@@ -288,26 +302,34 @@ where
     /// This is based on Algorithm 5 in Silva-Coira[^note], but has been modified to return a
     /// submatrix rather than an unordered sequence of values.
     ///
+    /// The passed in `set` function  inserts into a notional two dimensional array that has been
+    /// preallocated with the correct dimensions. This indirection allows higher layers to
+    /// preallocate a 3 dimensional array at the beginning of a time series query, and provides a
+    /// means of injecting data conversion from the underlying stored data to the desired output
+    /// numeric type.
+    ///
     /// [^note]: [F. Silva-Coira, J.R. Paramá, G. de Bernardo, D. Seco, Space-efficient
     ///     representations of raster time series, Information Sciences 566 (2021) 300-325.][1]
     ///
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
-    pub fn get_window(
+    pub fn fill_window<S>(
         &self,
+        mut set: S,
         snapshot: &Snapshot<I>,
         top: usize,
         bottom: usize,
         left: usize,
         right: usize,
-    ) -> Array2<I> {
+    ) where
+        S: FnMut(usize, usize, i64),
+    {
         let (left, right) = rearrange(left, right);
         let (top, bottom) = rearrange(top, bottom);
         self.check_bounds(bottom - 1, right - 1);
 
         let rows = bottom - top;
         let cols = right - left;
-        let mut window = Array2::zeros([rows, cols]);
 
         let single_t = !self.nodemap.get(0);
         let single_s = !snapshot.nodemap.get(0);
@@ -315,15 +337,16 @@ where
         if single_t && (single_s || !self.equal.get(0)) {
             // Both trees have single node or log has single node but it contains a uniform value
             // for all cells
-            let max_t: I = self.max.get(0);
-            let max_s: I = snapshot.max.get(0);
+            let max_t: i64 = self.max.get(0);
+            let max_s: i64 = snapshot.max.get(0);
             for row in 0..rows {
                 for col in 0..cols {
-                    window[[row, col]] = max_t + max_s;
+                    set(row, col, max_t + max_s);
                 }
             }
         } else {
             self._get_window(
+                &mut set,
                 snapshot,
                 self.sidelen,
                 top,
@@ -334,19 +357,17 @@ where
                 if single_s { None } else { Some(0) },
                 self.max.get(0),
                 snapshot.max.get(0),
-                &mut window,
                 top,
                 left,
                 0,
                 0,
             );
         }
-
-        window
     }
 
-    fn _get_window(
+    fn _get_window<S>(
         &self,
+        set: &mut S,
         snapshot: &Snapshot<I>,
         sidelen: usize,
         top: usize,
@@ -357,12 +378,13 @@ where
         index_s: Option<usize>,
         max_t: i64,
         max_s: i64,
-        window: &mut Array2<I>,
         window_top: usize,
         window_left: usize,
         top_offset: usize,
         left_offset: usize,
-    ) {
+    ) where
+        S: FnMut(usize, usize, i64),
+    {
         let k = self.k as usize;
         let sidelen = sidelen / k;
 
@@ -420,14 +442,16 @@ where
                     let value = max_t_ + max_s_;
                     for row in top_..=bottom_ {
                         for col in left_..=right_ {
-                            window[[
+                            set(
                                 top_offset_ + row - window_top,
                                 left_offset_ + col - window_left,
-                            ]] = I::from(value).unwrap();
+                                value,
+                            );
                         }
                     }
                 } else if leaf_s {
                     self._get_window(
+                        set,
                         snapshot,
                         sidelen,
                         top_,
@@ -438,7 +462,6 @@ where
                         None,
                         max_t_,
                         max_s_,
-                        window,
                         window_top,
                         window_left,
                         top_offset_,
@@ -452,10 +475,11 @@ where
                                 let value = max_t_ + max_s_;
                                 for row in top_..=bottom_ {
                                     for col in left_..=right_ {
-                                        window[[
+                                        set(
                                             top_offset_ + row - window_top,
                                             left_offset_ + col - window_left,
-                                        ]] = I::from(value).unwrap();
+                                            value,
+                                        );
                                     }
                                 }
                                 continue;
@@ -463,6 +487,7 @@ where
                         }
                     }
                     self._get_window(
+                        set,
                         snapshot,
                         sidelen,
                         top_,
@@ -473,7 +498,6 @@ where
                         index_s_,
                         max_t_,
                         max_s_,
-                        window,
                         window_top,
                         window_left,
                         top_offset_,
@@ -481,6 +505,7 @@ where
                     );
                 } else {
                     self._get_window(
+                        set,
                         snapshot,
                         sidelen,
                         top_,
@@ -491,7 +516,6 @@ where
                         index_s_,
                         max_t_,
                         max_s_,
-                        window,
                         window_top,
                         window_left,
                         top_offset_,
@@ -825,7 +849,7 @@ impl K2PTreeNode {
 mod tests {
     use super::super::testing::array_search_window;
     use super::*;
-    use ndarray::{arr3, s, Array3};
+    use ndarray::{arr3, s, Array2, Array3};
     use std::collections::HashSet;
 
     fn array8() -> Array3<i32> {
@@ -1270,38 +1294,6 @@ mod tests {
                 for left in 0..9 {
                     for right in left + 1..=9 {
                         let window = log.get_window(&snapshot, top, bottom, left, right);
-                        let expected = data.slice(s![2, top..bottom, left..right]);
-                        assert_eq!(window, expected);
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn get_window_rearrange_bounds() {
-        let data = array8();
-        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
-
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
-        for top in 0..8 {
-            for bottom in top + 1..=8 {
-                for left in 0..8 {
-                    for right in left + 1..=8 {
-                        let window = log.get_window(&snapshot, bottom, top, right, left);
-                        let expected = data.slice(s![1, top..bottom, left..right]);
-                        assert_eq!(window, expected);
-                    }
-                }
-            }
-        }
-
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
-        for top in 0..8 {
-            for bottom in top + 1..=8 {
-                for left in 0..8 {
-                    for right in left + 1..=8 {
-                        let window = log.get_window(&snapshot, bottom, top, right, left);
                         let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }

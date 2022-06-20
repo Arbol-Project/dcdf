@@ -171,7 +171,7 @@ impl PyChunkI32 {
         right: usize,
         lower: i32,
         upper: i32,
-    ) -> Vec<Vec<(usize, usize)>> {
+    ) -> Vec<(usize, usize, usize)> {
         self.inner
             .iter_search(start, end, top, bottom, left, right, lower, upper)
             .collect()
@@ -317,21 +317,8 @@ impl PyChunkF32 {
         left: usize,
         right: usize,
     ) -> &'py PyArray3<f32> {
-        let rows = bottom - top;
-        let cols = right - left;
-        let mut a = Array::zeros((end - start, rows, cols));
-        for (i, w) in self
-            .inner
-            .iter_window(start, end, top, bottom, left, right)
-            .enumerate()
-        {
-            // There must be a better way to do this
-            for row in 0..rows {
-                for col in 0..cols {
-                    a[[i, row, col]] = w[[row, col]];
-                }
-            }
-        }
+        let a = self.inner.get_window(start, end, top, bottom, left, right);
+
         a.into_pyarray(py)
     }
 
@@ -345,7 +332,7 @@ impl PyChunkF32 {
         right: usize,
         lower: f32,
         upper: f32,
-    ) -> Vec<Vec<(usize, usize)>> {
+    ) -> Vec<(usize, usize, usize)> {
         self.inner
             .iter_search(start, end, top, bottom, left, right, lower, upper)
             .collect()

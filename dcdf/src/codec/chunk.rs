@@ -1,9 +1,10 @@
-use ndarray::Array2;
+use ndarray::{s, Array2, Array3};
 use num_traits::{Float, PrimInt};
 use std::fmt::Debug;
 use std::io;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
+use std::vec::IntoIter as VecIntoIter;
 
 use super::block::Block;
 use crate::extio::{ExtendedRead, ExtendedWrite};
@@ -56,6 +57,31 @@ where
                 .iter_cell(start, end, row, col)
                 .map(|i| fixed::from_fixed(i, self.fractional_bits)),
         )
+    }
+
+    pub fn get_window(
+        &self,
+        start: usize,
+        end: usize,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+    ) -> Array3<F> {
+        let instants = end - start;
+        let rows = bottom - top;
+        let cols = right - left;
+        let mut windows = Array3::zeros([instants, rows, cols]);
+
+        for (i, (block, instant)) in self.chunk.iter(start, end).enumerate() {
+            let mut window = windows.slice_mut(s![i, .., ..]);
+            let set = |row, col, value| {
+                window[[row, col]] = fixed::from_fixed(value, self.fractional_bits)
+            };
+            let block = &self.chunk.blocks[block];
+            block.fill_window(set, instant, top, bottom, left, right);
+        }
+        windows
     }
 
     pub fn iter_window<'a>(
@@ -156,7 +182,7 @@ where
 
     // Iterate over time instants in this chunk.
     fn iter(&self, start: usize, end: usize) -> ChunkIter<I> {
-        let (block, block_index) = if start < self.index[0] {
+        let (block, instant) = if start < self.index[0] {
             // Common special case, starting at beginning of chunk
             (0, start)
         } else {
@@ -186,7 +212,7 @@ where
         ChunkIter {
             chunk: self,
             block,
-            block_index,
+            instant,
             remaining: end - start,
         }
     }
@@ -197,6 +223,29 @@ where
             row,
             col,
         }
+    }
+
+    pub fn get_window(
+        &self,
+        start: usize,
+        end: usize,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+    ) -> Array3<I> {
+        let instants = end - start;
+        let rows = bottom - top;
+        let cols = right - left;
+        let mut windows = Array3::zeros([instants, rows, cols]);
+
+        for (i, (block, instant)) in self.iter(start, end).enumerate() {
+            let mut window = windows.slice_mut(s![i, .., ..]);
+            let set = |row, col, value| window[[row, col]] = I::from(value).unwrap();
+            let block = &self.blocks[block];
+            block.fill_window(set, instant, top, bottom, left, right);
+        }
+        windows
     }
 
     pub fn iter_window(
@@ -228,7 +277,7 @@ where
         lower: I,
         upper: I,
     ) -> SearchIter<I> {
-        SearchIter {
+        let mut iter = SearchIter {
             iter: self.iter(start, end),
             top,
             bottom,
@@ -236,7 +285,13 @@ where
             right,
             lower,
             upper,
-        }
+
+            instant: start,
+            results: None,
+        };
+        iter.next_results();
+
+        iter
     }
 
     pub fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
@@ -272,33 +327,33 @@ where
 {
     chunk: &'a Chunk<I>,
     block: usize,
-    block_index: usize,
+    instant: usize,
     remaining: usize,
 }
 
-// Unable to use the Iterator trait due to lack of support for Generic Associated Types in Rust
-// at this time. (Item cannot contain Block<I>).
-//
-impl<'a, I> ChunkIter<'a, I>
+impl<'a, I> Iterator for ChunkIter<'a, I>
 where
     I: PrimInt + Debug,
 {
-    fn next(&mut self) -> Option<(usize, &'a Block<I>)> {
+    type Item = (usize, usize);
+
+    fn next(&mut self) -> Option<(usize, usize)> {
         if self.remaining == 0 {
             None
         } else {
-            let block = &self.chunk.blocks[self.block];
-            let block_index = self.block_index;
+            let block_index = self.block;
+            let instant = self.instant;
 
-            if self.block_index == block.logs.len() {
-                self.block_index = 0;
+            let block = &self.chunk.blocks[block_index];
+            if self.instant == block.logs.len() {
+                self.instant = 0;
                 self.block += 1;
             } else {
-                self.block_index += 1;
+                self.instant += 1;
             }
             self.remaining -= 1;
 
-            Some((block_index, block))
+            Some((block_index, instant))
         }
     }
 }
@@ -320,7 +375,10 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter.next() {
-            Some((index, block)) => Some(block.get(index, self.row, self.col)),
+            Some((block, instant)) => {
+                let block = &self.iter.chunk.blocks[block];
+                Some(block.get(instant, self.row, self.col))
+            }
             None => None,
         }
     }
@@ -345,8 +403,9 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter.next() {
-            Some((index, block)) => {
-                Some(block.get_window(index, self.top, self.bottom, self.left, self.right))
+            Some((block, instant)) => {
+                let block = &self.iter.chunk.blocks[block];
+                Some(block.get_window(instant, self.top, self.bottom, self.left, self.right))
             }
             None => None,
         }
@@ -364,25 +423,58 @@ where
     right: usize,
     lower: I,
     upper: I,
+
+    instant: usize,
+    results: Option<VecIntoIter<(usize, usize)>>,
+}
+
+impl<'a, I> SearchIter<'a, I>
+where
+    I: PrimInt + Debug,
+{
+    fn next_results(&mut self) {
+        self.results = match self.iter.next() {
+            Some((block, instant)) => {
+                let block = &self.iter.chunk.blocks[block];
+                let results = block.search_window(
+                    instant,
+                    self.top,
+                    self.bottom,
+                    self.left,
+                    self.right,
+                    self.lower,
+                    self.upper,
+                );
+                self.instant += 1;
+                Some(results.into_iter())
+            }
+            None => None,
+        }
+    }
 }
 
 impl<'a, I> Iterator for SearchIter<'a, I>
 where
     I: PrimInt + Debug,
 {
-    type Item = Vec<(usize, usize)>;
+    type Item = (usize, usize, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.iter.next() {
-            Some((index, block)) => Some(block.search_window(
-                index,
-                self.top,
-                self.bottom,
-                self.left,
-                self.right,
-                self.lower,
-                self.upper,
-            )),
+        match &mut self.results {
+            Some(results) => {
+                let mut result = results.next();
+                while result == None {
+                    self.next_results();
+                    result = match &mut self.results {
+                        Some(results) => results.next(),
+                        None => break,
+                    }
+                }
+                match result {
+                    Some((row, col)) => Some((self.instant - 1, row, col)),
+                    None => None,
+                }
+            }
             None => None,
         }
     }
@@ -394,7 +486,7 @@ mod tests {
     use super::super::snapshot::Snapshot;
     use super::super::testing::array_search_window;
     use super::*;
-    use ndarray::{arr2, s, Array2};
+    use ndarray::arr2;
     use std::collections::HashSet;
     use std::io::Seek;
     use tempfile::tempfile;
@@ -488,6 +580,31 @@ mod tests {
         }
 
         #[test]
+        fn get_window() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            for top in 0..8 {
+                for bottom in top + 1..=8 {
+                    for left in 0..8 {
+                        for right in left + 1..=8 {
+                            let start = top * left;
+                            let end = bottom * right + 36;
+                            let window = chunk.get_window(start, end, top, bottom, left, right);
+                            assert_eq!(window.shape(), [end - start, bottom - top, right - left]);
+
+                            for i in 0..end - start {
+                                assert_eq!(
+                                    window.slice(s![i, .., ..]),
+                                    data[start + i].slice(s![top..bottom, left..right])
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
         fn iter_window() {
             let data = array();
             let chunk = chunk(data.clone());
@@ -526,14 +643,11 @@ mod tests {
                             let end = bottom * right + 36;
                             let lower = (start / 5) as f32;
                             let upper = (end / 10) as f32;
-                            let results: Vec<Vec<(usize, usize)>> = chunk
-                                .iter_search(start, end, top, bottom, left, right, lower, upper)
-                                .collect();
-                            assert_eq!(results.len(), end - start);
 
-                            for i in 0..results.len() {
-                                let expected = array_search_window(
-                                    data[i + start].view(),
+                            let mut expected: HashSet<(usize, usize, usize)> = HashSet::new();
+                            for i in start..end {
+                                let coords = array_search_window(
+                                    data[i].view(),
                                     top,
                                     bottom,
                                     left,
@@ -541,12 +655,19 @@ mod tests {
                                     lower,
                                     upper,
                                 );
-                                let expected: HashSet<(usize, usize)> =
-                                    HashSet::from_iter(expected.into_iter());
-                                let results: HashSet<(usize, usize)> =
-                                    HashSet::from_iter(results[i].clone().into_iter());
-                                assert_eq!(results, expected);
+                                for (row, col) in coords {
+                                    expected.insert((i, row, col));
+                                }
                             }
+
+                            let results: Vec<(usize, usize, usize)> = chunk
+                                .iter_search(start, end, top, bottom, left, right, lower, upper)
+                                .collect();
+
+                            let results: HashSet<(usize, usize, usize)> =
+                                HashSet::from_iter(results.clone().into_iter());
+
+                            assert_eq!(results, expected);
                         }
                     }
                 }
@@ -671,6 +792,31 @@ mod tests {
         }
 
         #[test]
+        fn get_window() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            for top in 0..8 {
+                for bottom in top + 1..=8 {
+                    for left in 0..8 {
+                        for right in left + 1..=8 {
+                            let start = top * left;
+                            let end = bottom * right + 36;
+                            let window = chunk.get_window(start, end, top, bottom, left, right);
+                            assert_eq!(window.shape(), [end - start, bottom - top, right - left]);
+
+                            for i in 0..end - start {
+                                assert_eq!(
+                                    window.slice(s![i, .., ..]),
+                                    data[start + i].slice(s![top..bottom, left..right])
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
         fn iter_window() {
             let data = array();
             let chunk = chunk(data.clone());
@@ -709,14 +855,11 @@ mod tests {
                             let end = bottom * right + 36;
                             let lower: i32 = (start / 5).try_into().unwrap();
                             let upper: i32 = (end / 10).try_into().unwrap();
-                            let results: Vec<Vec<(usize, usize)>> = chunk
-                                .iter_search(start, end, top, bottom, left, right, lower, upper)
-                                .collect();
-                            assert_eq!(results.len(), end - start);
 
-                            for i in 0..results.len() {
-                                let expected = array_search_window(
-                                    data[i + start].view(),
+                            let mut expected: HashSet<(usize, usize, usize)> = HashSet::new();
+                            for i in start..end {
+                                let coords = array_search_window(
+                                    data[i].view(),
                                     top,
                                     bottom,
                                     left,
@@ -724,12 +867,19 @@ mod tests {
                                     lower,
                                     upper,
                                 );
-                                let expected: HashSet<(usize, usize)> =
-                                    HashSet::from_iter(expected.into_iter());
-                                let results: HashSet<(usize, usize)> =
-                                    HashSet::from_iter(results[i].clone().into_iter());
-                                assert_eq!(results, expected);
+                                for (row, col) in coords {
+                                    expected.insert((i, row, col));
+                                }
                             }
+
+                            let results: Vec<(usize, usize, usize)> = chunk
+                                .iter_search(start, end, top, bottom, left, right, lower, upper)
+                                .collect();
+
+                            let results: HashSet<(usize, usize, usize)> =
+                                HashSet::from_iter(results.clone().into_iter());
+
+                            assert_eq!(results, expected);
                         }
                     }
                 }

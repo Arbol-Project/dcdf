@@ -55,9 +55,30 @@ where
     where
         I: PrimInt + Debug,
     {
+        let rows = bottom - top;
+        let cols = right - left;
+        let mut window = Array2::zeros([rows, cols]);
+        let set = |row, col, value| window[[row, col]] = I::from(value).unwrap();
+
+        self.fill_window(set, instant, top, bottom, left, right);
+
+        window
+    }
+
+    pub fn fill_window<S>(
+        &self,
+        set: S,
+        instant: usize,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+    ) where
+        S: FnMut(usize, usize, i64),
+    {
         match instant {
-            0 => self.snapshot.get_window(top, bottom, left, right),
-            _ => self.logs[instant - 1].get_window(&self.snapshot, top, bottom, left, right),
+            0 => self.snapshot.fill_window(set, top, bottom, left, right),
+            _ => self.logs[instant - 1].fill_window(set, &self.snapshot, top, bottom, left, right),
         }
     }
 

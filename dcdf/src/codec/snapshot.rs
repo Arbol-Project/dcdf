@@ -2,7 +2,6 @@ use super::bitmap::{BitMap, BitMapBuilder};
 use super::dac::Dac;
 use super::helpers::rearrange;
 
-use ndarray::Array2;
 use num_traits::PrimInt;
 use std::cmp::min;
 use std::collections::VecDeque;
@@ -51,6 +50,8 @@ impl<I> Snapshot<I>
 where
     I: PrimInt + Debug,
 {
+    /// Write a snapshot to a stream
+    ///
     pub fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
         stream.write_byte(self.k as u8)?;
         stream.write_u32(self.shape[0] as u32)?;
@@ -63,6 +64,8 @@ where
         Ok(())
     }
 
+    /// Read a snapshot from a stream
+    ///
     pub fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
         let k = stream.read_byte()? as i32;
         let shape = [stream.read_u32()? as usize, stream.read_u32()? as usize];
@@ -82,11 +85,26 @@ where
         })
     }
 
+    /// Return number of bytes in serialized representation
+    ///
     pub fn size(&self) -> u64 {
-        1 + 4 + 4 + 4 + self.nodemap.size() + self.max.size() + self.min.size()
+        1       // k
+        + 4 + 4 // shape
+        + 4     // sidelen 
+        + self.nodemap.size() + self.max.size() + self.min.size()
     }
 
     /// Build a snapshot from a two-dimensional array.
+    ///
+    /// The notional two-dimensional array is represented by `get`, which is a function that takes
+    /// a row and column as arguments and returns an i64. The dimensions of the two-dimensional
+    /// array are given by `shape`. `k` is the K from K²-Raster. The recommended value is 2. See
+    /// the literature.
+    ///
+    /// The `get` indirection is used to allow layers further up to inject translation from an
+    /// array of arbitrary numeric type to i64 values to store in the snaphsot. Floating point
+    /// arrays will use this to convert cell values from floating point to a fixed point
+    /// representation.
     ///
     pub fn build<G>(get: G, shape: [usize; 2], k: i32) -> Self
     where
@@ -176,28 +194,37 @@ where
     /// This is based on Algorithm 3 in Ladra[^note], but has been modified to return a submatrix
     /// rather than an unordered sequence of values.
     ///
+    /// The passed in `set` function  inserts into a notional two dimensional array that has been
+    /// preallocated with the correct dimensions. This indirection allows higher layers to
+    /// preallocate a 3 dimensional array at the beginning of a time series query, and provides a
+    /// means of injecting data conversion from the underlying stored data to the desired output
+    /// numeric type.
+    ///
     /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
     ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
-    pub fn get_window(&self, top: usize, bottom: usize, left: usize, right: usize) -> Array2<I> {
+    pub fn fill_window<S>(&self, mut set: S, top: usize, bottom: usize, left: usize, right: usize)
+    where
+        S: FnMut(usize, usize, i64),
+    {
         let (left, right) = rearrange(left, right);
         let (top, bottom) = rearrange(top, bottom);
         self.check_bounds(bottom - 1, right - 1);
 
         let rows = bottom - top;
         let cols = right - left;
-        let mut window = Array2::zeros([rows, cols]);
 
         if !self.nodemap.get(0) {
             // Special case: single node tree
             let value = self.max.get(0);
             for row in 0..rows {
                 for col in 0..cols {
-                    window[[row, col]] = value;
+                    set(row, col, value);
                 }
             }
         } else {
-            self._get_window(
+            self._fill_window(
+                &mut set,
                 self.sidelen,
                 top,
                 bottom - 1,
@@ -205,32 +232,31 @@ where
                 right - 1,
                 0,
                 self.max.get(0),
-                &mut window,
                 top,
                 left,
                 0,
                 0,
             );
         }
-
-        window
     }
 
-    fn _get_window(
+    fn _fill_window<S>(
         &self,
+        set: &mut S,
         sidelen: usize,
         top: usize,
         bottom: usize,
         left: usize,
         right: usize,
         index: usize,
-        max_value: I,
-        window: &mut Array2<I>,
+        max_value: i64,
         window_top: usize,
         window_left: usize,
         top_offset: usize,
         left_offset: usize,
-    ) {
+    ) where
+        S: FnMut(usize, usize, i64),
+    {
         let k = self.k as usize;
         let sidelen = sidelen / k;
         let index = 1 + self.nodemap.rank(index) * k * k;
@@ -246,21 +272,23 @@ where
                 let left_offset_ = left_offset + j * sidelen;
 
                 let index_ = index + i * k + j;
-                let max_value_ = max_value - self.max.get(index_);
+                let max_value_ = max_value - self.max.get::<i64>(index_);
 
                 if index_ >= self.nodemap.length || !self.nodemap.get(index_) {
                     // Leaf node
                     for row in top_..=bottom_ {
                         for col in left_..=right_ {
-                            window[[
+                            set(
                                 top_offset_ + row - window_top,
                                 left_offset_ + col - window_left,
-                            ]] = max_value_;
+                                max_value_,
+                            );
                         }
                     }
                 } else {
                     // Branch
-                    self._get_window(
+                    self._fill_window(
+                        set,
                         sidelen,
                         top_,
                         bottom_,
@@ -268,7 +296,6 @@ where
                         right_,
                         index_,
                         max_value_,
-                        window,
                         window_top,
                         window_left,
                         top_offset_,
@@ -671,24 +698,6 @@ mod tests {
                 for left in 0..9 {
                     for right in left + 1..=9 {
                         let window = snapshot.get_window(top, bottom, left, right);
-                        let expected = data.slice(s![top..bottom, left..right]);
-                        assert_eq!(window, expected);
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn get_window_rearrange_bounds() {
-        let data = array8();
-        let snapshot = Snapshot::from_array(data.view(), 2);
-
-        for top in 0..8 {
-            for bottom in top + 1..=8 {
-                for left in 0..8 {
-                    for right in left + 1..=8 {
-                        let window = snapshot.get_window(bottom, top, right, left);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }

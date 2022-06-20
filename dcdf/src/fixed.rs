@@ -89,6 +89,7 @@ mod tests {
     fn test_to_fixed() {
         let n = 1.5; // 0b1.1
         assert_eq!(to_fixed(n, 1, false), 7); // 0b111
+        assert_eq!(to_fixed(-n, 1, false), -5);
         assert_eq!(to_fixed(n, 8, false), 769); // 0b1100000001
 
         let n = 0.0625; // 0b0.0001
@@ -126,6 +127,7 @@ mod tests {
     #[test]
     fn test_from_fixed() {
         assert_eq!(from_fixed::<f32>(7, 1), 1.5);
+        assert_eq!(from_fixed::<f32>(-5, 1), -1.5);
         assert_eq!(from_fixed::<f64>(769, 8), 1.5);
 
         assert_eq!(from_fixed::<f32>(3, 4), 0.0625);

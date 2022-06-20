@@ -133,20 +133,20 @@ def searches():
         for bottom in range(top + 1, 8):
             for left in range(4):
                 for right in range(left + 1, 4):
-                    for lower in range(6, 9):
+                    for lower in range(3, 9):
                         for upper in range(lower, 11):
                             yield top, bottom, left, right, lower, upper
 
 
 def search(data, top, bottom, left, right, lower, upper):
-    for instant in data:
-        coords = []
+    coords = set()
+    for i, instant in enumerate(data):
         for row in range(top, bottom):
             for col in range(left, right):
                 if lower <= instant[row, col] <= upper:
-                    coords.append((row, col))
+                    coords.add((i, row, col))
 
-        yield set(coords)
+    return coords
 
 
 @pytest.mark.parametrize("dtype", dtypes)
@@ -155,9 +155,8 @@ def test_search(tmpdir, dtype):
     chunk = get_chunk(tmpdir, data)
     for top, bottom, left, right, lower, upper in searches():
         expecteds = search(data, top, bottom, left, right, lower, upper)
-        results = map(set, chunk.search(0, 100, top, bottom, left, right, lower, upper))
-        for expected, result in zip(expecteds, results):
-            assert expected == result
+        results = set(chunk.search(0, 100, top, bottom, left, right, lower, upper))
+        assert results == expecteds
 
 
 def test_suggest_fraction_3bits():
