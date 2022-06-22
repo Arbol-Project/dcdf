@@ -7,6 +7,7 @@ use std::marker::PhantomData;
 use std::vec::IntoIter as VecIntoIter;
 
 use super::block::Block;
+use super::helpers::rearrange;
 use crate::extio::{ExtendedRead, ExtendedWrite};
 use crate::fixed;
 
@@ -33,6 +34,9 @@ impl<F> FChunk<F>
 where
     F: Float + Debug,
 {
+    /// Create an FChunk that wraps `chunk` using `fractional_bits` for fixed point to floating
+    /// point conversion.
+    ///
     pub fn new(chunk: Chunk<i64>, fractional_bits: usize) -> Self {
         Self {
             _marker: PhantomData,
@@ -41,10 +45,16 @@ where
         }
     }
 
+    /// Return the dimensions of the 3 dimensional array represented by this chunk.
+    ///
+    /// Returns [instants, rows, cols]
+    ///
     pub fn shape(&self) -> [usize; 3] {
         self.chunk.shape()
     }
 
+    /// Iterate over a cell's value across time instants.
+    ///
     pub fn iter_cell<'a>(
         &'a self,
         start: usize,
@@ -59,6 +69,8 @@ where
         )
     }
 
+    /// Get a subarray of this Chunk.
+    ///
     pub fn get_window(
         &self,
         start: usize,
@@ -68,6 +80,11 @@ where
         left: usize,
         right: usize,
     ) -> Array3<F> {
+        let (start, end) = rearrange(start, end);
+        let (top, bottom) = rearrange(top, bottom);
+        let (left, right) = rearrange(left, right);
+        self.chunk.check_bounds(end - 1, bottom - 1, right - 1);
+
         let instants = end - start;
         let rows = bottom - top;
         let cols = right - left;
@@ -84,6 +101,8 @@ where
         windows
     }
 
+    /// Iterate over subarrays of successive time instants.
+    ///
     pub fn iter_window<'a>(
         &'a self,
         start: usize,
@@ -100,6 +119,11 @@ where
         )
     }
 
+    /// Search a subarray for cells that fall in a given range.
+    ///
+    /// Returns an iterator that produces coordinate triplets [instant, row, col] of matching
+    /// cells.
+    ///
     pub fn iter_search(
         &self,
         start: usize,
@@ -123,19 +147,26 @@ where
         )
     }
 
+    /// Write a chunk to a stream
+    ///
     pub fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
         stream.write_byte(self.fractional_bits as u8)?;
         self.chunk.serialize(stream)?;
         Ok(())
     }
 
+    /// Read a chunk from a stream
+    ///
     pub fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
         let fractional_bits = stream.read_byte()? as usize;
         Ok(FChunk::new(Chunk::deserialize(stream)?, fractional_bits))
     }
 
+    /// Return the number of bytes in the serialized representation
+    ///
     pub fn size(&self) -> u64 {
-        1 + self.chunk.size()
+        1 // fractional bits
+        + self.chunk.size()
     }
 }
 
@@ -158,6 +189,8 @@ impl<I> From<Vec<Block<I>>> for Chunk<I>
 where
     I: PrimInt + Debug,
 {
+    /// Make a new Chunk from a vector of Blocks
+    ///
     fn from(blocks: Vec<Block<I>>) -> Self {
         let mut index = Vec::with_capacity(blocks.len());
         let mut count = 0;
@@ -174,13 +207,20 @@ impl<I> Chunk<I>
 where
     I: PrimInt + Debug,
 {
+    /// Return the dimensions of the 3 dimensional array represented by this chunk.
+    ///
+    /// Returns [instants, rows, cols]
+    ///
     pub fn shape(&self) -> [usize; 3] {
         let [rows, cols] = self.blocks[0].snapshot.shape;
         let instants = self.blocks.iter().map(|i| 1 + i.logs.len()).sum();
         [instants, rows, cols]
     }
 
-    // Iterate over time instants in this chunk.
+    /// Iterate over time instants in this chunk.
+    ///
+    /// Used internally by the other iterators.
+    ///
     fn iter(&self, start: usize, end: usize) -> ChunkIter<I> {
         let (block, instant) = if start < self.index[0] {
             // Common special case, starting at beginning of chunk
@@ -217,7 +257,11 @@ where
         }
     }
 
+    /// Iterate over a cell's value across time instants.
+    ///
     pub fn iter_cell(&self, start: usize, end: usize, row: usize, col: usize) -> CellIter<I> {
+        let (start, end) = rearrange(start, end);
+        self.check_bounds(end - 1, row, col);
         CellIter {
             iter: self.iter(start, end),
             row,
@@ -225,6 +269,8 @@ where
         }
     }
 
+    /// Get a subarray of this Chunk.
+    ///
     pub fn get_window(
         &self,
         start: usize,
@@ -234,6 +280,11 @@ where
         left: usize,
         right: usize,
     ) -> Array3<I> {
+        let (start, end) = rearrange(start, end);
+        let (top, bottom) = rearrange(top, bottom);
+        let (left, right) = rearrange(left, right);
+        self.check_bounds(end - 1, bottom - 1, right - 1);
+
         let instants = end - start;
         let rows = bottom - top;
         let cols = right - left;
@@ -248,6 +299,8 @@ where
         windows
     }
 
+    /// Iterate over subarrays of successive time instants.
+    ///
     pub fn iter_window(
         &self,
         start: usize,
@@ -257,6 +310,11 @@ where
         left: usize,
         right: usize,
     ) -> WindowIter<I> {
+        let (start, end) = rearrange(start, end);
+        let (top, bottom) = rearrange(top, bottom);
+        let (left, right) = rearrange(left, right);
+        self.check_bounds(end - 1, bottom - 1, right - 1);
+
         WindowIter {
             iter: self.iter(start, end),
             top,
@@ -266,6 +324,11 @@ where
         }
     }
 
+    /// Search a subarray for cells that fall in a given range.
+    ///
+    /// Returns an iterator that produces coordinate triplets [instant, row, col] of matching
+    /// cells.
+    ///
     pub fn iter_search(
         &self,
         start: usize,
@@ -277,6 +340,12 @@ where
         lower: I,
         upper: I,
     ) -> SearchIter<I> {
+        let (start, end) = rearrange(start, end);
+        let (top, bottom) = rearrange(top, bottom);
+        let (left, right) = rearrange(left, right);
+        let (lower, upper) = rearrange(lower, upper);
+        self.check_bounds(end - 1, bottom - 1, right - 1);
+
         let mut iter = SearchIter {
             iter: self.iter(start, end),
             top,
@@ -294,6 +363,8 @@ where
         iter
     }
 
+    /// Write a chunk to a stream
+    ///
     pub fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
         stream.write_u32(self.blocks.len() as u32)?;
         for block in &self.blocks {
@@ -302,6 +373,8 @@ where
         Ok(())
     }
 
+    /// Read a chunk from a stream
+    ///
     pub fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
         let n_blocks = stream.read_u32()? as usize;
         let mut blocks = Vec::with_capacity(n_blocks);
@@ -316,11 +389,32 @@ where
         Ok(Self { blocks, index })
     }
 
+    /// Return the number of bytes in the serialized representation
+    ///
     pub fn size(&self) -> u64 {
-        4 + self.blocks.iter().map(|b| b.size()).sum::<u64>()
+        4  // number of blocks
+        + self.blocks.iter().map(|b| b.size()).sum::<u64>()
+    }
+
+    /// Panics if given point is out of bounds for this chunk
+    fn check_bounds(&self, instant: usize, row: usize, col: usize) {
+        let [instants, rows, cols] = self.shape();
+        if instant >= instants || row >= rows || col >= cols {
+            panic!(
+                "dcdf::Chunk: index[{}, {}, {}] is out of bounds for array of shape {:?}",
+                instant,
+                row,
+                col,
+                [instants, rows, cols],
+            );
+        }
     }
 }
 
+/// Iterate over time instants stored in this chunk across several blocks
+///
+/// Used internally by the other iterators.
+///
 struct ChunkIter<'a, I>
 where
     I: PrimInt + Debug,
@@ -580,6 +674,47 @@ mod tests {
         }
 
         #[test]
+        fn iter_cell_rearrange() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            for row in 0..8 {
+                for col in 0..8 {
+                    let start = row * col;
+                    let end = 100 - col;
+                    let values: Vec<f32> = chunk.iter_cell(end, start, row, col).collect();
+                    assert_eq!(values.len(), end - start);
+                    for i in 0..values.len() {
+                        assert_eq!(values[i], data[i + start][[row, col]]);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        #[should_panic]
+        fn iter_cell_end_out_of_bounds() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let _values: Vec<f32> = chunk.iter_cell(0, 200, 4, 4).collect();
+        }
+
+        #[test]
+        #[should_panic]
+        fn iter_cell_row_out_of_bounds() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let _values: Vec<f32> = chunk.iter_cell(0, 100, 8, 4).collect();
+        }
+
+        #[test]
+        #[should_panic]
+        fn iter_cell_col_out_of_bounds() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let _values: Vec<f32> = chunk.iter_cell(0, 100, 4, 8).collect();
+        }
+
+        #[test]
         fn get_window() {
             let data = array();
             let chunk = chunk(data.clone());
@@ -602,6 +737,39 @@ mod tests {
                     }
                 }
             }
+        }
+
+        #[test]
+        fn get_window_rearrange() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            for top in 0..8 {
+                for bottom in top + 1..=8 {
+                    for left in 0..8 {
+                        for right in left + 1..=8 {
+                            let start = top * left;
+                            let end = bottom * right + 36;
+                            let window = chunk.get_window(end, start, bottom, top, right, left);
+                            assert_eq!(window.shape(), [end - start, bottom - top, right - left]);
+
+                            for i in 0..end - start {
+                                assert_eq!(
+                                    window.slice(s![i, .., ..]),
+                                    data[start + i].slice(s![top..bottom, left..right])
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        #[should_panic]
+        fn get_window_out_of_bounds() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let _window = chunk.get_window(0, 100, 0, 9, 0, 9);
         }
 
         #[test]
@@ -629,6 +797,41 @@ mod tests {
                     }
                 }
             }
+        }
+
+        #[test]
+        fn iter_window_rearrange() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            for top in 0..8 {
+                for bottom in top + 1..=8 {
+                    for left in 0..8 {
+                        for right in left + 1..=8 {
+                            let start = top * left;
+                            let end = bottom * right + 36;
+                            let windows: Vec<Array2<f32>> = chunk
+                                .iter_window(end, start, bottom, top, right, left)
+                                .collect();
+                            assert_eq!(windows.len(), end - start);
+
+                            for i in 0..windows.len() {
+                                assert_eq!(
+                                    windows[i],
+                                    data[i + start].slice(s![top..bottom, left..right])
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        #[should_panic]
+        fn iter_window_out_of_bounds() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let _window: Vec<Array2<f32>> = chunk.iter_window(0, 100, 0, 9, 0, 9).collect();
         }
 
         #[test]
@@ -672,6 +875,58 @@ mod tests {
                     }
                 }
             }
+        }
+
+        #[test]
+        fn iter_search_rearrange() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            for top in 0..8 {
+                for bottom in top + 1..=8 {
+                    for left in 0..8 {
+                        for right in left + 1..=8 {
+                            let start = top * left;
+                            let end = bottom * right + 36;
+                            let lower = (start / 5) as f32;
+                            let upper = (end / 10) as f32;
+
+                            let mut expected: HashSet<(usize, usize, usize)> = HashSet::new();
+                            for i in start..end {
+                                let coords = array_search_window(
+                                    data[i].view(),
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    lower,
+                                    upper,
+                                );
+                                for (row, col) in coords {
+                                    expected.insert((i, row, col));
+                                }
+                            }
+
+                            let results: Vec<(usize, usize, usize)> = chunk
+                                .iter_search(end, start, bottom, top, right, left, upper, lower)
+                                .collect();
+
+                            let results: HashSet<(usize, usize, usize)> =
+                                HashSet::from_iter(results.clone().into_iter());
+
+                            assert_eq!(results, expected);
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        #[should_panic]
+        fn iter_search_out_of_bounds() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let _results: Vec<(usize, usize, usize)> =
+                chunk.iter_search(0, 100, 0, 9, 0, 9, 0.0, 1.0).collect();
         }
 
         #[test]
@@ -792,6 +1047,47 @@ mod tests {
         }
 
         #[test]
+        fn iter_cell_rearrange() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            for row in 0..8 {
+                for col in 0..8 {
+                    let start = row * col;
+                    let end = 100 - col;
+                    let values: Vec<i32> = chunk.iter_cell(end, start, row, col).collect();
+                    assert_eq!(values.len(), end - start);
+                    for i in 0..values.len() {
+                        assert_eq!(values[i], data[i + start][[row, col]]);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        #[should_panic]
+        fn iter_cell_end_out_of_bounds() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let _values: Vec<i32> = chunk.iter_cell(0, 200, 4, 4).collect();
+        }
+
+        #[test]
+        #[should_panic]
+        fn iter_cell_row_out_of_bounds() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let _values: Vec<i32> = chunk.iter_cell(0, 100, 8, 4).collect();
+        }
+
+        #[test]
+        #[should_panic]
+        fn iter_cell_col_out_of_bounds() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let _values: Vec<i32> = chunk.iter_cell(0, 100, 4, 8).collect();
+        }
+
+        #[test]
         fn get_window() {
             let data = array();
             let chunk = chunk(data.clone());
@@ -814,6 +1110,39 @@ mod tests {
                     }
                 }
             }
+        }
+
+        #[test]
+        fn get_window_rearrange() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            for top in 0..8 {
+                for bottom in top + 1..=8 {
+                    for left in 0..8 {
+                        for right in left + 1..=8 {
+                            let start = top * left;
+                            let end = bottom * right + 36;
+                            let window = chunk.get_window(end, start, bottom, top, right, left);
+                            assert_eq!(window.shape(), [end - start, bottom - top, right - left]);
+
+                            for i in 0..end - start {
+                                assert_eq!(
+                                    window.slice(s![i, .., ..]),
+                                    data[start + i].slice(s![top..bottom, left..right])
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        #[should_panic]
+        fn get_window_out_of_bounds() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let _window = chunk.get_window(0, 100, 0, 9, 0, 9);
         }
 
         #[test]
@@ -841,6 +1170,41 @@ mod tests {
                     }
                 }
             }
+        }
+
+        #[test]
+        fn iter_window_rearrange() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            for top in 0..8 {
+                for bottom in top + 1..=8 {
+                    for left in 0..8 {
+                        for right in left + 1..=8 {
+                            let start = top * left;
+                            let end = bottom * right + 36;
+                            let windows: Vec<Array2<i32>> = chunk
+                                .iter_window(end, start, bottom, top, right, left)
+                                .collect();
+                            assert_eq!(windows.len(), end - start);
+
+                            for i in 0..windows.len() {
+                                assert_eq!(
+                                    windows[i],
+                                    data[i + start].slice(s![top..bottom, left..right])
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        #[should_panic]
+        fn iter_window_out_of_bounds() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let _window: Vec<Array2<i32>> = chunk.iter_window(0, 100, 0, 9, 0, 9).collect();
         }
 
         #[test]
@@ -884,6 +1248,58 @@ mod tests {
                     }
                 }
             }
+        }
+
+        #[test]
+        fn iter_search_rearrange() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            for top in 0..8 {
+                for bottom in top + 1..=8 {
+                    for left in 0..8 {
+                        for right in left + 1..=8 {
+                            let start = top * left;
+                            let end = bottom * right + 36;
+                            let lower: i32 = (start / 5).try_into().unwrap();
+                            let upper: i32 = (end / 10).try_into().unwrap();
+
+                            let mut expected: HashSet<(usize, usize, usize)> = HashSet::new();
+                            for i in start..end {
+                                let coords = array_search_window(
+                                    data[i].view(),
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    lower,
+                                    upper,
+                                );
+                                for (row, col) in coords {
+                                    expected.insert((i, row, col));
+                                }
+                            }
+
+                            let results: Vec<(usize, usize, usize)> = chunk
+                                .iter_search(end, start, bottom, top, right, left, upper, lower)
+                                .collect();
+
+                            let results: HashSet<(usize, usize, usize)> =
+                                HashSet::from_iter(results.clone().into_iter());
+
+                            assert_eq!(results, expected);
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        #[should_panic]
+        fn iter_search_out_of_bounds() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let _results: Vec<(usize, usize, usize)> =
+                chunk.iter_search(0, 100, 0, 9, 0, 9, 0, 1).collect();
         }
     }
 }

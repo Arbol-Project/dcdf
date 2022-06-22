@@ -1,6 +1,5 @@
 use super::bitmap::{BitMap, BitMapBuilder};
 use super::dac::Dac;
-use super::helpers::rearrange;
 
 use num_traits::PrimInt;
 use std::cmp::min;
@@ -163,8 +162,6 @@ where
     ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
     pub fn get(&self, row: usize, col: usize) -> I {
-        self.check_bounds(row, col);
-
         if !self.nodemap.get(0) {
             // Special case, single node tree
             return self.max.get(0);
@@ -207,10 +204,6 @@ where
     where
         S: FnMut(usize, usize, i64),
     {
-        let (left, right) = rearrange(left, right);
-        let (top, bottom) = rearrange(top, bottom);
-        self.check_bounds(bottom - 1, right - 1);
-
         let rows = bottom - top;
         let cols = right - left;
 
@@ -322,11 +315,6 @@ where
         lower: I,
         upper: I,
     ) -> Vec<(usize, usize)> {
-        let (left, right) = rearrange(left, right);
-        let (top, bottom) = rearrange(top, bottom);
-        let (lower, upper) = rearrange(lower, upper);
-        self.check_bounds(bottom - 1, right - 1);
-
         let mut cells: Vec<(usize, usize)> = vec![];
 
         if !self.nodemap.get(0) {
@@ -433,16 +421,6 @@ where
                     }
                 }
             }
-        }
-    }
-
-    /// Panics if given point is out of bounds for this snapshot
-    fn check_bounds(&self, row: usize, col: usize) {
-        if row >= self.shape[0] || col >= self.shape[1] {
-            panic!(
-                "dcdf::Snapshot: index[{}, {}] is out of bounds for array of shape {:?}",
-                row, col, self.shape
-            );
         }
     }
 }
@@ -587,15 +565,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn get_out_of_bounds() {
-        let data = array8();
-        let snapshot = Snapshot::from_array(data.view(), 2);
-
-        snapshot.get(0, 9);
-    }
-
-    #[test]
     fn get_single_node_tree() {
         let data: Array2<i32> = Array2::zeros([16, 16]) + 42;
         let snapshot = Snapshot::from_array(data.view(), 2);
@@ -635,15 +604,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn get_array9_out_of_bounds() {
-        let data = array9();
-        let snapshot = Snapshot::from_array(data.view(), 2);
-
-        snapshot.get(0, 9);
-    }
-
-    #[test]
     fn get_window() {
         let data = array8();
         let snapshot = Snapshot::from_array(data.view(), 2);
@@ -659,15 +619,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    #[should_panic]
-    fn get_window_lower_right_out_of_bounds() {
-        let data = array8();
-        let snapshot = Snapshot::from_array(data.view(), 2);
-
-        snapshot.get_window(0, 9, 0, 5);
     }
 
     #[test]
@@ -830,51 +781,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn search_window_rearrange_bounds() {
-        let data = array8();
-        let snapshot = Snapshot::from_array(data.view(), 2);
-
-        for top in 0..8 {
-            for bottom in top + 1..=8 {
-                for left in 0..8 {
-                    for right in left + 1..=8 {
-                        for lower in 4..=9 {
-                            for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
-                                    data.view(),
-                                    top,
-                                    bottom,
-                                    left,
-                                    right,
-                                    lower,
-                                    upper,
-                                );
-                                let expected: HashSet<(usize, usize)> =
-                                    HashSet::from_iter(expected.iter().cloned());
-
-                                let coords =
-                                    snapshot.search_window(bottom, top, right, left, upper, lower);
-                                let coords = HashSet::from_iter(coords.iter().cloned());
-
-                                assert_eq!(coords, expected);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    #[should_panic]
-    fn search_window_out_of_bounds() {
-        let data = array8();
-        let snapshot = Snapshot::from_array(data.view(), 2);
-
-        snapshot.search_window(0, 9, 0, 5, 4, 6);
     }
 
     #[test]

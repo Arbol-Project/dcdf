@@ -8,7 +8,6 @@ use std::marker::PhantomData;
 
 use super::bitmap::{BitMap, BitMapBuilder};
 use super::dac::Dac;
-use super::helpers::rearrange;
 use super::snapshot::Snapshot;
 use crate::extio::{ExtendedRead, ExtendedWrite};
 
@@ -175,8 +174,6 @@ where
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
     pub fn get(&self, snapshot: &Snapshot<I>, row: usize, col: usize) -> I {
-        self.check_bounds(row, col);
-
         let max_t: I = self.max.get(0);
         let max_s: I = snapshot.max.get(0);
         let single_t = !self.nodemap.get(0);
@@ -324,10 +321,6 @@ where
     ) where
         S: FnMut(usize, usize, i64),
     {
-        let (left, right) = rearrange(left, right);
-        let (top, bottom) = rearrange(top, bottom);
-        self.check_bounds(bottom - 1, right - 1);
-
         let rows = bottom - top;
         let cols = right - left;
 
@@ -545,11 +538,6 @@ where
         lower: I,
         upper: I,
     ) -> Vec<(usize, usize)> {
-        let (left, right) = rearrange(left, right);
-        let (top, bottom) = rearrange(top, bottom);
-        let (lower, upper) = rearrange(lower, upper);
-        self.check_bounds(bottom - 1, right - 1);
-
         let mut cells: Vec<(usize, usize)> = vec![];
         let single_t = !self.nodemap.get(0);
         let single_s = !snapshot.nodemap.get(0);
@@ -725,16 +713,6 @@ where
                     left_offset_,
                 );
             }
-        }
-    }
-
-    /// Panics if given point is out of bounds for this log
-    fn check_bounds(&self, row: usize, col: usize) {
-        if row >= self.shape[0] || col >= self.shape[1] {
-            panic!(
-                "dcdf::Log: index[{}, {}] is out of bounds for array of shape {:?}",
-                row, col, self.shape
-            );
         }
     }
 }
@@ -1105,16 +1083,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn get_out_of_bounds() {
-        let data = array8();
-        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
-
-        log.get(&snapshot, 0, 9);
-    }
-
-    #[test]
     fn get_array9() {
         let data = array9();
         let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
@@ -1152,16 +1120,6 @@ mod tests {
                 assert_eq!(log.get(&snapshot, row, col), data[[2, row, col]]);
             }
         }
-    }
-
-    #[test]
-    #[should_panic]
-    fn get_array9_out_of_bounds() {
-        let data = array9();
-        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
-
-        log.get(&snapshot, 0, 9);
     }
 
     #[test]
@@ -1226,16 +1184,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    #[should_panic]
-    fn get_window_lower_right_out_of_bounds() {
-        let data = array8();
-        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
-
-        log.get_window(&snapshot, 0, 9, 0, 5);
     }
 
     #[test]
@@ -1626,80 +1574,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn search_window_rearrange_bounds() {
-        let data = array8();
-        let data0 = data.slice(s![0, .., ..]);
-        let snapshot = Snapshot::from_array(data0, 2);
-
-        let data1 = data.slice(s![1, .., ..]);
-        let log = Log::from_arrays(data0, data1, 2);
-        for top in 0..8 {
-            for bottom in top + 1..=8 {
-                for left in 0..8 {
-                    for right in left + 1..=8 {
-                        for lower in 4..=9 {
-                            for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
-                                    data1, top, bottom, left, right, lower, upper,
-                                );
-                                let expected: HashSet<(usize, usize)> =
-                                    HashSet::from_iter(expected.iter().cloned());
-
-                                let coords = log.search_window(
-                                    &snapshot, bottom, top, right, left, upper, lower,
-                                );
-                                let coords = HashSet::from_iter(coords.iter().cloned());
-
-                                assert_eq!(coords, expected);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let data2 = data.slice(s![1, .., ..]);
-        let log = Log::from_arrays(data0, data2, 2);
-        for top in 0..8 {
-            for bottom in top + 1..=8 {
-                for left in 0..8 {
-                    for right in left + 1..=8 {
-                        for lower in 4..=9 {
-                            for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
-                                    data2, top, bottom, left, right, lower, upper,
-                                );
-                                let expected: HashSet<(usize, usize)> =
-                                    HashSet::from_iter(expected.iter().cloned());
-
-                                let coords = log.search_window(
-                                    &snapshot, bottom, top, right, left, upper, lower,
-                                );
-                                let coords = HashSet::from_iter(coords.iter().cloned());
-
-                                assert_eq!(coords, expected);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    #[should_panic]
-    fn search_window_out_of_bounds() {
-        let data = array8();
-        let data0 = data.slice(s![0, .., ..]);
-        let snapshot = Snapshot::from_array(data0, 2);
-
-        let data1 = data.slice(s![1, .., ..]);
-        let log = Log::from_arrays(data0, data1, 2);
-
-        log.search_window(&snapshot, 0, 9, 0, 5, 4, 6);
     }
 
     #[test]
