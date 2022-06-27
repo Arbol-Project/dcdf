@@ -958,7 +958,8 @@ mod tests {
     fn build_make_sure_fill_values_match_local_nonfill_values_in_same_quadbox() {
         let mut data: Array3<i32> = Array3::zeros([3, 9, 9]) + 5;
         data.slice_mut(s![.., ..8, ..8]).assign(&array8());
-        data.slice_mut(s![0, .., ..]).assign(&array9().slice(s![0, .., ..]));
+        data.slice_mut(s![0, .., ..])
+            .assign(&array9().slice(s![0, .., ..]));
         println!("{data:?}");
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);

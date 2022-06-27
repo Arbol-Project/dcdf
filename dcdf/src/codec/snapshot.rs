@@ -487,8 +487,7 @@ impl K2TreeNode {
                     if child_max > node_max {
                         max = Some(child_max);
                     }
-                }
-                else {
+                } else {
                     max = Some(child_max);
                 }
             }
@@ -497,8 +496,7 @@ impl K2TreeNode {
                     if child_min < node_min {
                         min = Some(child_min);
                     }
-                }
-                else {
+                } else {
                     min = Some(child_min);
                 }
             }
