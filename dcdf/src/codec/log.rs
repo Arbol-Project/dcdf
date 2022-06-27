@@ -129,7 +129,7 @@ where
 
         // Breadth first traversal
         while let Some(node) = to_traverse.pop_front() {
-            max.push(node.max_t - node.max_s);
+            max.push(node.max_t.unwrap_or(0) - node.max_s.unwrap_or(0));
 
             if !node.children.is_empty() {
                 // Non-leaf node
@@ -144,7 +144,7 @@ where
                 } else {
                     // Regular old internal node, keep going
                     nodemap.push(true);
-                    min.push(node.min_t - node.min_s);
+                    min.push(node.min_t.unwrap() - node.min_s.unwrap());
                     for child in &node.children {
                         to_traverse.push_back(child);
                     }
@@ -719,10 +719,10 @@ where
 
 // Temporary tree structure for building T - K^2 raster
 struct K2PTreeNode {
-    max_t: i64,
-    min_t: i64,
-    max_s: i64,
-    min_s: i64,
+    max_t: Option<i64>,
+    min_t: Option<i64>,
+    max_s: Option<i64>,
+    min_s: Option<i64>,
     diff: i64,
     equal: bool,
     children: Vec<K2PTreeNode>,
@@ -752,19 +752,18 @@ impl K2PTreeNode {
     {
         // Leaf node
         if sidelen == 1 {
-            // Fill cells that lay outside of original raster with 0s
             let [rows, cols] = shape;
             let value_s = if row < rows && col < cols {
-                get_s(row, col)
+                Some(get_s(row, col))
             } else {
-                0
+                None
             };
             let value_t = if row < rows && col < cols {
-                get_t(row, col)
+                Some(get_t(row, col))
             } else {
-                0
+                None
             };
-            let diff = value_t - value_s;
+            let diff = value_t.unwrap_or(0) - value_s.unwrap_or(0);
             return K2PTreeNode {
                 max_t: value_t,
                 min_t: value_t,
@@ -795,17 +794,27 @@ impl K2PTreeNode {
         let mut min_s = children[0].min_s;
         let mut equal = children.iter().all(|child| child.equal);
         let diff = children[0].diff;
+
+        fn is_lt(left: Option<i64>, right: Option<i64>) -> bool {
+            if let Some(left) = left {
+                if let Some(right) = right {
+                    return left < right;
+                }
+            }
+            false
+        }
+
         for child in &children[1..] {
-            if child.max_t > max_t {
+            if is_lt(max_t, child.max_t) {
                 max_t = child.max_t;
             }
-            if child.min_t < min_t {
+            if is_lt(child.min_t, min_t) {
                 min_t = child.min_t;
             }
-            if child.max_s > max_s {
+            if is_lt(max_s, child.max_s) {
                 max_s = child.max_s;
             }
-            if child.min_s < min_s {
+            if is_lt(child.min_s, min_s) {
                 min_s = child.min_s;
             }
             equal = equal && child.diff == diff;
@@ -943,6 +952,24 @@ mod tests {
         assert_eq!(log.min.collect::<i32>(), vec![1, 1, 1, 0, 0, 1, 0, 1, 0,]);
 
         assert_eq!(log.shape, [8, 8]);
+    }
+
+    #[test]
+    fn build_make_sure_fill_values_match_local_nonfill_values_in_same_quadbox() {
+        let mut data: Array3<i32> = Array3::zeros([3, 9, 9]) + 5;
+        data.slice_mut(s![.., ..8, ..8]).assign(&array8());
+        data.slice_mut(s![0, .., ..]).assign(&array9().slice(s![0, .., ..]));
+        println!("{data:?}");
+
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
+
+        // Copmared to the previous test with an 8x8 array, expecting only 4 new nodes because fill
+        // values for expanded 16x16 array will all be 5 because quadboxes except for upper left
+        // all contain only 5s or the fill value.
+        assert_eq!(log.nodemap.length, 21);
+
+        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
+        assert_eq!(log.get(&snapshot, 8, 8), 5);
     }
 
     #[test]
@@ -1468,6 +1495,7 @@ mod tests {
                     for right in left + 1..=9 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
+                                println!("{top}:{bottom},{left}:{right} {lower}-{upper}");
                                 let expected: Vec<(usize, usize)> = array_search_window(
                                     data1, top, bottom, left, right, lower, upper,
                                 );

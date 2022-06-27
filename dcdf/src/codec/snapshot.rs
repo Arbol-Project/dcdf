@@ -120,22 +120,24 @@ where
 
         let root = K2TreeNode::build(get, shape, k, sidelen);
         let mut to_traverse = VecDeque::new();
-        to_traverse.push_back((root.max, root.min, &root));
+        to_traverse.push_back((root.max.unwrap_or(0), root.min.unwrap_or(0), &root));
 
         // Breadth first traversal
         while let Some((diff_max, diff_min, child)) = to_traverse.pop_front() {
+            let child_max = child.max.unwrap_or(0);
+            let child_min = child.min.unwrap_or(0);
             max.push(diff_max);
 
             if !child.children.is_empty() {
                 // Non-leaf node
-                let elide = child.min == child.max;
+                let elide = child_min == child_max;
                 nodemap.push(!elide);
                 if !elide {
                     min.push(diff_min);
                     for descendant in &child.children {
                         to_traverse.push_back((
-                            child.max - descendant.max,
-                            descendant.min - child.min,
+                            child_max - descendant.max.unwrap_or(0),
+                            descendant.min.unwrap_or(0) - child_min,
                             &descendant,
                         ));
                     }
@@ -427,8 +429,8 @@ where
 
 /// Temporary tree structure for building K^2 raster
 struct K2TreeNode {
-    max: i64,
-    min: i64,
+    max: Option<i64>,
+    min: Option<i64>,
     children: Vec<K2TreeNode>,
 }
 
@@ -453,12 +455,11 @@ impl K2TreeNode {
     {
         // Leaf node
         if sidelen == 1 {
-            // Fill cells that lay outside of original raster with 0s
             let [rows, cols] = shape;
             let value = if row < rows && col < cols {
-                get(row, col)
+                Some(get(row, col))
             } else {
-                0
+                None
             };
             return K2TreeNode {
                 max: value,
@@ -481,11 +482,25 @@ impl K2TreeNode {
         let mut max = children[0].max;
         let mut min = children[0].min;
         for child in &children[1..] {
-            if child.max > max {
-                max = child.max;
+            if let Some(child_max) = child.max {
+                if let Some(node_max) = max {
+                    if child_max > node_max {
+                        max = Some(child_max);
+                    }
+                }
+                else {
+                    max = Some(child_max);
+                }
             }
-            if child.min < min {
-                min = child.min;
+            if let Some(child_min) = child.min {
+                if let Some(node_min) = min {
+                    if child_min < node_min {
+                        min = Some(child_min);
+                    }
+                }
+                else {
+                    min = Some(child_min);
+                }
             }
         }
 
@@ -550,6 +565,20 @@ mod tests {
         );
 
         assert_eq!(snapshot.shape, [8, 8]);
+    }
+
+    #[test]
+    fn build_make_sure_fill_values_match_local_nonfill_values_in_same_quadbox() {
+        let mut data: Array2<i32> = Array2::zeros([9, 9]) + 5;
+        let mut slice = data.slice_mut(s![..8, ..8]);
+        slice.assign(&array8());
+        let snapshot = Snapshot::from_array(data.view(), 2);
+
+        // Copmared to the previous test with an 8x8 array, expecting only 4 new nodes because fill
+        // values for expanded 16x16 array will all be 5 because quadboxes except for upper left
+        // all contain only 5s or the fill value.
+        assert_eq!(snapshot.nodemap.length, 21);
+        assert_eq!(snapshot.get(8, 8), 5);
     }
 
     #[test]
