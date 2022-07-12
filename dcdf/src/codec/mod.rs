@@ -33,6 +33,7 @@ mod snapshot;
 
 pub use block::Block;
 pub use chunk::{CellIter, Chunk, FChunk};
+pub use dac::Dac;
 pub use log::Log;
 pub use snapshot::Snapshot;
 

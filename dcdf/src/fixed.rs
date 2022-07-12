@@ -9,6 +9,7 @@
 //! with the least significant bit set to 1. This bit is elided when decoding and is not used as
 //! part of the numerical value.
 
+use ndarray::Array2;
 use num_traits::Float;
 use std::fmt::Debug;
 
@@ -81,9 +82,159 @@ pub fn from_fixed<F: Float>(n: i64, fractional_bits: usize) -> F {
     }
 }
 
+#[derive(Copy, Clone)]
+pub enum Fraction {
+    Precise(usize),
+    Round(usize),
+}
+
+pub use Fraction::{Precise, Round};
+
+pub enum Continue {
+    Yes,
+    No,
+}
+
+pub struct FractionSuggester<F>
+where
+    F: Float + Debug,
+{
+    max_value: F,
+    max_fraction_bits: usize,
+    fraction_bits: usize,
+    round: bool,
+}
+
+impl<F> FractionSuggester<F>
+where
+    F: Float + Debug,
+{
+    // Basic gist is figure out how many bits we need for the whole number part, using the
+    // max_value passed in. From there shift each value in the dataset as far to the left as
+    // possible given the number of whole number bits needed, then look at the number of trailing
+    // zeros on each shifted value to determine how many actual fractional bits we need for that
+    // number, and return the maximum number.
+
+    pub fn new(max_value: F) -> Self {
+        // DACs can store 64 bits. We lose 1 bit to the sign for signed numbers, and we lose
+        // another bit to the encoding used by "fixed" to differentiate finite numbers from NaN.
+        const TOTAL_BITS: usize = 62;
+        let whole_bits = 1 + max_value.to_f64().unwrap().log2().floor() as usize;
+
+        Self {
+            max_value,
+            max_fraction_bits: TOTAL_BITS - whole_bits,
+            fraction_bits: 0,
+            round: false,
+        }
+    }
+
+    pub fn push(&mut self, instant: Array2<F>) -> Continue {
+        if self.round {
+            panic!("FractionSuggester.push() called again after returning Continue::No");
+        }
+
+        for n in instant {
+            let n: f64 = n.to_f64().unwrap();
+            if n.is_nan() {
+                continue;
+            }
+            let shifted = n * (1_i64 << self.max_fraction_bits) as f64;
+
+            // If we've left shifted a number as far as it will go and we still have a fractional
+            // part, then this dataset will need to be rounded and there will be some loss of
+            // precision.
+            if shifted.fract() != 0.0 {
+                self.fraction_bits = self.max_fraction_bits;
+                self.round = true;
+                return Continue::No;
+            }
+
+            let shifted = shifted as i64;
+            if shifted == i64::MAX {
+                // Conversion from float to int saturates on overflow, so assume there was an
+                // overflow if result is MAX
+                panic!("Value {n} is greater than max_value {:?}", self.max_value);
+            }
+
+            let these_bits = self
+                .max_fraction_bits
+                .saturating_sub(shifted.trailing_zeros() as usize);
+            if these_bits > self.fraction_bits {
+                self.fraction_bits = these_bits;
+            }
+        }
+
+        Continue::Yes
+    }
+
+    pub fn finish(self) -> Fraction {
+        if self.round {
+            Round(self.fraction_bits)
+        } else {
+            Precise(self.fraction_bits)
+        }
+    }
+}
+
+pub fn suggest_fraction<F, T>(instants: T, max_value: F) -> Fraction
+where
+    F: Float + Debug,
+    T: Iterator<Item = Array2<F>>,
+{
+    let mut suggester = FractionSuggester::new(max_value);
+
+    for instant in instants {
+        match suggester.push(instant) {
+            Continue::No => break,
+            Continue::Yes => continue,
+        }
+    }
+
+    suggester.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ndarray::arr2;
+
+    fn array() -> Vec<Array2<f32>> {
+        let data = vec![
+            arr2(&[
+                [9.5, 8.25, 7.75, 7.75, 6.125, 6.125, 3.375, 2.625],
+                [7.75, 7.75, 7.75, 7.75, 6.125, 6.125, 3.375, 3.375],
+                [6.125, 6.125, 6.125, 6.125, 3.375, 3.375, 3.375, 3.375],
+                [5.0, 5.0, 6.125, 6.125, 3.375, 3.375, 3.375, 3.375],
+                [4.875, 5.0, 5.0, 5.0, 4.875, 4.875, 4.875, 4.875],
+                [3.375, 3.375, 5.0, 5.0, 4.875, 4.875, 4.875, 4.875],
+                [3.375, 3.375, 3.375, 5.0, 4.875, 4.875, 4.875, 4.875],
+                [4.875, 4.875, 3.375, 4.875, 4.875, 4.875, 4.875, 4.875],
+            ]),
+            arr2(&[
+                [9.5, 8.25, 7.75, 7.75, 7.75, 7.75, 2.625, 2.625],
+                [7.75, 7.75, 7.75, 7.75, 7.75, 7.75, 2.625, 2.625],
+                [6.125, 6.125, 6.125, 6.125, 4.875, 3.375, 3.375, 3.375],
+                [5.0, 5.0, 6.125, 6.125, 3.375, 3.375, 3.375, 3.375],
+                [4.875, 5.0, 5.0, 5.0, 4.875, 4.875, 4.875, 4.875],
+                [3.375, 3.375, 5.0, 5.0, 4.875, 4.875, 4.875, 4.875],
+                [3.375, 3.375, 4.875, 5.0, 5.0, 4.875, 4.875, 4.875],
+                [4.875, 4.875, 4.875, 4.875, 4.875, 4.875, 4.875, 4.875],
+            ]),
+            arr2(&[
+                [9.5, 8.25, 7.75, 7.75, 8.25, 7.75, 5.0, 5.0],
+                [7.75, 7.75, 7.75, 7.75, 7.75, 7.75, 5.0, 5.0],
+                [7.75, 7.75, 6.125, 6.125, 4.875, 3.375, 4.875, 4.875],
+                [6.125, 6.125, 6.125, 6.125, 4.875, 4.875, 4.875, 4.875],
+                [4.875, 5.0, 5.0, 5.0, 4.875, 4.875, 4.875, 4.875],
+                [3.375, 3.375, 5.0, 5.0, 4.875, 4.875, 4.875, 4.875],
+                [3.375, 3.375, 4.875, 5.0, 6.125, 4.875, 4.875, 4.875],
+                [4.875, 4.875, 4.875, 4.875, 5.0, 4.875, 4.875, 4.875],
+            ]),
+        ];
+
+        data.into_iter().cycle().take(100).collect()
+    }
 
     #[test]
     fn test_to_fixed() {
@@ -176,5 +327,73 @@ mod tests {
     fn test_to_fixed_overflow() {
         let n = 1.5e100;
         to_fixed(n, 1, false);
+    }
+
+    #[test]
+    fn suggest_fraction_3bits() {
+        let data = array();
+        let fraction = suggest_fraction(data.into_iter(), 15.0);
+        match fraction {
+            Precise(bits) => {
+                assert_eq!(bits, 3);
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+    }
+
+    #[test]
+    fn suggest_fraction_4bits() {
+        let data = vec![arr2(&[[16.0, 1.0 / 16.0]])];
+        let fraction = suggest_fraction(data.into_iter(), 16.0);
+        match fraction {
+            Precise(bits) => {
+                assert_eq!(bits, 4);
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+    }
+
+    #[test]
+    fn suggest_fraction_all_the_bits() {
+        let data = vec![
+            // 1/10 is infinite repeating digits in binary, like 1/3 in decimal. We still don't end
+            // up rounding, though, because we can represent all the bits that are in the f64
+            // representation. This doesn't introduce any more rounding error than is already
+            // there.
+            arr2(&[[16.0, 0.1]]),
+        ];
+        let fraction = suggest_fraction(data.into_iter(), 16.0);
+        match fraction {
+            Precise(bits) => {
+                assert_eq!(bits, 55);
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+    }
+
+    #[test]
+    fn suggest_fraction_loss_of_precision() {
+        let data = vec![
+            // 1/10 is infinite repeating digits in binary, like 1/3 in decimal. Unlike the test
+            // just before this one, we do have a loss of precision as the 9 bits needed for the
+            // whole number part of 316 will push some bits off the right hand side of the fixed
+            // point representation for 0.1.
+            arr2(&[[316.0, 0.1]]),
+        ];
+        let fraction = suggest_fraction(data.into_iter(), 316.0);
+        match fraction {
+            Round(bits) => {
+                assert_eq!(bits, 53);
+            }
+            _ => {
+                assert!(false);
+            }
+        }
     }
 }
