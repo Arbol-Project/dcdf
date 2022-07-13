@@ -1,6 +1,3 @@
-use super::bitmap::{BitMap, BitMapBuilder};
-use super::dac::Dac;
-
 use num_traits::PrimInt;
 use std::cmp::min;
 use std::collections::VecDeque;
@@ -9,7 +6,12 @@ use std::io;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 
-use crate::extio::{ExtendedRead, ExtendedWrite};
+use crate::cache::Cacheable;
+use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
+use crate::geom;
+
+use super::bitmap::{BitMap, BitMapBuilder};
+use super::dac::Dac;
 
 /// K²-Raster encoded Snapshot
 ///
@@ -45,33 +47,33 @@ where
     sidelen: usize,
 }
 
-impl<I> Snapshot<I>
+impl<I> Serialize for Snapshot<I>
 where
     I: PrimInt + Debug,
 {
     /// Write a snapshot to a stream
     ///
-    pub fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
+    fn write_to(&self, stream: &mut impl Write) -> io::Result<()> {
         stream.write_byte(self.k as u8)?;
         stream.write_u32(self.shape[0] as u32)?;
         stream.write_u32(self.shape[1] as u32)?;
         stream.write_u32(self.sidelen as u32)?;
-        self.nodemap.serialize(stream)?;
-        self.max.serialize(stream)?;
-        self.min.serialize(stream)?;
+        self.nodemap.write_to(stream)?;
+        self.max.write_to(stream)?;
+        self.min.write_to(stream)?;
 
         Ok(())
     }
 
     /// Read a snapshot from a stream
     ///
-    pub fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
+    fn read_from(stream: &mut impl Read) -> io::Result<Self> {
         let k = stream.read_byte()? as i32;
         let shape = [stream.read_u32()? as usize, stream.read_u32()? as usize];
         let sidelen = stream.read_u32()? as usize;
-        let nodemap = BitMap::deserialize(stream)?;
-        let max = Dac::deserialize(stream)?;
-        let min = Dac::deserialize(stream)?;
+        let nodemap = BitMap::read_from(stream)?;
+        let max = Dac::read_from(stream)?;
+        let min = Dac::read_from(stream)?;
 
         Ok(Self {
             _marker: PhantomData,
@@ -83,16 +85,26 @@ where
             sidelen,
         })
     }
+}
 
+impl<I> Cacheable for Snapshot<I>
+where
+    I: PrimInt + Debug,
+{
     /// Return number of bytes in serialized representation
     ///
-    pub fn size(&self) -> u64 {
+    fn size(&self) -> u64 {
         1       // k
         + 4 + 4 // shape
         + 4     // sidelen 
         + self.nodemap.size() + self.max.size() + self.min.size()
     }
+}
 
+impl<I> Snapshot<I>
+where
+    I: PrimInt + Debug,
+{
     /// Build a snapshot from a two-dimensional array.
     ///
     /// The notional two-dimensional array is represented by `get`, which is a function that takes
@@ -202,12 +214,12 @@ where
     /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
     ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
-    pub fn fill_window<S>(&self, mut set: S, top: usize, bottom: usize, left: usize, right: usize)
+    pub fn fill_window<S>(&self, mut set: S, bounds: &geom::Rect)
     where
         S: FnMut(usize, usize, i64),
     {
-        let rows = bottom - top;
-        let cols = right - left;
+        let rows = bounds.rows();
+        let cols = bounds.cols();
 
         if !self.nodemap.get(0) {
             // Special case: single node tree
@@ -221,14 +233,14 @@ where
             self._fill_window(
                 &mut set,
                 self.sidelen,
-                top,
-                bottom - 1,
-                left,
-                right - 1,
+                bounds.top,
+                bounds.bottom - 1,
+                bounds.left,
+                bounds.right - 1,
                 0,
                 self.max.get(0),
-                top,
-                left,
+                bounds.top,
+                bounds.left,
                 0,
                 0,
             );
@@ -308,34 +320,24 @@ where
     /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
     ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
-    pub fn search_window(
-        &self,
-        top: usize,
-        bottom: usize,
-        left: usize,
-        right: usize,
-        lower: I,
-        upper: I,
-    ) -> Vec<(usize, usize)> {
+    pub fn search_window(&self, bounds: &geom::Rect, lower: I, upper: I) -> Vec<(usize, usize)> {
         let mut cells: Vec<(usize, usize)> = vec![];
 
         if !self.nodemap.get(0) {
             // Special case: single node tree
             let value: I = self.max.get(0);
             if lower <= value && value <= upper {
-                for row in top..bottom {
-                    for col in left..right {
-                        cells.push((row, col));
-                    }
+                for (row, col) in bounds.iter() {
+                    cells.push((row, col));
                 }
             }
         } else {
             self._search_window(
                 self.sidelen,
-                top,
-                bottom - 1,
-                left,
-                right - 1,
+                bounds.top,
+                bounds.bottom - 1,
+                bounds.left,
+                bounds.right - 1,
                 lower,
                 upper,
                 0,
@@ -639,7 +641,8 @@ mod tests {
             for bottom in top + 1..=8 {
                 for left in 0..8 {
                     for right in left + 1..=8 {
-                        let window = snapshot.get_window(top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = snapshot.get_window(&bounds);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -657,7 +660,8 @@ mod tests {
             for bottom in top + 1..=9 {
                 for left in 0..9 {
                     for right in left + 1..=9 {
-                        let window = snapshot.get_window(top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = snapshot.get_window(&bounds);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -675,7 +679,8 @@ mod tests {
             for bottom in top + 1..=9 {
                 for left in 0..9 {
                     for right in left + 1..=9 {
-                        let window = snapshot.get_window(top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = snapshot.get_window(&bounds);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -693,7 +698,8 @@ mod tests {
             for bottom in top + 1..=16 {
                 for left in 0..16 {
                     for right in left + 1..=16 {
-                        let window = snapshot.get_window(top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = snapshot.get_window(&bounds);
                         let expected = data.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -711,6 +717,7 @@ mod tests {
             for bottom in top + 1..=8 {
                 for left in 0..8 {
                     for right in left + 1..=8 {
+                        let window = geom::Rect::new(top, bottom, left, right);
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -725,8 +732,7 @@ mod tests {
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
-                                let coords =
-                                    snapshot.search_window(top, bottom, left, right, lower, upper);
+                                let coords = snapshot.search_window(&window, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -747,6 +753,7 @@ mod tests {
             for bottom in top + 1..=9 {
                 for left in 0..9 {
                     for right in left + 1..=9 {
+                        let window = geom::Rect::new(top, bottom, left, right);
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -761,8 +768,7 @@ mod tests {
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
-                                let coords =
-                                    snapshot.search_window(top, bottom, left, right, lower, upper);
+                                let coords = snapshot.search_window(&window, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -783,6 +789,7 @@ mod tests {
             for bottom in top + 1..=9 {
                 for left in 0..9 {
                     for right in left + 1..=9 {
+                        let window = geom::Rect::new(top, bottom, left, right);
                         for lower in 4..=9 {
                             for upper in lower..=9 {
                                 let expected: Vec<(usize, usize)> = array_search_window(
@@ -797,8 +804,7 @@ mod tests {
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
-                                let coords =
-                                    snapshot.search_window(top, bottom, left, right, lower, upper);
+                                let coords = snapshot.search_window(&window, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -819,13 +825,14 @@ mod tests {
             for bottom in top + 1..=8 {
                 for left in 0..8 {
                     for right in left + 1..=8 {
+                        let window = geom::Rect::new(top, bottom, left, right);
                         let mut expected: HashSet<(usize, usize)> = HashSet::new();
                         for row in top..bottom {
                             for col in left..right {
                                 expected.insert((row, col));
                             }
                         }
-                        let coords = snapshot.search_window(top, bottom, left, right, 41, 43);
+                        let coords = snapshot.search_window(&window, 41, 43);
                         let coords = HashSet::from_iter(coords.iter().cloned());
 
                         assert_eq!(coords, expected);
@@ -844,7 +851,8 @@ mod tests {
             for bottom in top + 1..=16 {
                 for left in 0..16 {
                     for right in left + 1..=16 {
-                        let coords = snapshot.search_window(top, bottom, left, right, 0, 41);
+                        let window = geom::Rect::new(top, bottom, left, right);
+                        let coords = snapshot.search_window(&window, 0, 41);
 
                         assert_eq!(coords, vec![]);
                     }
@@ -862,7 +870,8 @@ mod tests {
             for bottom in top + 1..=8 {
                 for left in 0..8 {
                     for right in left + 1..=8 {
-                        let coords = snapshot.search_window(top, bottom, left, right, 100, 200);
+                        let window = geom::Rect::new(top, bottom, left, right);
+                        let coords = snapshot.search_window(&window, 100, 200);
                         assert_eq!(coords.len(), 0);
                     }
                 }

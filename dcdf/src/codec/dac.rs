@@ -12,25 +12,28 @@
 //! [^two]: [ZigZag encoding/decoding explained](
 //!     https://gist.github.com/mfuerstenau/ba870a29e16536fdbaba)
 //!
-use super::bitmap::{BitMap, BitMapBuilder};
-use crate::extio::{ExtendedRead, ExtendedWrite};
 use num_traits::PrimInt;
 use std::fmt::Debug;
 use std::io;
 use std::io::{Read, Write};
+
+use crate::cache::Cacheable;
+use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
+
+use super::bitmap::{BitMap, BitMapBuilder};
 
 /// Compact storage for integers (Directly Addressable Codes)
 pub struct Dac {
     pub levels: Vec<(BitMap, Vec<u8>)>,
 }
 
-impl Dac {
+impl Serialize for Dac {
     /// Write the dac to a stream
     ///
-    pub fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
+    fn write_to(&self, stream: &mut impl Write) -> io::Result<()> {
         stream.write_byte(self.levels.len() as u8)?;
         for (bitmap, bytes) in &self.levels {
-            bitmap.serialize(stream)?;
+            bitmap.write_to(stream)?;
             stream.write_all(bytes)?;
         }
         Ok(())
@@ -38,11 +41,11 @@ impl Dac {
 
     /// Read the dac from a stream
     ///
-    pub fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
+    fn read_from(stream: &mut impl Read) -> io::Result<Self> {
         let n_levels = stream.read_byte()? as usize;
         let mut levels = Vec::with_capacity(n_levels);
         for _ in 0..n_levels {
-            let bitmap = BitMap::deserialize(stream)?;
+            let bitmap = BitMap::read_from(stream)?;
             let mut bytes = Vec::with_capacity(bitmap.length);
             stream.take(bitmap.length as u64).read_to_end(&mut bytes)?;
 
@@ -51,16 +54,20 @@ impl Dac {
 
         Ok(Self { levels })
     }
+}
 
+impl Cacheable for Dac {
     /// Get number of bytes of serialized dac
-    pub fn size(&self) -> u64 {
+    fn size(&self) -> u64 {
         1 + self
             .levels
             .iter()
             .map(|(bitmap, bytes)| bitmap.size() + bytes.len() as u64)
             .sum::<u64>()
     }
+}
 
+impl Dac {
     /// Get the value at the given index
     ///
     pub fn get<I>(&self, index: usize) -> I

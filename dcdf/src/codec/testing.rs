@@ -3,6 +3,7 @@ use num_traits::{Num, PrimInt};
 use std::fmt::Debug;
 
 use super::*;
+use crate::geom;
 
 impl<I> Snapshot<I>
 where
@@ -21,13 +22,11 @@ where
     /// Wrap Snapshot.get_window with function that allocates an array and creates the `set`
     /// enclosure, so it doesn't have to repeated in every test for `get_window`.
     ///
-    pub fn get_window(&self, top: usize, bottom: usize, left: usize, right: usize) -> Array2<I> {
-        let rows = bottom - top;
-        let cols = right - left;
-        let mut window = Array2::zeros([rows, cols]);
+    pub fn get_window(&self, bounds: &geom::Rect) -> Array2<I> {
+        let mut window = Array2::zeros([bounds.rows(), bounds.cols()]);
         let set = |row, col, value| window[[row, col]] = I::from(value).unwrap();
 
-        self.fill_window(set, top, bottom, left, right);
+        self.fill_window(set, bounds);
 
         window
     }
@@ -51,20 +50,11 @@ where
     /// Wrap Log.get_window with function that allocates an array and creates the `set`
     /// enclosure, so it doesn't have to repeated in every test for `get_window`.
     ///
-    pub fn get_window(
-        &self,
-        snapshot: &Snapshot<I>,
-        top: usize,
-        bottom: usize,
-        left: usize,
-        right: usize,
-    ) -> Array2<I> {
-        let rows = bottom - top;
-        let cols = right - left;
-        let mut window = Array2::zeros([rows, cols]);
+    pub fn get_window(&self, snapshot: &Snapshot<I>, bounds: &geom::Rect) -> Array2<I> {
+        let mut window = Array2::zeros([bounds.rows(), bounds.cols()]);
         let set = |row, col, value| window[[row, col]] = I::from(value).unwrap();
 
-        self.fill_window(set, snapshot, top, bottom, left, right);
+        self.fill_window(set, snapshot, bounds);
 
         window
     }

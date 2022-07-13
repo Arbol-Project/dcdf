@@ -27,12 +27,11 @@ mod bitmap;
 mod block;
 mod chunk;
 mod dac;
-mod helpers;
 mod log;
 mod snapshot;
 
 pub use block::Block;
-pub use chunk::{CellIter, Chunk, FChunk};
+pub use chunk::{CellIter, Chunk, FCellIter, FChunk};
 pub use dac::Dac;
 pub use log::Log;
 pub use snapshot::Snapshot;

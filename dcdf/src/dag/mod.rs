@@ -1,5 +1,10 @@
-mod mapper;
-mod resolver;
+pub mod commit;
+pub mod folder;
+pub mod mapper;
+pub mod resolver;
+pub mod superchunk;
 
-#[allow(dead_code)]
-mod superchunk;
+mod node;
+
+#[cfg(test)]
+mod testing;

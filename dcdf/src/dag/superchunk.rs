@@ -1,29 +1,45 @@
-use cid::Cid;
-use ndarray::{s, Array2};
-use num_traits::Float;
+use std::cell::RefCell;
+use std::cmp;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::io;
+use std::mem;
+use std::rc::Rc;
+use std::sync::Arc;
 
-use super::mapper::Mapper;
-use super::resolver::Resolver;
+use cid::Cid;
+use ndarray::{s, Array2, Array3, ArrayBase, DataMut, Ix3};
+use num_traits::Float;
+
+use crate::cache::Cacheable;
 use crate::codec::Dac;
 use crate::codec::FChunk;
-use crate::fixed::{to_fixed, Fraction, Precise, Round};
+use crate::errors::Result;
+use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
+use crate::fixed::{from_fixed, to_fixed, Fraction, Precise, Round};
+use crate::geom;
+use crate::helpers::rearrange;
 use crate::simple::FBuilder;
 
-pub struct Superchunk<M, N>
-where
-    M: Mapper,
-    N: Float + Debug,
-{
-    /// The K in K²-Raster. Each level of the tree structure is divided into k² subtrees.
-    /// In practice, this will almost always be 2.
-    k: i32,
+use super::node::Node;
+use super::resolver::Resolver;
 
+const NODE_SUPERCHUNK: u8 = 2;
+type ShortHash = [u8; 8];
+
+/// A time series raster subdivided into a number of K²-Raster encoded chunks.
+///
+/// The encoded subchunks are stored in some IPLD-like data store (represented by a concrete
+/// implementation of ``Mapper``.)
+///
+pub struct Superchunk<N>
+where
+    N: Float + Debug + 'static,
+{
     /// Shape of the encoded raster. Since K² matrix is grown to a square with sides whose length
     /// are a power of K, we need to keep track of the dimensions of the original raster so we can
     /// perform range checking.
-    pub shape: [usize; 3],
+    shape: [usize; 3],
 
     /// Length of one side of logical matrix, ie number of rows, number of columns, which are equal
     /// since it is a square
@@ -44,109 +60,952 @@ where
     min: Dac,
 
     /// Locally stored subchunks
-    local: Vec<FChunk<N>>,
+    local: Vec<Arc<FChunk<N>>>,
+
+    /// Hashes of externally stored subchunks
+    external: BTreeMap<ShortHash, Cid>,
 
     /// Resolver for retrieving subchunks
-    resolver: Resolver<M, N>,
+    resolver: Arc<Resolver<N>>,
 
-    stride: usize,
+    /// Number of fractional bits stored in fixed point number representation
+    fractional_bits: usize,
+
+    /// The side length of the subchunks stored in this superchunk
+    chunks_sidelen: usize,
+
+    /// The number of subchunks per side in the logical grid represented by this superchunk
     subsidelen: usize,
 }
 
-impl<M, N> Superchunk<M, N>
+impl<N> Superchunk<N>
 where
-    M: Mapper,
-    N: Float + Debug,
+    N: Float + Debug + 'static,
 {
+    /// Load superchunk from a stream
+    fn load_from(
+        resolver: &Arc<Resolver<N>>,
+        stream: &mut impl io::Read,
+        external: BTreeMap<ShortHash, Cid>,
+    ) -> Result<Self> {
+        Self::read_header(stream)?;
+
+        let instants = stream.read_u32()? as usize;
+        let rows = stream.read_u32()? as usize;
+        let cols = stream.read_u32()? as usize;
+        let shape = [instants, rows, cols];
+
+        let sidelen = stream.read_u32()? as usize;
+        let levels = stream.read_byte()? as usize;
+        let chunks_sidelen = stream.read_u32()? as usize;
+        let subsidelen = stream.read_u32()? as usize;
+        let fractional_bits = stream.read_byte()? as usize;
+
+        let n_references = stream.read_u32()? as usize;
+        let mut references = Vec::with_capacity(n_references);
+        for _ in 0..n_references {
+            let reference = Reference::read_from(stream)?;
+            references.push(reference);
+        }
+
+        let n_local = stream.read_u32()? as usize;
+        let mut local = Vec::with_capacity(n_local);
+        for _ in 0..n_local {
+            let chunk = FChunk::read_from(stream)?;
+            local.push(Arc::new(chunk));
+        }
+
+        let max = Dac::read_from(stream)?;
+        let min = Dac::read_from(stream)?;
+
+        Ok(Self {
+            shape,
+            sidelen,
+            levels,
+            chunks_sidelen,
+            subsidelen,
+            fractional_bits,
+            references,
+            local,
+            external,
+            max,
+            min,
+            resolver: Arc::clone(resolver),
+        })
+    }
+
+    /// Get the shape of the overall time series raster
+    ///
+    pub fn shape(&self) -> [usize; 3] {
+        self.shape
+    }
+
     /// Iterate over a cell's value across time instants.
     ///
-    pub fn iter_cell<'a>(
-        &'a mut self,
+    pub fn iter_cell(
+        self: &Arc<Self>,
         start: usize,
         end: usize,
         row: usize,
         col: usize,
-    ) -> io::Result<Box<dyn Iterator<Item = N> + 'a>> {
+    ) -> Result<CellIter<N>> {
+        let (start, end) = rearrange(start, end);
+        self.check_bounds(end - 1, row, col);
+
         // Theoretically compiler will optimize to single DIVREM instructions
         // https://stackoverflow.com/questions/69051429
         //      /what-is-the-function-to-get-the-quotient-and-remainder-divmod-for-rust
-        let chunk_row = row / self.stride;
-        let local_row = row % self.stride;
-        let chunk_col = col / self.stride;
-        let local_col = col % self.stride;
+        let chunk_row = row / self.chunks_sidelen;
+        let local_row = row % self.chunks_sidelen;
+        let chunk_col = col / self.chunks_sidelen;
+        let local_col = col % self.chunks_sidelen;
 
         let chunk = chunk_row * self.subsidelen + chunk_col;
         match self.references[chunk] {
+            Reference::Elided => Ok(CellIter {
+                inner: Rc::new(RefCell::new(SuperCellIter::new(self, start, end, chunk))),
+            }),
             Reference::Local(index) => {
                 let chunk = &self.local[index];
-                Ok(chunk.iter_cell(start, end, local_row, local_col))
+                Ok(CellIter {
+                    inner: Rc::new(RefCell::new(
+                        chunk.iter_cell(start, end, local_row, local_col),
+                    )),
+                })
             }
-            Reference::External(cid) => {
-                let chunk = self.resolver.get_chunk(cid)?;
+            Reference::External(short) => {
+                let cid = self.external.get(&short).unwrap();
+                let chunk = self.resolver.get_subchunk(&cid)?;
 
-                Ok(chunk.iter_cell(start, end, local_row, local_col))
+                Ok(CellIter {
+                    inner: Rc::new(RefCell::new(
+                        chunk.iter_cell(start, end, local_row, local_col),
+                    )),
+                })
+            }
+        }
+    }
+
+    /// Get a subarray of this Chunk.
+    ///
+    pub fn get_window(self: &Arc<Self>, bounds: &geom::Cube) -> Result<Array3<N>> {
+        self.check_bounds(bounds.end - 1, bounds.bottom - 1, bounds.right - 1);
+
+        let mut window = Array3::zeros([bounds.instants(), bounds.rows(), bounds.cols()]);
+        self.fill_window(bounds, &mut window)?;
+
+        Ok(window)
+    }
+
+    /// Fill in a preallocated array with subarray from this chunk
+    ///
+    fn fill_window<S>(
+        self: &Arc<Self>,
+        bounds: &geom::Cube,
+        window: &mut ArrayBase<S, Ix3>,
+    ) -> Result<()>
+    where
+        S: DataMut<Elem = N>,
+    {
+        for subchunk in self.subchunks_for(&bounds.rect()) {
+            let mut subwindow = window.slice_mut(s![
+                ..,
+                subchunk.slice.top..subchunk.slice.bottom,
+                subchunk.slice.left..subchunk.slice.right
+            ]);
+
+            let bounds = geom::Cube::new(
+                bounds.start,
+                bounds.end,
+                subchunk.local.top,
+                subchunk.local.bottom,
+                subchunk.local.left,
+                subchunk.local.right,
+            );
+            match self.references[subchunk.index] {
+                Reference::Elided => {
+                    let stride = self.subsidelen * self.subsidelen;
+                    let mut index = subchunk.index + bounds.start * stride;
+                    for i in 0..bounds.instants() {
+                        let value = self.max.get(index);
+                        let value = from_fixed(value, self.fractional_bits);
+                        let mut slice = subwindow.slice_mut(s![i, .., ..]);
+                        slice.fill(value);
+                        index += stride;
+                    }
+                }
+                Reference::Local(index) => {
+                    let chunk = &self.local[index];
+                    chunk.fill_window(&bounds, &mut subwindow);
+                }
+                Reference::External(short) => {
+                    let cid = self.external.get(&short).unwrap();
+                    let chunk = self.resolver.get_subchunk(&cid)?;
+                    chunk.fill_window(&bounds, &mut subwindow);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Iterate over subarrays of successive time instants.
+    ///
+    pub fn iter_window(self: &Arc<Self>, bounds: &geom::Cube) -> Result<WindowIter<N>> {
+        self.check_bounds(bounds.end - 1, bounds.bottom - 1, bounds.right - 1);
+
+        let mut subiters: Vec<SubwindowIter<N>> = vec![];
+        for subchunk in self.subchunks_for(&bounds.rect()) {
+            let bounds = geom::Cube::new(
+                bounds.start,
+                bounds.end,
+                subchunk.local.top,
+                subchunk.local.bottom,
+                subchunk.local.left,
+                subchunk.local.right,
+            );
+
+            match self.references[subchunk.index] {
+                Reference::Elided => {
+                    let subiter = SuperWindowIter::new(
+                        self,
+                        bounds.start,
+                        bounds.end,
+                        subchunk.index,
+                        subchunk.slice.bottom - subchunk.slice.top,
+                        subchunk.slice.right - subchunk.slice.left,
+                    );
+                    subiters.push(SubwindowIter {
+                        subiter: Rc::new(RefCell::new(subiter)),
+                        top: subchunk.slice.top,
+                        left: subchunk.slice.left,
+                    });
+                }
+                Reference::Local(index) => {
+                    let chunk = &self.local[index];
+                    let subiter = chunk.iter_window(&bounds);
+                    subiters.push(SubwindowIter {
+                        subiter: Rc::new(RefCell::new(subiter)),
+                        top: subchunk.slice.top,
+                        left: subchunk.slice.left,
+                    });
+                }
+                Reference::External(short) => {
+                    let cid = self.external.get(&short).unwrap();
+                    let chunk = self.resolver.get_subchunk(&cid)?;
+                    let subiter = chunk.iter_window(&bounds);
+                    subiters.push(SubwindowIter {
+                        subiter: Rc::new(RefCell::new(subiter)),
+                        top: subchunk.slice.top,
+                        left: subchunk.slice.left,
+                    });
+                }
+            }
+        }
+
+        Ok(WindowIter {
+            subiters,
+            rows: bounds.rows(),
+            cols: bounds.cols(),
+            remaining: bounds.instants(),
+        })
+    }
+
+    /// Search a subarray for cells that fall in a given range.
+    ///
+    /// Returns an iterator that produces coordinate triplets [instant, row, col] of matching
+    /// cells.
+    ///
+    pub fn iter_search(
+        self: &Arc<Self>,
+        bounds: &geom::Cube,
+        lower: N,
+        upper: N,
+    ) -> Result<SearchIter<N>> {
+        let (lower, upper) = rearrange(lower, upper);
+        self.check_bounds(bounds.end - 1, bounds.bottom - 1, bounds.right - 1);
+
+        Ok(SearchIter::new(self, bounds, lower, upper)?)
+    }
+
+    /// Get the subchunks that overlap a given window
+    ///
+    fn subchunks_for(&self, window: &geom::Rect) -> Vec<WindowSubchunk> {
+        let mut subchunks = vec![];
+
+        let chunks = geom::Rect::new(
+            window.top / self.chunks_sidelen,
+            (window.bottom - 1) / self.chunks_sidelen,
+            window.left / self.chunks_sidelen,
+            (window.right - 1) / self.chunks_sidelen,
+        );
+
+        for row in chunks.top..=chunks.bottom {
+            let chunk_top = row * self.chunks_sidelen;
+            let window_top = cmp::max(chunk_top, window.top);
+            let local_top = window_top - chunk_top;
+            let slice_top = window_top - window.top;
+
+            let chunk_bottom = chunk_top + self.chunks_sidelen;
+            let window_bottom = cmp::min(chunk_bottom, window.bottom);
+            let local_bottom = window_bottom - chunk_top;
+            let slice_bottom = window_bottom - window.top;
+
+            for col in chunks.left..=chunks.right {
+                let chunk_left = col * self.chunks_sidelen;
+                let window_left = cmp::max(chunk_left, window.left);
+                let local_left = window_left - chunk_left;
+                let slice_left = window_left - window.left;
+
+                let chunk_right = chunk_left + self.chunks_sidelen;
+                let window_right = cmp::min(chunk_right, window.right);
+                let local_right = window_right - chunk_left;
+                let slice_right = window_right - window.left;
+
+                let index = row * self.subsidelen + col;
+
+                subchunks.push(WindowSubchunk {
+                    index,
+                    chunk: geom::Rect::new(chunk_top, chunk_bottom, chunk_left, chunk_right),
+                    local: geom::Rect::new(local_top, local_bottom, local_left, local_right),
+                    slice: geom::Rect::new(slice_top, slice_bottom, slice_left, slice_right),
+                });
+            }
+        }
+
+        subchunks
+    }
+
+    /// Panics if given point is out of bounds for this chunk
+    fn check_bounds(&self, instant: usize, row: usize, col: usize) {
+        let [instants, rows, cols] = self.shape;
+        if instant >= instants || row >= rows || col >= cols {
+            panic!(
+                "dcdf::Superchunk: index[{}, {}, {}] is out of bounds for array of shape {:?}",
+                instant,
+                row,
+                col,
+                [instants, rows, cols],
+            );
+        }
+    }
+
+    /// Return size of serialized superchunk in bytes
+    pub(crate) fn size(&self) -> u64 {
+        4 * 3  // shape
+        + 4    // sidelen
+        + 1    // levels
+        + 4    // chunks_sidelen
+        + 4    // subsidelen
+        + 1    // fractional_bits
+        + 4    // n_references
+        + self.references.iter().map(|r| r.size()).sum::<u64>()
+        + 4    // n_local
+        + self.local.iter().map(|l| l.size()).sum::<u64>()
+        + self.max.size()
+        + self.min.size()
+    }
+}
+
+impl<N> Node<N> for Superchunk<N>
+where
+    N: Float + Debug + 'static,
+{
+    const NODE_TYPE: u8 = NODE_SUPERCHUNK;
+
+    fn store(self, resolver: &Arc<Resolver<N>>) -> Result<Cid> {
+        let mut folder = resolver.init();
+        for (name, cid) in &self.external {
+            folder = folder.update(String::from_utf8_lossy(name), cid);
+        }
+        folder = folder.update("index.dat", &resolver.save_leaf(self)?);
+
+        Ok(folder.cid())
+    }
+
+    fn retrieve(resolver: &Arc<Resolver<N>>, cid: &Cid) -> Result<Option<Self>> {
+        let folder = resolver.get_folder(cid);
+        let mut external = BTreeMap::new();
+        for (name, item) in folder.iter() {
+            if name == "index.dat" {
+                continue;
+            }
+            external.insert(name.as_bytes().try_into().expect("invalid name"), item.cid);
+        }
+
+        let index = folder.get("index.dat").expect("Not a superchunk.");
+        let mut stream = resolver.load(&index.cid).unwrap();
+
+        Ok(Some(Self::load_from(resolver, &mut stream, external)?))
+    }
+}
+
+impl<N> Serialize for Superchunk<N>
+where
+    N: Float + Debug + 'static,
+{
+    /// Save superchunk to a stream
+    fn write_to(&self, stream: &mut impl io::Write) -> io::Result<()> {
+        stream.write_u32(self.shape[0] as u32)?;
+        stream.write_u32(self.shape[1] as u32)?;
+        stream.write_u32(self.shape[2] as u32)?;
+
+        stream.write_u32(self.sidelen as u32)?;
+        stream.write_byte(self.levels as u8)?;
+        stream.write_u32(self.chunks_sidelen as u32)?;
+        stream.write_u32(self.subsidelen as u32)?;
+        stream.write_byte(self.fractional_bits as u8)?;
+
+        stream.write_u32(self.references.len() as u32)?;
+        for reference in &self.references {
+            reference.write_to(stream)?;
+        }
+
+        stream.write_u32(self.local.len() as u32)?;
+        for chunk in &self.local {
+            chunk.write_to(stream)?;
+        }
+
+        self.max.write_to(stream)?;
+        self.min.write_to(stream)?;
+
+        Ok(())
+    }
+}
+
+/// Represents the part of a window that has some overlap with a subchunk of a superchunk.
+///
+#[derive(Debug)]
+struct WindowSubchunk {
+    /// Index of subchunk in references
+    pub index: usize,
+
+    /// Coordinates of subchunk in superchunk
+    pub chunk: geom::Rect,
+
+    /// Coordinates of window slice in chunk
+    pub local: geom::Rect,
+
+    /// Coordinates of window slice in window
+    pub slice: geom::Rect,
+}
+
+pub struct CellIter<N>
+where
+    N: Float + Debug,
+{
+    inner: Rc<RefCell<dyn Iterator<Item = N>>>,
+}
+
+impl<N> Iterator for CellIter<N>
+where
+    N: Float + Debug,
+{
+    type Item = N;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.borrow_mut().next()
+    }
+}
+
+struct SuperCellIter<N>
+where
+    N: Float + Debug + 'static,
+{
+    superchunk: Arc<Superchunk<N>>,
+    index: usize,
+    stride: usize,
+    remaining: usize,
+}
+
+impl<N> SuperCellIter<N>
+where
+    N: Float + Debug,
+{
+    fn new(superchunk: &Arc<Superchunk<N>>, start: usize, end: usize, chunk_index: usize) -> Self {
+        let stride = superchunk.subsidelen * superchunk.subsidelen;
+        let index = chunk_index + start * stride;
+        let remaining = end - start;
+
+        Self {
+            superchunk: Arc::clone(superchunk),
+            index,
+            stride,
+            remaining,
+        }
+    }
+}
+
+impl<N> Iterator for SuperCellIter<N>
+where
+    N: Float + Debug,
+{
+    type Item = N;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.remaining {
+            0 => None,
+            _ => {
+                let value = self.superchunk.max.get(self.index);
+                self.index += self.stride;
+                self.remaining -= 1;
+
+                Some(from_fixed(value, self.superchunk.fractional_bits))
             }
         }
     }
 }
 
-enum Reference {
-    Local(usize),
-    External(Cid),
+pub struct WindowIter<N>
+where
+    N: Float + Debug,
+{
+    subiters: Vec<SubwindowIter<N>>,
+    rows: usize,
+    cols: usize,
+    remaining: usize,
 }
 
-fn build_superchunk<I, M, N>(
+struct SubwindowIter<N>
+where
+    N: Float + Debug,
+{
+    subiter: Rc<RefCell<dyn Iterator<Item = Array2<N>>>>,
+    top: usize,
+    left: usize,
+}
+
+impl<N> Iterator for WindowIter<N>
+where
+    N: Float + Debug,
+{
+    type Item = Array2<N>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.remaining {
+            0 => None,
+            _ => {
+                let mut window = Array2::zeros([self.rows, self.cols]);
+                for subiter in &self.subiters {
+                    let top = subiter.top;
+                    let left = subiter.left;
+                    let mut subiter = subiter.subiter.borrow_mut();
+                    let subwindow = subiter.next().expect("There should still be subwindows.");
+                    let shape = subwindow.shape();
+                    let rows = shape[0];
+                    let cols = shape[1];
+
+                    window
+                        .slice_mut(s![top..top + rows, left..left + cols])
+                        .assign(&subwindow);
+                }
+
+                self.remaining -= 1;
+
+                Some(window)
+            }
+        }
+    }
+}
+
+struct SuperWindowIter<N>
+where
+    N: Float + Debug + 'static,
+{
+    superchunk: Arc<Superchunk<N>>,
+    index: usize,
+    stride: usize,
+    remaining: usize,
+    rows: usize,
+    cols: usize,
+}
+
+impl<N> SuperWindowIter<N>
+where
+    N: Float + Debug,
+{
+    fn new(
+        superchunk: &Arc<Superchunk<N>>,
+        start: usize,
+        end: usize,
+        chunk_index: usize,
+        rows: usize,
+        cols: usize,
+    ) -> Self {
+        let stride = superchunk.subsidelen * superchunk.subsidelen;
+        let index = chunk_index + start * stride;
+        let remaining = end - start;
+
+        Self {
+            superchunk: Arc::clone(superchunk),
+            index,
+            stride,
+            remaining,
+            rows,
+            cols,
+        }
+    }
+}
+
+impl<N> Iterator for SuperWindowIter<N>
+where
+    N: Float + Debug,
+{
+    type Item = Array2<N>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.remaining {
+            0 => None,
+            _ => {
+                let value = self.superchunk.max.get(self.index);
+                let value = from_fixed(value, self.superchunk.fractional_bits);
+                self.index += self.stride;
+                self.remaining -= 1;
+
+                Some(Array2::from_elem((self.rows, self.cols), value))
+            }
+        }
+    }
+}
+
+pub struct SearchIter<N>
+where
+    N: Float + Debug + 'static,
+{
+    chunk: Arc<Superchunk<N>>,
+    start: usize,
+    end: usize,
+    lower: N,
+    upper: N,
+
+    top: usize,
+    left: usize,
+    subchunks: Vec<WindowSubchunk>,
+    iter: Option<Rc<RefCell<dyn Iterator<Item = (usize, usize, usize)>>>>,
+}
+
+impl<N> SearchIter<N>
+where
+    N: Float + Debug + 'static,
+{
+    fn new(chunk: &Arc<Superchunk<N>>, bounds: &geom::Cube, lower: N, upper: N) -> Result<Self> {
+        let has_cells = |subchunk: &WindowSubchunk| {
+            let lower = to_fixed(lower, chunk.fractional_bits, true);
+            let upper = to_fixed(upper, chunk.fractional_bits, true);
+            let stride = chunk.subsidelen * chunk.subsidelen;
+            let mut index = subchunk.index + bounds.start * stride;
+            for _ in bounds.start..bounds.end {
+                let min = chunk.min.get(index);
+                let max = chunk.max.get(index);
+                if upper > min && lower < max {
+                    return true;
+                }
+                index += stride;
+            }
+
+            false
+        };
+
+        let subchunks = chunk
+            .subchunks_for(&bounds.rect())
+            .into_iter()
+            .filter(has_cells)
+            .collect();
+
+        let mut iter = Self {
+            chunk: chunk.clone(),
+            start: bounds.start,
+            end: bounds.end,
+            lower,
+            upper,
+            top: 0,
+            left: 0,
+            subchunks,
+            iter: None,
+        };
+
+        iter.next_subchunk()?;
+
+        Ok(iter)
+    }
+
+    fn next_subchunk(&mut self) -> Result<()> {
+        self.iter = match self.subchunks.pop() {
+            Some(subchunk) => {
+                self.top = subchunk.chunk.top;
+                self.left = subchunk.chunk.left;
+
+                let bounds = geom::Cube::new(
+                    self.start,
+                    self.end,
+                    subchunk.local.top,
+                    subchunk.local.bottom,
+                    subchunk.local.left,
+                    subchunk.local.right,
+                );
+                match self.chunk.references[subchunk.index] {
+                    Reference::Elided => {
+                        let subiter = SuperSearchIter::new(
+                            &self.chunk,
+                            subchunk.index,
+                            self.lower,
+                            self.upper,
+                            self.start,
+                            self.end,
+                            subchunk.local,
+                        );
+
+                        Some(Rc::new(RefCell::new(subiter)))
+                    }
+                    Reference::Local(index) => {
+                        let chunk = &self.chunk.local[index];
+                        let subiter = chunk.iter_search(&bounds, self.lower, self.upper);
+
+                        Some(Rc::new(RefCell::new(subiter)))
+                    }
+                    Reference::External(short) => {
+                        let cid = self.chunk.external.get(&short).unwrap();
+                        let chunk = self.chunk.resolver.get_subchunk(&cid)?;
+                        let subiter = chunk.iter_search(&bounds, self.lower, self.upper);
+
+                        Some(Rc::new(RefCell::new(subiter)))
+                    }
+                }
+            }
+            None => None,
+        };
+
+        Ok(())
+    }
+}
+
+impl<N> Iterator for SearchIter<N>
+where
+    N: Float + Debug + 'static,
+{
+    type Item = Result<(usize, usize, usize)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &self.iter {
+            Some(iter) => {
+                let next = iter.borrow_mut().next();
+                match next {
+                    Some((instant, row, col)) => {
+                        Some(Ok((instant, row + self.top, col + self.left)))
+                    }
+                    None => match self.next_subchunk() {
+                        Ok(_) => self.next(),
+                        Err(err) => Some(Err(err)),
+                    },
+                }
+            }
+            None => None,
+        }
+    }
+}
+
+struct SuperSearchIter<N>
+where
+    N: Float + Debug + 'static,
+{
+    chunk: Arc<Superchunk<N>>,
+    index: usize,
+    lower: i64,
+    upper: i64,
+
+    end: usize,
+    bounds: geom::Rect,
+
+    instant: usize,
+    row: usize,
+    col: usize,
+}
+
+impl<N> SuperSearchIter<N>
+where
+    N: Float + Debug,
+{
+    fn new(
+        chunk: &Arc<Superchunk<N>>,
+        index: usize,
+        lower: N,
+        upper: N,
+        start: usize,
+        end: usize,
+        bounds: geom::Rect,
+    ) -> Self {
+        let row = bounds.top;
+        let col = bounds.left;
+
+        let mut iter = Self {
+            chunk: chunk.clone(),
+            index,
+            lower: to_fixed(lower, chunk.fractional_bits, true),
+            upper: to_fixed(upper, chunk.fractional_bits, true),
+            end,
+            bounds,
+
+            instant: start,
+            row,
+            col,
+        };
+
+        iter.next_instant();
+
+        iter
+    }
+
+    fn advance(&mut self) {
+        self.col += 1;
+        if self.col == self.bounds.right {
+            self.col = self.bounds.left;
+            self.row += 1;
+            if self.row == self.bounds.bottom {
+                self.row = self.bounds.top; // Da capo
+                self.instant += 1;
+                self.next_instant();
+            }
+        }
+    }
+
+    fn next_instant(&mut self) {
+        // Search for next instant with value in bounds
+        let stride = self.chunk.subsidelen * self.chunk.subsidelen;
+        while self.instant < self.end {
+            let value: i64 = self.chunk.max.get(self.index + self.instant * stride);
+            if self.lower <= value && value <= self.upper {
+                break;
+            }
+            self.instant += 1;
+        }
+    }
+}
+
+impl<N> Iterator for SuperSearchIter<N>
+where
+    N: Float + Debug,
+{
+    type Item = (usize, usize, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.instant < self.end {
+            let point = (self.instant, self.row, self.col);
+
+            self.advance();
+
+            Some(point)
+        } else {
+            None
+        }
+    }
+}
+
+enum Reference {
+    Elided,
+    Local(usize),
+    External(ShortHash),
+}
+
+const REFERENCE_ELIDED: u8 = 0;
+const REFERENCE_LOCAL: u8 = 1;
+const REFERENCE_EXTERNAL: u8 = 2;
+
+impl Serialize for Reference {
+    /// Write self to a stream
+    fn write_to(&self, stream: &mut impl io::Write) -> io::Result<()> {
+        match self {
+            Reference::Elided => {
+                stream.write_byte(REFERENCE_ELIDED)?;
+            }
+            Reference::Local(index) => {
+                stream.write_byte(REFERENCE_LOCAL)?;
+                stream.write_u32(*index as u32)?;
+            }
+            Reference::External(short) => {
+                stream.write_byte(REFERENCE_EXTERNAL)?;
+                stream.write_all(short)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Read Self from a stream
+    fn read_from(stream: &mut impl io::Read) -> io::Result<Self> {
+        let node = match stream.read_byte()? {
+            REFERENCE_ELIDED => Reference::Elided,
+            REFERENCE_LOCAL => Reference::Local(stream.read_u32()? as usize),
+            REFERENCE_EXTERNAL => {
+                let mut short = [0; 8];
+                stream.read_exact(&mut short)?;
+                Reference::External(short)
+            }
+            _ => panic!("Unrecognized reference type"),
+        };
+
+        Ok(node)
+    }
+}
+
+impl Cacheable for Reference {
+    /// Return the number of bytes in the serialized representation
+    fn size(&self) -> u64 {
+        match self {
+            Reference::Elided => 1,
+            Reference::Local(_) => 1 + 4,
+            Reference::External(_) => 1 + 8,
+        }
+    }
+}
+
+pub fn build_superchunk<I, N>(
     mut instants: I,
-    mapper: M,
+    resolver: Arc<Resolver<N>>,
     levels: usize,
     k: i32,
     fraction: Fraction,
     local_threshold: u64,
-) -> io::Result<Superchunk<M, N>>
+) -> Result<Superchunk<N>>
 where
     I: Iterator<Item = Array2<N>>,
-    M: Mapper,
     N: Float + Debug,
 {
     let first = instants.next().expect("No time instants to encode");
-    let mut builder = SuperchunkBuilder::new(first, k, fraction, levels, mapper, local_threshold);
+    let mut builder = SuperchunkBuilder::new(first, k, fraction, levels, resolver, local_threshold);
     for instant in instants {
         builder.push(instant);
     }
     builder.finish()
 }
 
-struct SuperchunkBuilder<M, N>
+pub struct SuperchunkBuilder<N>
 where
-    M: Mapper,
-    N: Float + Debug,
+    N: Float + Debug + 'static,
 {
     builders: Vec<FBuilder<N>>,
     min: Vec<N>,
     max: Vec<N>,
     rows: usize,
     cols: usize,
-    mapper: M,
+    resolver: Arc<Resolver<N>>,
     levels: usize,
     fraction: Fraction,
     local_threshold: u64,
-    k: i32,
     sidelen: usize,
     subsidelen: usize,
-    stride: usize,
+    chunks_sidelen: usize,
 }
 
-impl<M, N> SuperchunkBuilder<M, N>
+impl<N> SuperchunkBuilder<N>
 where
-    M: Mapper,
     N: Float + Debug,
 {
-    fn new(
+    pub fn new(
         first: Array2<N>,
         k: i32,
         fraction: Fraction,
         levels: usize,
-        mapper: M,
+        resolver: Arc<Resolver<N>>,
         local_threshold: u64,
     ) -> Self {
         let shape = first.shape();
@@ -157,13 +1016,13 @@ where
         let sidelen = k.pow(sidelen.log(k as f64).ceil() as u32) as usize;
 
         let subsidelen = k.pow(levels as u32) as usize;
-        let stride = sidelen / subsidelen;
+        let chunks_sidelen = sidelen / subsidelen;
         let subchunks = subsidelen.pow(2);
         let mut builders = Vec::with_capacity(subchunks);
         let mut max = Vec::new();
         let mut min = Vec::new();
 
-        for (subarray, min_value, max_value) in iter_subarrays(first, subsidelen, stride) {
+        for (subarray, min_value, max_value) in iter_subarrays(first, subsidelen, chunks_sidelen) {
             builders.push(FBuilder::new(subarray, k, fraction));
             min.push(min_value);
             max.push(max_value);
@@ -175,20 +1034,19 @@ where
             max,
             rows,
             cols,
-            mapper,
+            resolver,
             levels,
             fraction,
             local_threshold,
-            k,
             sidelen,
             subsidelen,
-            stride,
+            chunks_sidelen,
         }
     }
 
-    fn push(&mut self, a: Array2<N>) {
+    pub fn push(&mut self, a: Array2<N>) {
         for ((subarray, min_value, max_value), builder) in
-            iter_subarrays(a, self.subsidelen, self.stride).zip(&mut self.builders)
+            iter_subarrays(a, self.subsidelen, self.chunks_sidelen).zip(&mut self.builders)
         {
             builder.push(subarray);
             self.min.push(min_value);
@@ -196,26 +1054,59 @@ where
         }
     }
 
-    fn finish(mut self) -> io::Result<Superchunk<M, N>> {
-        let chunks: Vec<FChunk<N>> = self
-            .builders
+    /// Return whether a chunk, referred to by index, should be elided.
+    ///
+    /// A chunk can be elided if the minimum value equals the maximum value for every time instant
+    /// in that chunk.
+    ///
+    fn elide(&self, i: usize) -> bool {
+        let mut i = i;
+        let stride = self.subsidelen * self.subsidelen;
+        let end = self.max.len();
+        while i < end {
+            if self.max[i] != self.min[i] {
+                return false;
+            }
+            i += stride;
+        }
+
+        true
+    }
+
+    pub fn finish(mut self) -> Result<Superchunk<N>> {
+        // Swap builders out of self before moving so that self can be borrowed by methods later.
+        let builders = mem::replace(&mut self.builders, vec![]);
+        let chunks: Vec<FChunk<N>> = builders
             .into_iter()
             .map(|builder| builder.finish().data)
             .collect();
+        let mut local_references: HashMap<Cid, usize> = HashMap::new();
         let mut local = Vec::new();
+        let mut external = BTreeMap::new();
         let mut references = Vec::new();
         let instants = chunks[0].shape()[0];
-        for chunk in chunks {
-            if chunk.size() < self.local_threshold {
-                let index = local.len();
-                local.push(chunk);
+        for (i, chunk) in chunks.into_iter().enumerate() {
+            if self.elide(i) {
+                references.push(Reference::Elided);
+            } else if chunk.size() < self.local_threshold {
+                let cid = self.resolver.hash_subchunk(&chunk)?;
+                let index = match local_references.get(&cid) {
+                    Some(index) => *index,
+                    None => {
+                        let index = local.len();
+                        local.push(Arc::new(chunk));
+                        local_references.insert(cid, index);
+
+                        index
+                    }
+                };
                 references.push(Reference::Local(index))
             } else {
-                let mut writer = self.mapper.store();
-                chunk.serialize(&mut writer)?;
-
-                let cid = writer.finish();
-                references.push(Reference::External(cid));
+                let cid = self.resolver.save_leaf(chunk)?;
+                let short = cid.to_string();
+                let short = short[short.len() - 8..].as_bytes();
+                external.insert(short.clone().try_into().unwrap(), cid);
+                references.push(Reference::External(short.try_into().unwrap()));
             }
         }
 
@@ -236,7 +1127,6 @@ where
             .collect();
 
         Ok(Superchunk {
-            k: self.k,
             shape: [instants, self.rows, self.cols],
             sidelen: self.sidelen,
             levels: self.levels,
@@ -244,21 +1134,27 @@ where
             max: Dac::from(max),
             min: Dac::from(min),
             local,
-            resolver: Resolver::new(self.mapper),
-            stride: self.stride,
+            external,
+            resolver: Arc::clone(&self.resolver),
+            fractional_bits: bits,
+            chunks_sidelen: self.chunks_sidelen,
             subsidelen: self.subsidelen,
         })
     }
 }
 
-fn iter_subarrays<N>(a: Array2<N>, subsidelen: usize, stride: usize) -> SubarrayIterator<N>
+/// Iterate over subarrays of array.
+///
+/// Used to build individual chunks that comprise the superchunk.
+///
+fn iter_subarrays<N>(a: Array2<N>, subsidelen: usize, chunks_sidelen: usize) -> SubarrayIterator<N>
 where
     N: Float + Debug,
 {
     SubarrayIterator {
         a,
         subsidelen,
-        stride,
+        chunks_sidelen,
         row: 0,
         col: 0,
     }
@@ -270,7 +1166,7 @@ where
 {
     a: Array2<N>,
     subsidelen: usize,
-    stride: usize,
+    chunks_sidelen: usize,
     row: usize,
     col: usize,
 }
@@ -286,11 +1182,12 @@ where
             return None;
         }
 
-        let top = self.row * self.stride;
-        let bottom = top + self.stride;
-        let left = self.col * self.stride;
-        let right = left + self.stride;
-        let subarray = self.a.slice(s![top..bottom, left..right]).to_owned();
+        let shape = self.a.shape();
+        let rows = shape[0];
+        let cols = shape[1];
+
+        let top = self.row * self.chunks_sidelen;
+        let left = self.col * self.chunks_sidelen;
 
         let col = self.col + 1;
         if col == self.subsidelen {
@@ -299,6 +1196,17 @@ where
         } else {
             self.col = col;
         }
+
+        if top >= rows || left >= cols {
+            // This subarray is entirely outside the bounds of the actual array. This can happen
+            // becaue the logical array is expanded to have a square shape with the side lengths a
+            // power of k.
+            return Some((Array2::zeros([0, 0]), N::zero(), N::zero()));
+        }
+
+        let bottom = cmp::min(top + self.chunks_sidelen, rows);
+        let right = cmp::min(left + self.chunks_sidelen, cols);
+        let subarray = self.a.slice(s![top..bottom, left..right]).to_owned();
 
         let value = subarray[[0, 0]];
         let (min_value, max_value) =
@@ -326,145 +1234,484 @@ where
 mod tests {
     use super::*;
 
-    use super::super::mapper::{Sha2_256Write, StoreWrite};
-    use cid::Cid;
-    use ndarray::arr2;
-    use std::collections::HashMap;
-    use std::io::{Read, Write};
-    use std::mem::replace;
+    use super::super::testing;
 
-    struct MemoryMapper {
-        objects: HashMap<Cid, Vec<u8>>,
+    use paste::paste;
+    use std::collections::HashSet;
+
+    macro_rules! test_all_the_things {
+        ($name:ident) => {
+            paste! {
+                #[test]
+                fn [<$name _test_iter_cell>]() -> Result<()> {
+                    let (data, chunk) = $name()?;
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    for row in 0..rows {
+                        for col in 0..cols {
+                            let start = row + col;
+                            let end = instants - start;
+                            let values: Vec<f32> = chunk.iter_cell(start, end, row, col)?.collect();
+                            assert_eq!(values.len(), end - start);
+                            for i in 0..values.len() {
+                                assert_eq!(values[i], data[i + start][[row, col]]);
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                #[test]
+                fn [<$name _test_iter_cell_rearrange>]() -> Result<()> {
+                    let (data, chunk) = $name()?;
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    for row in 0..rows {
+                        for col in 0..cols {
+                            let start = row + col;
+                            let end = instants - start;
+                            let values: Vec<f32> = chunk.iter_cell(end, start, row, col)?.collect();
+                            assert_eq!(values.len(), end - start);
+                            for i in 0..values.len() {
+                                assert_eq!(values[i], data[i + start][[row, col]]);
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                #[test]
+                #[should_panic]
+                fn [<$name _test_iter_cell_time_out_of_bounds>]() {
+                    let (_, chunk) = $name().expect("This should work");
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+
+                    let values: Vec<f32> = chunk.iter_cell(0, instants + 1, rows, cols)
+                        .expect("This isn't what causes the panic").collect();
+                    assert_eq!(values.len(), instants + 1);
+                }
+
+                #[test]
+                #[should_panic]
+                fn [<$name _test_iter_cell_row_out_of_bounds>]() {
+                    let (_, chunk) = $name().expect("This should work");
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+
+                    let values: Vec<f32> = chunk.iter_cell(0, instants, rows + 1, cols)
+                        .expect("This isn't what causes the panic").collect();
+                    assert_eq!(values.len(), instants + 1);
+                }
+
+                #[test]
+                #[should_panic]
+                fn [<$name _test_iter_cell_col_out_of_bounds>]() {
+                    let (_, chunk) = $name().expect("This should work");
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+
+                    let values: Vec<f32> = chunk.iter_cell(0, instants, rows, cols + 1)
+                        .expect("This isn't what causes the panic").collect();
+                    assert_eq!(values.len(), instants + 1);
+                }
+
+                #[test]
+                fn [<$name _test_get_window>]() -> Result<()> {
+                    let (data, chunk) = $name()?;
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    for top in 0..rows / 2 {
+                        let bottom = top + rows / 2;
+                        for left in 0..cols / 2 {
+                            let right = left + cols / 2;
+                            let start = top + bottom;
+                            let end = instants - start;
+                            let bounds = geom::Cube::new(start, end, top, bottom, left, right);
+                            let window = chunk.get_window(&bounds)?;
+
+                            assert_eq!(window.shape(),
+                                       [end - start, bottom - top, right - left]);
+
+                            for i in 0..end - start {
+                                assert_eq!(
+                                    window.slice(s![i, .., ..]),
+                                    data[start + i].slice(s![top..bottom, left..right])
+                                );
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                #[test]
+                #[should_panic]
+                fn [<$name _test_get_window_time_out_of_bounds>]() {
+                    let (_, chunk) = $name().expect("Unexpected error.");
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    let bounds = geom::Cube::new(0, instants + 1, 0, rows, 0, cols);
+                    chunk.get_window(&bounds).expect("Unexpected error.");
+                }
+
+                #[test]
+                #[should_panic]
+                fn [<$name _test_get_window_row_out_of_bounds>]() {
+                    let (_, chunk) = $name().expect("Unexpected error.");
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    let bounds = geom::Cube::new(0, instants, 0, rows + 1, 0, cols);
+                    chunk.get_window(&bounds).expect("Unexpected error.");
+                }
+
+                #[test]
+                #[should_panic]
+                fn [<$name _test_get_window_col_out_of_bounds>]() {
+                    let (_, chunk) = $name().expect("Unexpected error.");
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    let bounds = geom::Cube::new(0, instants, 0, rows, 0, cols + 1);
+                    chunk.get_window(&bounds).expect("Unexpected error.");
+                }
+
+                #[test]
+                fn [<$name _test_iter_window>]() -> Result<()> {
+                    let (data, chunk) = $name()?;
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    for top in 0..rows / 2 {
+                        let bottom = top + rows / 2;
+                        for left in 0..cols / 2 {
+                            let right = left + cols / 2;
+                            let start = top + bottom;
+                            let end = instants - start;
+                            let bounds = geom::Cube::new(start, end, top, bottom, left, right);
+                            let window: Vec<Array2<f32>> = chunk.iter_window(&bounds)?.collect();
+
+                            assert_eq!(window.len(), end - start);
+                            for i in 0..end - start {
+                                assert_eq!(window[i].shape(), [bottom - top, right - left]);
+                                assert_eq!(
+                                    window[i],
+                                    data[start + i].slice(s![top..bottom, left..right])
+                                );
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                #[test]
+                #[should_panic]
+                fn [<$name _test_iter_window_time_out_of_bounds>]() {
+                    let (_, chunk) = $name().expect("Unexpected error.");
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    let bounds = geom::Cube::new(0, instants + 1, 0, rows, 0, cols);
+                    chunk.iter_window(&bounds).expect("Unexpected error.");
+                }
+
+                #[test]
+                #[should_panic]
+                fn [<$name _test_iter_window_row_out_of_bounds>]() {
+                    let (_, chunk) = $name().expect("Unexpected error.");
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    let bounds = geom::Cube::new(0, instants, 0, rows + 1, 0, cols);
+                    chunk.iter_window(&bounds).expect("Unexpected error.");
+                }
+
+                #[test]
+                #[should_panic]
+                fn [<$name _test_iter_window_col_out_of_bounds>]() {
+                    let (_, chunk) = $name().expect("Unexpected error.");
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    let bounds = geom::Cube::new(0, instants, 0, rows, 0, cols + 1);
+                    chunk.iter_window(&bounds).expect("Unexpected error.");
+                }
+
+                #[test]
+                fn [<$name _test_iter_search>]() -> Result<()>{
+                    let (data, chunk) = $name()?;
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    for top in 0..rows / 2 {
+                        let bottom = top + rows / 2;
+                        for left in 0..cols / 2 {
+                            let right = left + cols / 2;
+                            let start = top + bottom;
+                            let end = instants - start;
+                            let lower = (start / 5) as f32;
+                            let upper = (end / 10) as f32;
+
+                            let mut expected: HashSet<(usize, usize, usize)> = HashSet::new();
+                            for i in start..end {
+                                let coords = testing::array_search_window(
+                                    data[i].view(),
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    lower,
+                                    upper,
+                                );
+                                for (row, col) in coords {
+                                    expected.insert((i, row, col));
+                                }
+                            }
+
+                            let bounds = geom::Cube::new(start, end, top, bottom, left, right);
+                            let results: Vec<(usize, usize, usize)> = chunk
+                                .iter_search(&bounds, lower, upper)?
+                                .map(|r| r.expect("I/O error"))
+                                .collect();
+
+                            let results: HashSet<(usize, usize, usize)> =
+                                HashSet::from_iter(results.clone().into_iter());
+
+                            assert_eq!(results.len(), expected.len());
+                            assert_eq!(results, expected);
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                #[test]
+                fn [<$name _test_iter_search_rearrange>]() -> Result<()>{
+                    let (data, chunk) = $name()?;
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    for top in 0..rows / 2 {
+                        let bottom = top + rows / 2;
+                        for left in 0..cols / 2 {
+                            let right = left + cols / 2;
+                            let start = top + bottom;
+                            let end = instants - start;
+                            let lower = (start / 5) as f32;
+                            let upper = (end / 10) as f32;
+
+                            let mut expected: HashSet<(usize, usize, usize)> = HashSet::new();
+                            for i in start..end {
+                                let coords = testing::array_search_window(
+                                    data[i].view(),
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    lower,
+                                    upper,
+                                );
+                                for (row, col) in coords {
+                                    expected.insert((i, row, col));
+                                }
+                            }
+
+                            let bounds = geom::Cube::new(end, start, bottom, top, right, left);
+                            let results: Vec<(usize, usize, usize)> = chunk
+                                .iter_search(&bounds, upper, lower)?
+                                .map(|r| r.expect("I/O error"))
+                                .collect();
+
+                            let results: HashSet<(usize, usize, usize)> =
+                                HashSet::from_iter(results.clone().into_iter());
+
+                            assert_eq!(results.len(), expected.len());
+                            assert_eq!(results, expected);
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                #[test]
+                #[should_panic]
+                fn [<$name _test_iter_search_time_out_of_bounds>]() {
+                    let (_, chunk) = $name().expect("Unexpected error.");
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    let bounds = geom::Cube::new(0, instants + 1, 0, rows, 0, cols);
+                    chunk.iter_search(&bounds, 0.0, 100.0).expect("Unexpected error.");
+                }
+
+                #[test]
+                #[should_panic]
+                fn [<$name _test_iter_search_row_out_of_bounds>]() {
+                    let (_, chunk) = $name().expect("Unexpected error.");
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    let bounds = geom::Cube::new(0, instants, 0, rows + 1, 0, cols);
+                    chunk.iter_search(&bounds, 0.0, 100.0).expect("Unexpected error.");
+                }
+
+                #[test]
+                #[should_panic]
+                fn [<$name _test_iter_search_col_out_of_bounds>]() {
+                    let (_, chunk) = $name().expect("Unexpected error.");
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    let bounds = geom::Cube::new(0, instants, 0, rows, 0, cols + 1);
+                    chunk.iter_search(&bounds, 0.0, 100.0).expect("Unexpected error.");
+                }
+
+                #[test]
+                fn [<$name _test_save_load>]() -> Result<()> {
+                    let (data, chunk) = $name()?;
+                    let resolver = Arc::clone(&chunk.resolver);
+                    let cid = chunk.store(&resolver)?;
+                    let chunk = resolver.get_superchunk(&cid)?;
+
+                    let [instants, rows, cols] = chunk.shape;
+                    for row in 0..rows {
+                        for col in 0..cols {
+                            let start = row + col;
+                            let end = instants - start;
+                            let values: Vec<f32> = chunk.iter_cell(start, end, row, col)?.collect();
+                            assert_eq!(values.len(), end - start);
+                            for i in 0..values.len() {
+                                assert_eq!(values[i], data[i + start][[row, col]]);
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+
+            }
+        };
     }
 
-    impl MemoryMapper {
-        fn new() -> Self {
-            Self {
-                objects: HashMap::new(),
+    type DataChunk = Result<(Vec<Array2<f32>>, Superchunk<f32>)>;
+
+    fn no_subchunks() -> DataChunk {
+        let data = testing::array8();
+        let chunk = build_superchunk(
+            data.clone().into_iter(),
+            testing::resolver(),
+            3,
+            2,
+            Precise(3),
+            0,
+        )?;
+        assert_eq!(chunk.references.len(), 64);
+
+        Ok((data, chunk))
+    }
+
+    test_all_the_things!(no_subchunks);
+
+    fn no_subchunks_coarse() -> DataChunk {
+        let data = testing::array8();
+        let data: Vec<Array2<f32>> = data
+            .into_iter()
+            .map(|a| Array2::from_shape_fn((16, 16), |(row, col)| a[[row / 2, col / 2]]))
+            .collect();
+
+        let chunk = build_superchunk(
+            data.clone().into_iter(),
+            testing::resolver(),
+            3,
+            2,
+            Precise(3),
+            0,
+        )?;
+        assert_eq!(chunk.references.len(), 64);
+        for reference in &chunk.references {
+            match reference {
+                Reference::Elided => continue,
+                _ => panic!("not elided"),
             }
         }
+
+        Ok((data, chunk))
     }
 
-    impl Mapper for MemoryMapper {
-        fn store(&mut self) -> Box<dyn StoreWrite + '_> {
-            Box::new(MemoryMapperStoreWrite::new(self))
-        }
+    test_all_the_things!(no_subchunks_coarse);
 
-        fn load(&mut self, cid: Cid) -> Option<Box<dyn Read + '_>> {
-            let object = self.objects.get(&cid)?;
-            Some(Box::new(object.as_slice()))
-        }
+    fn local_subchunks() -> DataChunk {
+        let data = testing::array(16);
+        let chunk = build_superchunk(
+            data.clone().into_iter(),
+            testing::resolver(),
+            2,
+            2,
+            Precise(3),
+            1 << 14,
+        )?;
+        assert_eq!(chunk.references.len(), 16);
+        assert_eq!(chunk.local.len(), 4);
+
+        Ok((data, chunk))
     }
 
-    struct MemoryMapperStoreWrite<'a> {
-        mapper: &'a mut MemoryMapper,
-        writer: Sha2_256Write<Vec<u8>>,
+    test_all_the_things!(local_subchunks);
+
+    fn external_subchunks() -> DataChunk {
+        let data = testing::array(16);
+        let chunk = build_superchunk(
+            data.clone().into_iter(),
+            testing::resolver(),
+            2,
+            2,
+            Precise(3),
+            0,
+        )?;
+        assert_eq!(chunk.references.len(), 16);
+
+        let cids = chunk.references.iter().map(|r| match r {
+            Reference::External(cid) => *cid,
+            _ => {
+                panic!("Expecting extnernal references only");
+            }
+        });
+
+        let unique_cids: HashSet<ShortHash> = HashSet::from_iter(cids);
+        assert_eq!(unique_cids.len(), 4);
+
+        Ok((data, chunk))
     }
 
-    impl<'a> MemoryMapperStoreWrite<'a> {
-        fn new(mapper: &'a mut MemoryMapper) -> Self {
-            let writer = Sha2_256Write::wrap(Vec::new());
-            Self { mapper, writer }
-        }
-    }
+    test_all_the_things!(external_subchunks);
 
-    impl<'a> Write for MemoryMapperStoreWrite<'a> {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.writer.write(buf)
-        }
+    fn mixed_subchunks() -> DataChunk {
+        let data = testing::array(17);
+        let chunk = build_superchunk(
+            data.clone().into_iter(),
+            testing::resolver(),
+            2,
+            2,
+            Precise(3),
+            8000,
+        )?;
+        assert_eq!(chunk.references.len(), 16);
 
-        fn flush(&mut self) -> io::Result<()> {
-            self.writer.flush()
-        }
-    }
-
-    impl<'a> StoreWrite for MemoryMapperStoreWrite<'a> {
-        fn finish(&mut self) -> Cid {
-            let cid = self.writer.finish();
-            let object = replace(&mut self.writer.inner, vec![]);
-            self.mapper.objects.insert(cid, object);
-
-            cid
-        }
-    }
-
-    fn mapper() -> MemoryMapper {
-        MemoryMapper::new()
-    }
-
-    fn array() -> Vec<Array2<f32>> {
-        let data = vec![
-            arr2(&[
-                [9.5, 8.25, 7.75, 7.75, 6.125, 6.125, 3.375, 2.625],
-                [7.75, 7.75, 7.75, 7.75, 6.125, 6.125, 3.375, 3.375],
-                [6.125, 6.125, 6.125, 6.125, 3.375, 3.375, 3.375, 3.375],
-                [5.0, 5.0, 6.125, 6.125, 3.375, 3.375, 3.375, 3.375],
-                [4.875, 5.0, 5.0, 5.0, 4.875, 4.875, 4.875, 4.875],
-                [3.375, 3.375, 5.0, 5.0, 4.875, 4.875, 4.875, 4.875],
-                [3.375, 3.375, 3.375, 5.0, 4.875, 4.875, 4.875, 4.875],
-                [4.875, 4.875, 3.375, 4.875, 4.875, 4.875, 4.875, 4.875],
-            ]),
-            arr2(&[
-                [9.5, 8.25, 7.75, 7.75, 7.75, 7.75, 2.625, 2.625],
-                [7.75, 7.75, 7.75, 7.75, 7.75, 7.75, 2.625, 2.625],
-                [6.125, 6.125, 6.125, 6.125, 4.875, 3.375, 3.375, 3.375],
-                [5.0, 5.0, 6.125, 6.125, 3.375, 3.375, 3.375, 3.375],
-                [4.875, 5.0, 5.0, 5.0, 4.875, 4.875, 4.875, 4.875],
-                [3.375, 3.375, 5.0, 5.0, 4.875, 4.875, 4.875, 4.875],
-                [3.375, 3.375, 4.875, 5.0, 5.0, 4.875, 4.875, 4.875],
-                [4.875, 4.875, 4.875, 4.875, 4.875, 4.875, 4.875, 4.875],
-            ]),
-            arr2(&[
-                [9.5, 8.25, 7.75, 7.75, 8.25, 7.75, 5.0, 5.0],
-                [7.75, 7.75, 7.75, 7.75, 7.75, 7.75, 5.0, 5.0],
-                [7.75, 7.75, 6.125, 6.125, 4.875, 3.375, 4.875, 4.875],
-                [6.125, 6.125, 6.125, 6.125, 4.875, 4.875, 4.875, 4.875],
-                [4.875, 5.0, 5.0, 5.0, 4.875, 4.875, 4.875, 4.875],
-                [3.375, 3.375, 5.0, 5.0, 4.875, 4.875, 4.875, 4.875],
-                [3.375, 3.375, 4.875, 5.0, 6.125, 4.875, 4.875, 4.875],
-                [4.875, 4.875, 4.875, 4.875, 5.0, 4.875, 4.875, 4.875],
-            ]),
-        ];
-
-        data.into_iter().cycle().take(100).collect()
-    }
-
-    fn test_all_the_things(
-        data: Vec<Array2<f32>>,
-        chunk: Superchunk<MemoryMapper, f32>,
-    ) -> io::Result<()> {
-        test_iter_cell(data, chunk)?;
-
-        Ok(())
-    }
-
-    fn test_iter_cell(
-        data: Vec<Array2<f32>>,
-        mut chunk: Superchunk<MemoryMapper, f32>,
-    ) -> io::Result<()> {
-        let [instants, rows, cols] = chunk.shape;
-        for row in 0..rows {
-            for col in 0..cols {
-                let start = row + col;
-                let end = instants - start;
-                let values: Vec<f32> = chunk.iter_cell(start, end, row, col)?.collect();
-                assert_eq!(values.len(), end - start);
-                for i in 0..values.len() {
-                    assert_eq!(values[i], data[i + start][[row, col]]);
+        let mut local_count = 0;
+        let mut external_count = 0;
+        let mut elided_count = 0;
+        for r in chunk.references.iter() {
+            match r {
+                Reference::External(_) => {
+                    external_count += 1;
+                }
+                Reference::Local(_) => {
+                    local_count += 1;
+                }
+                Reference::Elided => {
+                    elided_count += 1;
                 }
             }
         }
+        assert_eq!(external_count, 4);
+        assert_eq!(local_count, 4);
+        assert_eq!(elided_count, 8);
 
-        Ok(())
+        Ok((data, chunk))
     }
 
-    #[test]
-    fn build_no_subchunks() -> io::Result<()> {
-        let data = array();
-        let chunk = build_superchunk(data.clone().into_iter(), mapper(), 3, 2, Precise(3), 0)?;
-        assert_eq!(chunk.references.len(), 64);
-        test_all_the_things(data, chunk)?;
-
-        Ok(())
-    }
+    test_all_the_things!(mixed_subchunks);
 }

@@ -1,7 +1,3 @@
-use super::codec::{Block, Chunk, FChunk, Log, Snapshot};
-use super::extio::{ExtendedRead, ExtendedWrite};
-use super::fixed::{to_fixed, Fraction, Precise, Round};
-
 use ndarray::Array2;
 use num_traits::{Float, PrimInt};
 use std::any::TypeId;
@@ -9,6 +5,11 @@ use std::fmt::Debug;
 use std::io;
 use std::io::{Read, Write};
 use std::mem::{replace, size_of};
+
+use super::cache::Cacheable;
+use super::codec::{Block, Chunk, FChunk, Log, Snapshot};
+use super::extio::{ExtendedRead, ExtendedWrite, Serialize};
+use super::fixed::{to_fixed, Fraction, Precise, Round};
 
 const MAGIC_NUMBER: u16 = 0xDCDF;
 const FORMAT_VERSION: u32 = 0;
@@ -252,7 +253,7 @@ where
         stream.write_u16(MAGIC_NUMBER)?;
         stream.write_u32(FORMAT_VERSION)?;
         stream.write_i32(self.type_code())?;
-        self.data.serialize(stream)?;
+        self.data.write_to(stream)?;
 
         Ok(())
     }
@@ -286,7 +287,7 @@ where
         stream.write_u16(MAGIC_NUMBER)?;
         stream.write_u32(FORMAT_VERSION)?;
         stream.write_i32(type_code)?;
-        self.data.serialize(stream)?;
+        self.data.write_to(stream)?;
 
         Ok(())
     }
@@ -314,12 +315,12 @@ pub fn load(stream: &mut impl Read) -> io::Result<DataChunk> {
     }
     let type_code = stream.read_i32()?;
     let chunk = match type_code {
-        TYPE_I32 => I32(Chunk::deserialize(stream)?),
-        TYPE_U32 => U32(Chunk::deserialize(stream)?),
-        TYPE_I64 => I64(Chunk::deserialize(stream)?),
-        TYPE_U64 => U64(Chunk::deserialize(stream)?),
-        TYPE_F32 => F32(FChunk::deserialize(stream)?),
-        TYPE_F64 => F64(FChunk::deserialize(stream)?),
+        TYPE_I32 => I32(Chunk::read_from(stream)?),
+        TYPE_U32 => U32(Chunk::read_from(stream)?),
+        TYPE_I64 => I64(Chunk::read_from(stream)?),
+        TYPE_U64 => U64(Chunk::read_from(stream)?),
+        TYPE_F32 => F32(FChunk::read_from(stream)?),
+        TYPE_F64 => F64(FChunk::read_from(stream)?),
         _ => panic!("Unknown data type"),
     };
 
@@ -331,6 +332,7 @@ mod tests {
     use super::*;
     use ndarray::{arr2, Array2};
     use std::io::Seek;
+    use std::sync::Arc;
     use tempfile::tempfile;
 
     fn array_float() -> Vec<Array2<f32>> {
@@ -411,8 +413,9 @@ mod tests {
     fn build_i32() {
         let data = array();
         let built = build(data.into_iter(), 2);
+        let chunk = Arc::new(built.data);
         assert_eq!(
-            built.data.iter_cell(0, 5, 0, 0).collect::<Vec<i32>>(),
+            chunk.iter_cell(0, 5, 0, 0).collect::<Vec<i32>>(),
             vec![9, 9, 9, 9, 9]
         );
         assert_eq!(built.snapshots, 1);
@@ -432,6 +435,7 @@ mod tests {
 
         match load(&mut file)? {
             I32(chunk) => {
+                let chunk = Arc::new(chunk);
                 assert_eq!(
                     chunk.iter_cell(0, 5, 0, 0).collect::<Vec<i32>>(),
                     vec![9, 9, 9, 9, 9]
@@ -458,6 +462,7 @@ mod tests {
 
         match load(&mut file)? {
             U32(chunk) => {
+                let chunk = Arc::new(chunk);
                 assert_eq!(
                     chunk.iter_cell(0, 5, 0, 0).collect::<Vec<u32>>(),
                     vec![9, 9, 9, 9, 9]
@@ -484,6 +489,7 @@ mod tests {
 
         match load(&mut file)? {
             I64(chunk) => {
+                let chunk = Arc::new(chunk);
                 assert_eq!(
                     chunk.iter_cell(0, 5, 0, 0).collect::<Vec<i64>>(),
                     vec![9, 9, 9, 9, 9]
@@ -510,6 +516,7 @@ mod tests {
 
         match load(&mut file)? {
             U64(chunk) => {
+                let chunk = Arc::new(chunk);
                 assert_eq!(
                     chunk.iter_cell(0, 5, 0, 0).collect::<Vec<u64>>(),
                     vec![9, 9, 9, 9, 9]
@@ -527,8 +534,9 @@ mod tests {
     fn buildf_f32() {
         let data = array_float();
         let built = buildf(data.into_iter(), 2, Precise(3));
+        let chunk = Arc::new(built.data);
         assert_eq!(
-            built.data.iter_cell(0, 5, 0, 0).collect::<Vec<f32>>(),
+            chunk.iter_cell(0, 5, 0, 0).collect::<Vec<f32>>(),
             vec![9.5, 9.5, 9.5, 9.5, 9.5]
         );
         assert_eq!(built.snapshots, 1);
@@ -548,6 +556,7 @@ mod tests {
 
         match load(&mut file)? {
             F32(chunk) => {
+                let chunk = Arc::new(chunk);
                 assert_eq!(
                     chunk.iter_cell(0, 5, 0, 0).collect::<Vec<f32>>(),
                     vec![9.5, 9.5, 9.5, 9.5, 9.5]
@@ -574,6 +583,7 @@ mod tests {
 
         match load(&mut file)? {
             F64(chunk) => {
+                let chunk = Arc::new(chunk);
                 assert_eq!(
                     chunk.iter_cell(0, 5, 0, 0).collect::<Vec<f64>>(),
                     vec![9.5, 9.5, 9.5, 9.5, 9.5]
@@ -600,6 +610,7 @@ mod tests {
 
         match load(&mut file)? {
             F64(chunk) => {
+                let chunk = Arc::new(chunk);
                 assert_eq!(
                     chunk.iter_cell(0, 5, 2, 4).collect::<Vec<f64>>(),
                     vec![3.5, 5.0, 5.0, 3.5, 5.0]
