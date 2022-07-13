@@ -331,6 +331,7 @@ mod tests {
     use super::*;
     use ndarray::{arr2, Array2};
     use std::io::Seek;
+    use std::rc::Rc;
     use tempfile::tempfile;
 
     fn array_float() -> Vec<Array2<f32>> {
@@ -411,8 +412,9 @@ mod tests {
     fn build_i32() {
         let data = array();
         let built = build(data.into_iter(), 2);
+        let chunk = Rc::new(built.data);
         assert_eq!(
-            built.data.iter_cell(0, 5, 0, 0).collect::<Vec<i32>>(),
+            chunk.iter_cell(0, 5, 0, 0).collect::<Vec<i32>>(),
             vec![9, 9, 9, 9, 9]
         );
         assert_eq!(built.snapshots, 1);
@@ -432,6 +434,7 @@ mod tests {
 
         match load(&mut file)? {
             I32(chunk) => {
+                let chunk = Rc::new(chunk);
                 assert_eq!(
                     chunk.iter_cell(0, 5, 0, 0).collect::<Vec<i32>>(),
                     vec![9, 9, 9, 9, 9]
@@ -458,6 +461,7 @@ mod tests {
 
         match load(&mut file)? {
             U32(chunk) => {
+                let chunk = Rc::new(chunk);
                 assert_eq!(
                     chunk.iter_cell(0, 5, 0, 0).collect::<Vec<u32>>(),
                     vec![9, 9, 9, 9, 9]
@@ -484,6 +488,7 @@ mod tests {
 
         match load(&mut file)? {
             I64(chunk) => {
+                let chunk = Rc::new(chunk);
                 assert_eq!(
                     chunk.iter_cell(0, 5, 0, 0).collect::<Vec<i64>>(),
                     vec![9, 9, 9, 9, 9]
@@ -510,6 +515,7 @@ mod tests {
 
         match load(&mut file)? {
             U64(chunk) => {
+                let chunk = Rc::new(chunk);
                 assert_eq!(
                     chunk.iter_cell(0, 5, 0, 0).collect::<Vec<u64>>(),
                     vec![9, 9, 9, 9, 9]
@@ -527,8 +533,9 @@ mod tests {
     fn buildf_f32() {
         let data = array_float();
         let built = buildf(data.into_iter(), 2, Precise(3));
+        let chunk = Rc::new(built.data);
         assert_eq!(
-            built.data.iter_cell(0, 5, 0, 0).collect::<Vec<f32>>(),
+            chunk.iter_cell(0, 5, 0, 0).collect::<Vec<f32>>(),
             vec![9.5, 9.5, 9.5, 9.5, 9.5]
         );
         assert_eq!(built.snapshots, 1);
@@ -548,6 +555,7 @@ mod tests {
 
         match load(&mut file)? {
             F32(chunk) => {
+                let chunk = Rc::new(chunk);
                 assert_eq!(
                     chunk.iter_cell(0, 5, 0, 0).collect::<Vec<f32>>(),
                     vec![9.5, 9.5, 9.5, 9.5, 9.5]
@@ -574,6 +582,7 @@ mod tests {
 
         match load(&mut file)? {
             F64(chunk) => {
+                let chunk = Rc::new(chunk);
                 assert_eq!(
                     chunk.iter_cell(0, 5, 0, 0).collect::<Vec<f64>>(),
                     vec![9.5, 9.5, 9.5, 9.5, 9.5]
@@ -600,6 +609,7 @@ mod tests {
 
         match load(&mut file)? {
             F64(chunk) => {
+                let chunk = Rc::new(chunk);
                 assert_eq!(
                     chunk.iter_cell(0, 5, 2, 4).collect::<Vec<f64>>(),
                     vec![3.5, 5.0, 5.0, 3.5, 5.0]

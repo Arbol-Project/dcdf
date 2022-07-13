@@ -1,8 +1,8 @@
 mod codec;
-//mod dag;
+mod dag;
 mod extio;
 mod fixed;
-//mod simple;
+mod simple;
 
 pub use codec::CellIter;
 pub use codec::Chunk;

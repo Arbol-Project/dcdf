@@ -1,9 +1,11 @@
 use ndarray::{s, Array2, Array3};
 use num_traits::{Float, PrimInt};
+use std::cell::RefCell;
 use std::fmt::Debug;
 use std::io;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
+use std::rc::Rc;
 use std::vec::IntoIter as VecIntoIter;
 
 use super::block::Block;
@@ -27,7 +29,7 @@ where
     fractional_bits: usize,
 
     /// Wrapped Chunk
-    chunk: Chunk<i64>,
+    chunk: Rc<Chunk<i64>>,
 }
 
 impl<F> FChunk<F>
@@ -41,7 +43,7 @@ where
         Self {
             _marker: PhantomData,
             fractional_bits: fractional_bits,
-            chunk: chunk,
+            chunk: Rc::new(chunk),
         }
     }
 
@@ -55,24 +57,23 @@ where
 
     /// Iterate over a cell's value across time instants.
     ///
-    pub fn iter_cell<'a>(
-        &'a self,
+    pub fn iter_cell(
+        self: &Rc<Self>,
         start: usize,
         end: usize,
         row: usize,
         col: usize,
-    ) -> Box<dyn Iterator<Item = F> + 'a> {
-        Box::new(
-            self.chunk
-                .iter_cell(start, end, row, col)
-                .map(|i| fixed::from_fixed(i, self.fractional_bits)),
-        )
+    ) -> FCellIter<F> {
+        FCellIter {
+            chunk: Rc::clone(&self),
+            iter: Rc::new(RefCell::new(self.chunk.iter_cell(start, end, row, col))),
+        }
     }
 
     /// Get a subarray of this Chunk.
     ///
     pub fn get_window(
-        &self,
+        self: &Rc<Self>,
         start: usize,
         end: usize,
         top: usize,
@@ -170,6 +171,28 @@ where
     }
 }
 
+pub struct FCellIter<F>
+where
+    F: Float + Debug
+{
+    chunk: Rc<FChunk<F>>,
+    iter: Rc<RefCell<CellIter<i64>>>,
+}
+
+impl<F> Iterator for FCellIter<F>
+where
+    F: Float + Debug,
+{
+    type Item = F;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.iter.borrow_mut().next() {
+            Some(value) => Some(fixed::from_fixed(value, self.chunk.fractional_bits)),
+            None => None,
+        }
+    }
+}
+
 /// A series of time instants stored in a single file on disk.
 ///
 /// Made up of a series of blocks.
@@ -221,7 +244,7 @@ where
     ///
     /// Used internally by the other iterators.
     ///
-    fn iter(&self, start: usize, end: usize) -> ChunkIter<I> {
+    fn iter(self: &Rc<Self>, start: usize, end: usize) -> ChunkIter<I> {
         let (block, instant) = if start < self.index[0] {
             // Common special case, starting at beginning of chunk
             (0, start)
@@ -250,7 +273,7 @@ where
         };
 
         ChunkIter {
-            chunk: self,
+            chunk: Rc::clone(&self),
             block,
             instant,
             remaining: end - start,
@@ -259,11 +282,11 @@ where
 
     /// Iterate over a cell's value across time instants.
     ///
-    pub fn iter_cell(&self, start: usize, end: usize, row: usize, col: usize) -> CellIter<I> {
+    pub fn iter_cell(self: &Rc<Self>, start: usize, end: usize, row: usize, col: usize) -> CellIter<I> {
         let (start, end) = rearrange(start, end);
         self.check_bounds(end - 1, row, col);
         CellIter {
-            iter: self.iter(start, end),
+            iter: Rc::new(RefCell::new(self.iter(start, end))),
             row,
             col,
         }
@@ -272,7 +295,7 @@ where
     /// Get a subarray of this Chunk.
     ///
     pub fn get_window(
-        &self,
+        self: &Rc<Self>,
         start: usize,
         end: usize,
         top: usize,
@@ -302,7 +325,7 @@ where
     /// Iterate over subarrays of successive time instants.
     ///
     pub fn iter_window(
-        &self,
+        self: &Rc<Self>,
         start: usize,
         end: usize,
         top: usize,
@@ -316,7 +339,7 @@ where
         self.check_bounds(end - 1, bottom - 1, right - 1);
 
         WindowIter {
-            iter: self.iter(start, end),
+            iter: Rc::new(RefCell::new(self.iter(start, end))),
             top,
             bottom,
             left,
@@ -330,7 +353,7 @@ where
     /// cells.
     ///
     pub fn iter_search(
-        &self,
+        self: &Rc<Self>,
         start: usize,
         end: usize,
         top: usize,
@@ -347,7 +370,7 @@ where
         self.check_bounds(end - 1, bottom - 1, right - 1);
 
         let mut iter = SearchIter {
-            iter: self.iter(start, end),
+            iter: Rc::new(RefCell::new(self.iter(start, end))),
             top,
             bottom,
             left,
@@ -415,17 +438,17 @@ where
 ///
 /// Used internally by the other iterators.
 ///
-struct ChunkIter<'a, I>
+struct ChunkIter<I>
 where
     I: PrimInt + Debug,
 {
-    chunk: &'a Chunk<I>,
+    chunk: Rc<Chunk<I>>,
     block: usize,
     instant: usize,
     remaining: usize,
 }
 
-impl<'a, I> Iterator for ChunkIter<'a, I>
+impl<I> Iterator for ChunkIter<I>
 where
     I: PrimInt + Debug,
 {
@@ -452,25 +475,26 @@ where
     }
 }
 
-pub struct CellIter<'a, I>
+pub struct CellIter<I>
 where
     I: PrimInt + Debug,
 {
-    iter: ChunkIter<'a, I>,
+    iter: Rc<RefCell<ChunkIter<I>>>,
     row: usize,
     col: usize,
 }
 
-impl<'a, I> Iterator for CellIter<'a, I>
+impl<I> Iterator for CellIter<I>
 where
     I: PrimInt + Debug,
 {
     type Item = I;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.iter.next() {
+        let mut iter = self.iter.borrow_mut();
+        match iter.next() {
             Some((block, instant)) => {
-                let block = &self.iter.chunk.blocks[block];
+                let block = &iter.chunk.blocks[block];
                 Some(block.get(instant, self.row, self.col))
             }
             None => None,
@@ -478,27 +502,28 @@ where
     }
 }
 
-pub struct WindowIter<'a, I>
+pub struct WindowIter<I>
 where
     I: PrimInt + Debug,
 {
-    iter: ChunkIter<'a, I>,
+    iter: Rc<RefCell<ChunkIter<I>>>,
     top: usize,
     bottom: usize,
     left: usize,
     right: usize,
 }
 
-impl<'a, I> Iterator for WindowIter<'a, I>
+impl<I> Iterator for WindowIter<I>
 where
     I: PrimInt + Debug,
 {
     type Item = Array2<I>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.iter.next() {
+        let mut iter = self.iter.borrow_mut();
+        match iter.next() {
             Some((block, instant)) => {
-                let block = &self.iter.chunk.blocks[block];
+                let block = &iter.chunk.blocks[block];
                 Some(block.get_window(instant, self.top, self.bottom, self.left, self.right))
             }
             None => None,
@@ -506,11 +531,11 @@ where
     }
 }
 
-pub struct SearchIter<'a, I>
+pub struct SearchIter<I>
 where
     I: PrimInt + Debug,
 {
-    iter: ChunkIter<'a, I>,
+    iter: Rc<RefCell<ChunkIter<I>>>,
     top: usize,
     bottom: usize,
     left: usize,
@@ -522,14 +547,15 @@ where
     results: Option<VecIntoIter<(usize, usize)>>,
 }
 
-impl<'a, I> SearchIter<'a, I>
+impl<I> SearchIter<I>
 where
     I: PrimInt + Debug,
 {
     fn next_results(&mut self) {
-        self.results = match self.iter.next() {
+        let mut iter = self.iter.borrow_mut();
+        self.results = match iter.next() {
             Some((block, instant)) => {
-                let block = &self.iter.chunk.blocks[block];
+                let block = &iter.chunk.blocks[block];
                 let results = block.search_window(
                     instant,
                     self.top,
@@ -547,7 +573,7 @@ where
     }
 }
 
-impl<'a, I> Iterator for SearchIter<'a, I>
+impl<I> Iterator for SearchIter<I>
 where
     I: PrimInt + Debug,
 {
@@ -625,7 +651,7 @@ mod tests {
             data.into_iter().cycle().take(100).collect()
         }
 
-        fn chunk(array: Vec<Array2<f32>>) -> FChunk<f32> {
+        fn chunk(array: Vec<Array2<f32>>) -> Rc<FChunk<f32>> {
             let instants = array.iter();
             let mut current = Vec::with_capacity(4);
             let mut blocks: Vec<Block<i64>> = vec![];
@@ -646,7 +672,7 @@ mod tests {
                 }
             }
 
-            FChunk::new(Chunk::from(blocks), 3)
+            Rc::new(FChunk::new(Chunk::from(blocks), 3))
         }
 
         #[test]
@@ -941,7 +967,7 @@ mod tests {
             assert_eq!(metadata.len(), chunk.size());
 
             file.rewind()?;
-            let chunk: FChunk<f32> = FChunk::deserialize(&mut file)?;
+            let chunk: Rc<FChunk<f32>> = Rc::new(FChunk::deserialize(&mut file)?);
 
             for row in 0..8 {
                 for col in 0..8 {
@@ -999,7 +1025,7 @@ mod tests {
             data.into_iter().cycle().take(100).collect()
         }
 
-        fn chunk(array: Vec<Array2<i32>>) -> Chunk<i32> {
+        fn chunk(array: Vec<Array2<i32>>) -> Rc<Chunk<i32>> {
             let instants = array.iter();
             let mut current = Vec::with_capacity(4);
             let mut blocks: Vec<Block<i32>> = vec![];
@@ -1019,7 +1045,7 @@ mod tests {
                 }
             }
 
-            Chunk::from(blocks)
+            Rc::new(Chunk::from(blocks))
         }
 
         #[test]

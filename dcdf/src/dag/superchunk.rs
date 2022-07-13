@@ -3,11 +3,12 @@ use ndarray::{s, Array2};
 use num_traits::Float;
 use std::fmt::Debug;
 use std::io;
+use std::rc::Rc;
 
 use super::mapper::Mapper;
 use super::resolver::Resolver;
 use crate::codec::Dac;
-use crate::codec::FChunk;
+use crate::codec::{FChunk, FCellIter};
 use crate::fixed::{to_fixed, Fraction, Precise, Round};
 use crate::simple::FBuilder;
 
@@ -44,7 +45,7 @@ where
     min: Dac,
 
     /// Locally stored subchunks
-    local: Vec<FChunk<N>>,
+    local: Vec<Rc<FChunk<N>>>,
 
     /// Resolver for retrieving subchunks
     resolver: Resolver<M, N>,
@@ -66,7 +67,7 @@ where
         end: usize,
         row: usize,
         col: usize,
-    ) -> io::Result<Box<dyn Iterator<Item = N> + 'a>> {
+    ) -> io::Result<FCellIter<N>> {
         // Theoretically compiler will optimize to single DIVREM instructions
         // https://stackoverflow.com/questions/69051429
         //      /what-is-the-function-to-get-the-quotient-and-remainder-divmod-for-rust
@@ -208,7 +209,7 @@ where
         for chunk in chunks {
             if chunk.size() < self.local_threshold {
                 let index = local.len();
-                local.push(chunk);
+                local.push(Rc::new(chunk));
                 references.push(Reference::Local(index))
             } else {
                 let mut writer = self.mapper.store();
