@@ -1,7 +1,11 @@
 mod codec;
-mod dag;
 mod extio;
 mod fixed;
+
+#[allow(dead_code)]
+mod dag;
+
+#[allow(dead_code)]
 mod simple;
 
 pub use codec::CellIter;

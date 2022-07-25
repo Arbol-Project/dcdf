@@ -173,7 +173,7 @@ where
 
 pub struct FCellIter<F>
 where
-    F: Float + Debug
+    F: Float + Debug,
 {
     chunk: Rc<FChunk<F>>,
     iter: Rc<RefCell<CellIter<i64>>>,
@@ -282,7 +282,13 @@ where
 
     /// Iterate over a cell's value across time instants.
     ///
-    pub fn iter_cell(self: &Rc<Self>, start: usize, end: usize, row: usize, col: usize) -> CellIter<I> {
+    pub fn iter_cell(
+        self: &Rc<Self>,
+        start: usize,
+        end: usize,
+        row: usize,
+        col: usize,
+    ) -> CellIter<I> {
         let (start, end) = rearrange(start, end);
         self.check_bounds(end - 1, row, col);
         CellIter {

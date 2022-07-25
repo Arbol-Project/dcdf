@@ -1,6 +1,7 @@
 use cid::Cid;
 use ndarray::{s, Array2};
 use num_traits::Float;
+use std::cell::RefCell;
 use std::fmt::Debug;
 use std::io;
 use std::rc::Rc;
@@ -8,8 +9,8 @@ use std::rc::Rc;
 use super::mapper::Mapper;
 use super::resolver::Resolver;
 use crate::codec::Dac;
-use crate::codec::{FChunk, FCellIter};
-use crate::fixed::{to_fixed, Fraction, Precise, Round};
+use crate::codec::FChunk;
+use crate::fixed::{from_fixed, to_fixed, Fraction, Precise, Round};
 use crate::simple::FBuilder;
 
 pub struct Superchunk<M, N>
@@ -48,7 +49,9 @@ where
     local: Vec<Rc<FChunk<N>>>,
 
     /// Resolver for retrieving subchunks
-    resolver: Resolver<M, N>,
+    resolver: Rc<RefCell<Resolver<M, N>>>,
+
+    fractional_bits: usize,
 
     stride: usize,
     subsidelen: usize,
@@ -56,18 +59,18 @@ where
 
 impl<M, N> Superchunk<M, N>
 where
-    M: Mapper,
-    N: Float + Debug,
+    M: Mapper + 'static,
+    N: Float + Debug + 'static,
 {
     /// Iterate over a cell's value across time instants.
     ///
-    pub fn iter_cell<'a>(
-        &'a mut self,
+    pub fn iter_cell(
+        self: &Rc<Self>,
         start: usize,
         end: usize,
         row: usize,
         col: usize,
-    ) -> io::Result<FCellIter<N>> {
+    ) -> io::Result<CellIter<N>> {
         // Theoretically compiler will optimize to single DIVREM instructions
         // https://stackoverflow.com/questions/69051429
         //      /what-is-the-function-to-get-the-quotient-and-remainder-divmod-for-rust
@@ -78,20 +81,106 @@ where
 
         let chunk = chunk_row * self.subsidelen + chunk_col;
         match self.references[chunk] {
+            Reference::Elided => Ok(CellIter {
+                inner: Rc::new(RefCell::new(SuperCellIter::new(self, start, end, chunk))),
+            }),
             Reference::Local(index) => {
                 let chunk = &self.local[index];
-                Ok(chunk.iter_cell(start, end, local_row, local_col))
+                Ok(CellIter {
+                    inner: Rc::new(RefCell::new(
+                        chunk.iter_cell(start, end, local_row, local_col),
+                    )),
+                })
             }
             Reference::External(cid) => {
-                let chunk = self.resolver.get_chunk(cid)?;
+                let chunk = self.resolver.borrow_mut().get_chunk(cid)?;
 
-                Ok(chunk.iter_cell(start, end, local_row, local_col))
+                Ok(CellIter {
+                    inner: Rc::new(RefCell::new(
+                        chunk.iter_cell(start, end, local_row, local_col),
+                    )),
+                })
+            }
+        }
+    }
+}
+
+pub struct CellIter<N>
+where
+    N: Float + Debug,
+{
+    inner: Rc<RefCell<dyn Iterator<Item = N>>>,
+}
+
+impl<N> Iterator for CellIter<N>
+where
+    N: Float + Debug,
+{
+    type Item = N;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.borrow_mut().next()
+    }
+}
+
+struct SuperCellIter<M, N>
+where
+    M: Mapper,
+    N: Float + Debug,
+{
+    superchunk: Rc<Superchunk<M, N>>,
+    index: usize,
+    stride: usize,
+    remaining: usize,
+}
+
+impl<M, N> SuperCellIter<M, N>
+where
+    M: Mapper,
+    N: Float + Debug,
+{
+    fn new(
+        superchunk: &Rc<Superchunk<M, N>>,
+        start: usize,
+        end: usize,
+        chunk_index: usize,
+    ) -> Self {
+        let stride = superchunk.subsidelen * superchunk.subsidelen;
+        let index = chunk_index + start * stride;
+        let remaining = end - start;
+
+        Self {
+            superchunk: Rc::clone(superchunk),
+            index,
+            stride,
+            remaining,
+        }
+    }
+}
+
+impl<M, N> Iterator for SuperCellIter<M, N>
+where
+    M: Mapper,
+    N: Float + Debug,
+{
+    type Item = N;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.remaining {
+            0 => None,
+            _ => {
+                let value = self.superchunk.max.get(self.index);
+                self.index += self.stride;
+                self.remaining -= 1;
+
+                Some(from_fixed(value, self.superchunk.fractional_bits))
             }
         }
     }
 }
 
 enum Reference {
+    Elided,
     Local(usize),
     External(Cid),
 }
@@ -206,8 +295,10 @@ where
         let mut local = Vec::new();
         let mut references = Vec::new();
         let instants = chunks[0].shape()[0];
-        for chunk in chunks {
-            if chunk.size() < self.local_threshold {
+        for (i, chunk) in chunks.into_iter().enumerate() {
+            if self.min[i] == self.max[i] {
+                references.push(Reference::Elided);
+            } else if chunk.size() < self.local_threshold {
                 let index = local.len();
                 local.push(Rc::new(chunk));
                 references.push(Reference::Local(index))
@@ -245,7 +336,8 @@ where
             max: Dac::from(max),
             min: Dac::from(min),
             local,
-            resolver: Resolver::new(self.mapper),
+            resolver: Rc::new(RefCell::new(Resolver::new(self.mapper))),
+            fractional_bits: bits,
             stride: self.stride,
             subsidelen: self.subsidelen,
         })
@@ -432,7 +524,7 @@ mod tests {
 
     fn test_all_the_things(
         data: Vec<Array2<f32>>,
-        chunk: Superchunk<MemoryMapper, f32>,
+        chunk: &Rc<Superchunk<MemoryMapper, f32>>,
     ) -> io::Result<()> {
         test_iter_cell(data, chunk)?;
 
@@ -441,7 +533,7 @@ mod tests {
 
     fn test_iter_cell(
         data: Vec<Array2<f32>>,
-        mut chunk: Superchunk<MemoryMapper, f32>,
+        chunk: &Rc<Superchunk<MemoryMapper, f32>>,
     ) -> io::Result<()> {
         let [instants, rows, cols] = chunk.shape;
         for row in 0..rows {
@@ -463,8 +555,9 @@ mod tests {
     fn build_no_subchunks() -> io::Result<()> {
         let data = array();
         let chunk = build_superchunk(data.clone().into_iter(), mapper(), 3, 2, Precise(3), 0)?;
+        let chunk = Rc::new(chunk);
         assert_eq!(chunk.references.len(), 64);
-        test_all_the_things(data, chunk)?;
+        test_all_the_things(data, &chunk)?;
 
         Ok(())
     }
