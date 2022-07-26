@@ -2,8 +2,11 @@ use cid::Cid;
 use ndarray::{s, Array2};
 use num_traits::Float;
 use std::cell::RefCell;
+use std::cmp;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io;
+use std::mem;
 use std::rc::Rc;
 
 use super::mapper::Mapper;
@@ -51,6 +54,7 @@ where
     /// Resolver for retrieving subchunks
     resolver: Rc<RefCell<Resolver<M, N>>>,
 
+    /// Number of fractional bits stored in fixed point number representation
     fractional_bits: usize,
 
     stride: usize,
@@ -286,21 +290,54 @@ where
         }
     }
 
+    /// Return whether a chunk, referred to be index, should be elided.
+    ///
+    /// A chunk can be elided if the minimum value equals the maximum value for every time instant
+    /// in that chunk.
+    ///
+    fn elide(&self, i: usize) -> bool {
+        let mut i = i;
+        let stride = self.subsidelen * self.subsidelen;
+        let end = self.max.len();
+        while i < end {
+            if self.max[i] != self.min[i] {
+                return false;
+            }
+            i += stride;
+        }
+
+        true
+    }
+
     fn finish(mut self) -> io::Result<Superchunk<M, N>> {
-        let chunks: Vec<FChunk<N>> = self
-            .builders
+        // Swap builders out of self before moving so that self can be borrowed by methods later.
+        let builders = mem::replace(&mut self.builders, vec![]);
+        let chunks: Vec<FChunk<N>> = builders
             .into_iter()
             .map(|builder| builder.finish().data)
             .collect();
+        let mut local_references: HashMap<Cid, usize> = HashMap::new();
         let mut local = Vec::new();
         let mut references = Vec::new();
         let instants = chunks[0].shape()[0];
         for (i, chunk) in chunks.into_iter().enumerate() {
-            if self.min[i] == self.max[i] {
+            if self.elide(i) {
                 references.push(Reference::Elided);
             } else if chunk.size() < self.local_threshold {
-                let index = local.len();
-                local.push(Rc::new(chunk));
+                let mut hasher = self.mapper.hash();
+                chunk.serialize(&mut hasher)?;
+
+                let cid = hasher.finish();
+                let index = match local_references.get(&cid) {
+                    Some(index) => *index,
+                    None => {
+                        let index = local.len();
+                        local.push(Rc::new(chunk));
+                        local_references.insert(cid, index);
+
+                        index
+                    }
+                };
                 references.push(Reference::Local(index))
             } else {
                 let mut writer = self.mapper.store();
@@ -379,11 +416,12 @@ where
             return None;
         }
 
+        let shape = self.a.shape();
+        let rows = shape[0];
+        let cols = shape[1];
+
         let top = self.row * self.stride;
-        let bottom = top + self.stride;
         let left = self.col * self.stride;
-        let right = left + self.stride;
-        let subarray = self.a.slice(s![top..bottom, left..right]).to_owned();
 
         let col = self.col + 1;
         if col == self.subsidelen {
@@ -392,6 +430,17 @@ where
         } else {
             self.col = col;
         }
+
+        if top >= rows || left >= cols {
+            // This subarray is entirely outside the bounds of the actual array. This can happen
+            // becaue the logical array is expanded to have a square shape with the side lengths a
+            // power of k.
+            return Some((Array2::zeros([0, 0]), N::zero(), N::zero()));
+        }
+
+        let bottom = cmp::min(top + self.stride, rows);
+        let right = cmp::min(left + self.stride, cols);
+        let subarray = self.a.slice(s![top..bottom, left..right]).to_owned();
 
         let value = subarray[[0, 0]];
         let (min_value, max_value) =
@@ -422,10 +471,11 @@ mod tests {
     use super::super::mapper::{Sha2_256Write, StoreWrite};
     use cid::Cid;
     use ndarray::arr2;
-    use std::collections::HashMap;
+    use std::collections::HashSet;
     use std::io::{Read, Write};
-    use std::mem::replace;
 
+    /// A test implementation of Mapper that stores objects in RAM
+    ///
     struct MemoryMapper {
         objects: HashMap<Cid, Vec<u8>>,
     }
@@ -440,7 +490,11 @@ mod tests {
 
     impl Mapper for MemoryMapper {
         fn store(&mut self) -> Box<dyn StoreWrite + '_> {
-            Box::new(MemoryMapperStoreWrite::new(self))
+            Box::new(MemoryMapperStoreWrite::new(self, false))
+        }
+
+        fn hash(&mut self) -> Box<dyn StoreWrite + '_> {
+            Box::new(MemoryMapperStoreWrite::new(self, true))
         }
 
         fn load(&mut self, cid: Cid) -> Option<Box<dyn Read + '_>> {
@@ -452,12 +506,17 @@ mod tests {
     struct MemoryMapperStoreWrite<'a> {
         mapper: &'a mut MemoryMapper,
         writer: Sha2_256Write<Vec<u8>>,
+        hash_only: bool,
     }
 
     impl<'a> MemoryMapperStoreWrite<'a> {
-        fn new(mapper: &'a mut MemoryMapper) -> Self {
+        fn new(mapper: &'a mut MemoryMapper, hash_only: bool) -> Self {
             let writer = Sha2_256Write::wrap(Vec::new());
-            Self { mapper, writer }
+            Self {
+                mapper,
+                writer,
+                hash_only,
+            }
         }
     }
 
@@ -474,8 +533,10 @@ mod tests {
     impl<'a> StoreWrite for MemoryMapperStoreWrite<'a> {
         fn finish(&mut self) -> Cid {
             let cid = self.writer.finish();
-            let object = replace(&mut self.writer.inner, vec![]);
-            self.mapper.objects.insert(cid, object);
+            if !self.hash_only {
+                let object = mem::replace(&mut self.writer.inner, vec![]);
+                self.mapper.objects.insert(cid, object);
+            }
 
             cid
         }
@@ -485,7 +546,7 @@ mod tests {
         MemoryMapper::new()
     }
 
-    fn array() -> Vec<Array2<f32>> {
+    fn array8() -> Vec<Array2<f32>> {
         let data = vec![
             arr2(&[
                 [9.5, 8.25, 7.75, 7.75, 6.125, 6.125, 3.375, 2.625],
@@ -522,6 +583,14 @@ mod tests {
         data.into_iter().cycle().take(100).collect()
     }
 
+    fn array(sidelen: usize) -> Vec<Array2<f32>> {
+        let data = array8();
+
+        data.into_iter()
+            .map(|a| Array2::from_shape_fn((sidelen, sidelen), |(row, col)| a[[row % 8, col % 8]]))
+            .collect()
+    }
+
     fn test_all_the_things(
         data: Vec<Array2<f32>>,
         chunk: &Rc<Superchunk<MemoryMapper, f32>>,
@@ -553,10 +622,83 @@ mod tests {
 
     #[test]
     fn build_no_subchunks() -> io::Result<()> {
-        let data = array();
+        let data = array8();
         let chunk = build_superchunk(data.clone().into_iter(), mapper(), 3, 2, Precise(3), 0)?;
         let chunk = Rc::new(chunk);
         assert_eq!(chunk.references.len(), 64);
+        test_all_the_things(data, &chunk)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_local_subchunks() -> io::Result<()> {
+        let data = array(16);
+        let chunk = build_superchunk(
+            data.clone().into_iter(),
+            mapper(),
+            2,
+            2,
+            Precise(3),
+            1 << 14,
+        )?;
+        let chunk = Rc::new(chunk);
+        assert_eq!(chunk.references.len(), 16);
+        assert_eq!(chunk.local.len(), 4);
+        test_all_the_things(data, &chunk)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_external_subchunks() -> io::Result<()> {
+        let data = array(16);
+        let chunk = build_superchunk(data.clone().into_iter(), mapper(), 2, 2, Precise(3), 0)?;
+        let chunk = Rc::new(chunk);
+        assert_eq!(chunk.references.len(), 16);
+
+        let cids = chunk.references.iter().map(|r| match r {
+            Reference::External(cid) => *cid,
+            _ => {
+                panic!("Expecting extnernal references only");
+            }
+        });
+
+        let unique_cids: HashSet<Cid> = HashSet::from_iter(cids);
+        assert_eq!(unique_cids.len(), 4);
+
+        test_all_the_things(data, &chunk)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_mixed_subchunks() -> io::Result<()> {
+        let data = array(17);
+        let chunk = build_superchunk(data.clone().into_iter(), mapper(), 2, 2, Precise(3), 8000)?;
+        let chunk = Rc::new(chunk);
+        assert_eq!(chunk.references.len(), 16);
+
+        let mut local_count = 0;
+        let mut external_count = 0;
+        let mut elided_count = 0;
+        for r in chunk.references.iter() {
+            match r {
+                Reference::External(_) => {
+                    external_count += 1;
+                }
+                Reference::Local(_) => {
+                    local_count += 1;
+                }
+                Reference::Elided => {
+                    elided_count += 1;
+                }
+            }
+        }
+        assert_eq!(external_count, 4);
+        assert_eq!(local_count, 4);
+        assert_eq!(elided_count, 8);
+
         test_all_the_things(data, &chunk)?;
 
         Ok(())
