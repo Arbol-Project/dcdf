@@ -149,7 +149,7 @@ where
         top: usize,
         left: usize,
         window: &mut ArrayBase<S, Ix3>,
-    ) -> io::Result<()> 
+    ) -> io::Result<()>
     where
         S: DataMut<Elem = N>,
     {
@@ -186,7 +186,8 @@ where
                 let window_right = cmp::min(chunk_right, right);
                 let slice_right = window_right - left;
 
-                let mut subwindow = window.slice_mut(s![.., slice_top..slice_bottom, slice_left..slice_right]);
+                let mut subwindow =
+                    window.slice_mut(s![.., slice_top..slice_bottom, slice_left..slice_right]);
 
                 let chunk = chunk_row * self.subsidelen + chunk_col;
                 match self.references[chunk] {
@@ -200,22 +201,22 @@ where
                             slice.fill(value);
                             index += stride;
                         }
-                    },
+                    }
                     Reference::Local(index) => {
                         let chunk = &self.local[index];
                         chunk.fill_window(start, local_top, local_left, &mut subwindow);
-                    },
+                    }
                     Reference::External(cid) => {
                         let chunk = self.resolver.borrow_mut().get_chunk(cid)?;
                         chunk.fill_window(start, local_top, local_left, &mut subwindow);
-                    },
+                    }
                 }
             }
         }
 
         Ok(())
     }
- 
+
     /// Panics if given point is out of bounds for this chunk
     fn check_bounds(&self, instant: usize, row: usize, col: usize) {
         let [instants, rows, cols] = self.shape;
@@ -503,7 +504,7 @@ where
     }
 }
 
-/// Iterate over subarrays of array. 
+/// Iterate over subarrays of array.
 ///
 /// Used to build individual chunks that comprise the superchunk.
 ///
@@ -720,105 +721,107 @@ mod tests {
     }
 
     macro_rules! test_all_the_things {
-        ($name:ident) => { paste! {
-            #[test]
-            fn [<$name _test_iter_cell>]() -> io::Result<()> {
-                let (data, chunk) = $name()?;
-                let [instants, rows, cols] = chunk.shape;
-                for row in 0..rows {
-                    for col in 0..cols {
-                        let start = row + col;
-                        let end = instants - start;
-                        let values: Vec<f32> = chunk.iter_cell(start, end, row, col)?.collect();
-                        assert_eq!(values.len(), end - start);
-                        for i in 0..values.len() {
-                            assert_eq!(values[i], data[i + start][[row, col]]);
+        ($name:ident) => {
+            paste! {
+                #[test]
+                fn [<$name _test_iter_cell>]() -> io::Result<()> {
+                    let (data, chunk) = $name()?;
+                    let [instants, rows, cols] = chunk.shape;
+                    for row in 0..rows {
+                        for col in 0..cols {
+                            let start = row + col;
+                            let end = instants - start;
+                            let values: Vec<f32> = chunk.iter_cell(start, end, row, col)?.collect();
+                            assert_eq!(values.len(), end - start);
+                            for i in 0..values.len() {
+                                assert_eq!(values[i], data[i + start][[row, col]]);
+                            }
                         }
                     }
+
+                    Ok(())
                 }
 
-                Ok(())
-            }
-
-            #[test]
-            fn [<$name _test_iter_cell_rearrange>]() -> io::Result<()> {
-                let (data, chunk) = $name()?;
-                let [instants, rows, cols] = chunk.shape;
-                for row in 0..rows {
-                    for col in 0..cols {
-                        let start = row + col;
-                        let end = instants - start;
-                        let values: Vec<f32> = chunk.iter_cell(end, start, row, col)?.collect();
-                        assert_eq!(values.len(), end - start);
-                        for i in 0..values.len() {
-                            assert_eq!(values[i], data[i + start][[row, col]]);
+                #[test]
+                fn [<$name _test_iter_cell_rearrange>]() -> io::Result<()> {
+                    let (data, chunk) = $name()?;
+                    let [instants, rows, cols] = chunk.shape;
+                    for row in 0..rows {
+                        for col in 0..cols {
+                            let start = row + col;
+                            let end = instants - start;
+                            let values: Vec<f32> = chunk.iter_cell(end, start, row, col)?.collect();
+                            assert_eq!(values.len(), end - start);
+                            for i in 0..values.len() {
+                                assert_eq!(values[i], data[i + start][[row, col]]);
+                            }
                         }
                     }
+
+                    Ok(())
                 }
 
-                Ok(())
-            }
+                #[test]
+                #[should_panic]
+                fn [<$name _test_iter_cell_time_out_of_bounds>]() {
+                    let (_, chunk) = $name().expect("This should work");
+                    let [instants, rows, cols] = chunk.shape;
 
-            #[test]
-            #[should_panic]
-            fn [<$name _test_iter_cell_time_out_of_bounds>]() {
-                let (_, chunk) = $name().expect("This should work");
-                let [instants, rows, cols] = chunk.shape;
+                    let values: Vec<f32> = chunk.iter_cell(0, instants + 1, rows, cols)
+                        .expect("This isn't what causes the panic").collect();
+                    assert_eq!(values.len(), instants + 1);
+                }
 
-                let values: Vec<f32> = chunk.iter_cell(0, instants + 1, rows, cols)
-                    .expect("This isn't what causes the panic").collect();
-                assert_eq!(values.len(), instants + 1);
-            }
+                #[test]
+                #[should_panic]
+                fn [<$name _test_iter_cell_row_out_of_bounds>]() {
+                    let (_, chunk) = $name().expect("This should work");
+                    let [instants, rows, cols] = chunk.shape;
 
-            #[test]
-            #[should_panic]
-            fn [<$name _test_iter_cell_row_out_of_bounds>]() {
-                let (_, chunk) = $name().expect("This should work");
-                let [instants, rows, cols] = chunk.shape;
+                    let values: Vec<f32> = chunk.iter_cell(0, instants, rows + 1, cols)
+                        .expect("This isn't what causes the panic").collect();
+                    assert_eq!(values.len(), instants + 1);
+                }
 
-                let values: Vec<f32> = chunk.iter_cell(0, instants, rows + 1, cols)
-                    .expect("This isn't what causes the panic").collect();
-                assert_eq!(values.len(), instants + 1);
-            }
+                #[test]
+                #[should_panic]
+                fn [<$name _test_iter_cell_col_out_of_bounds>]() {
+                    let (_, chunk) = $name().expect("This should work");
+                    let [instants, rows, cols] = chunk.shape;
 
-            #[test]
-            #[should_panic]
-            fn [<$name _test_iter_cell_col_out_of_bounds>]() {
-                let (_, chunk) = $name().expect("This should work");
-                let [instants, rows, cols] = chunk.shape;
+                    let values: Vec<f32> = chunk.iter_cell(0, instants, rows, cols + 1)
+                        .expect("This isn't what causes the panic").collect();
+                    assert_eq!(values.len(), instants + 1);
+                }
 
-                let values: Vec<f32> = chunk.iter_cell(0, instants, rows, cols + 1)
-                    .expect("This isn't what causes the panic").collect();
-                assert_eq!(values.len(), instants + 1);
-            }
+                #[test]
+                fn [<$name _test_get_window>]() -> io::Result<()> {
+                    let (data, chunk) = $name()?;
+                    let [instants, rows, cols] = chunk.shape;
+                    for top in 0..rows / 2 {
+                        let bottom = top + rows / 2;
+                        for left in 0..cols / 2 {
+                            let right = left + cols / 2;
+                            let start = top + bottom;
+                            let end = instants - start;
+                            let window = chunk.get_window(start, end, top, bottom, left, right)?;
 
-            #[test]
-            fn [<$name _test_get_window>]() -> io::Result<()> {
-                let (data, chunk) = $name()?;
-                let [instants, rows, cols] = chunk.shape;
-                for top in 0..rows / 2 {
-                    let bottom = top + rows / 2;
-                    for left in 0..cols / 2 {
-                        let right = left + cols / 2;
-                        let start = top + bottom;
-                        let end = instants - start;
-                        let window = chunk.get_window(start, end, top, bottom, left, right)?;
+                            assert_eq!(window.shape(),
+                                       [end - start, bottom - top, right - left]);
 
-                        assert_eq!(window.shape(), 
-                                   [end - start, bottom - top, right - left]);
-                        
-                        for i in 0..end - start {
-                            assert_eq!(
-                                window.slice(s![i, .., ..]),
-                                data[start + i].slice(s![top..bottom, left..right])
-                            );
+                            for i in 0..end - start {
+                                assert_eq!(
+                                    window.slice(s![i, .., ..]),
+                                    data[start + i].slice(s![top..bottom, left..right])
+                                );
+                            }
                         }
                     }
-                }
 
-                Ok(())
+                    Ok(())
+                }
             }
-        }}
+        };
     }
 
     fn no_subchunks() -> io::Result<(Vec<Array2<f32>>, Rc<Superchunk<MemoryMapper, f32>>)> {
