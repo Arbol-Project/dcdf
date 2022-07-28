@@ -1,6 +1,7 @@
 mod codec;
 mod extio;
 mod fixed;
+mod helpers;
 
 #[allow(dead_code)]
 mod dag;

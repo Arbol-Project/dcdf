@@ -1,4 +1,4 @@
-use ndarray::{s, Array2, Array3};
+use ndarray::{s, Array2, Array3, ArrayBase, DataMut, Ix3};
 use num_traits::{Float, PrimInt};
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -9,9 +9,9 @@ use std::rc::Rc;
 use std::vec::IntoIter as VecIntoIter;
 
 use super::block::Block;
-use super::helpers::rearrange;
 use crate::extio::{ExtendedRead, ExtendedWrite};
 use crate::fixed;
+use crate::helpers::rearrange;
 
 /// A wrapper for Chunk that adapts it to use floating point data
 ///
@@ -89,17 +89,41 @@ where
         let instants = end - start;
         let rows = bottom - top;
         let cols = right - left;
-        let mut windows = Array3::zeros([instants, rows, cols]);
+        let mut window = Array3::zeros([instants, rows, cols]);
+
+        self.fill_window(start, top, left, &mut window);
+
+        window
+    }
+
+    /// Fill in a preallocated array with subarray from this chunk
+    ///
+    pub(crate) fn fill_window<S>(
+        self: &Rc<Self>,
+        start: usize,
+        top: usize,
+        left: usize,
+        window: &mut ArrayBase<S, Ix3>,
+    ) where
+        S: DataMut<Elem = F>,
+    {
+        let shape = window.shape();
+        let instants = shape[0];
+        let rows = shape[1];
+        let cols = shape[2];
+
+        let end = start + instants;
+        let bottom = top + rows;
+        let right = left + cols;
 
         for (i, (block, instant)) in self.chunk.iter(start, end).enumerate() {
-            let mut window = windows.slice_mut(s![i, .., ..]);
+            let mut window2d = window.slice_mut(s![i, .., ..]);
             let set = |row, col, value| {
-                window[[row, col]] = fixed::from_fixed(value, self.fractional_bits)
+                window2d[[row, col]] = fixed::from_fixed(value, self.fractional_bits)
             };
             let block = &self.chunk.blocks[block];
             block.fill_window(set, instant, top, bottom, left, right);
         }
-        windows
     }
 
     /// Iterate over subarrays of successive time instants.

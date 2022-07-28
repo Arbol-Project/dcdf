@@ -27,7 +27,6 @@ mod bitmap;
 mod block;
 mod chunk;
 mod dac;
-mod helpers;
 mod log;
 mod snapshot;
 

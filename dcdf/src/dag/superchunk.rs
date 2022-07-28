@@ -1,5 +1,5 @@
 use cid::Cid;
-use ndarray::{s, Array2};
+use ndarray::{s, Array2, Array3, ArrayBase, DataMut, Ix3};
 use num_traits::Float;
 use std::cell::RefCell;
 use std::cmp;
@@ -14,6 +14,7 @@ use super::resolver::Resolver;
 use crate::codec::Dac;
 use crate::codec::FChunk;
 use crate::fixed::{from_fixed, to_fixed, Fraction, Precise, Round};
+use crate::helpers::rearrange;
 use crate::simple::FBuilder;
 
 pub struct Superchunk<M, N>
@@ -57,7 +58,10 @@ where
     /// Number of fractional bits stored in fixed point number representation
     fractional_bits: usize,
 
-    stride: usize,
+    /// The side length of the subchunks stored in this superchunk
+    chunks_sidelen: usize,
+
+    /// The number of subchunks per side in the logical grid represented by this superchunk
     subsidelen: usize,
 }
 
@@ -75,13 +79,16 @@ where
         row: usize,
         col: usize,
     ) -> io::Result<CellIter<N>> {
+        let (start, end) = rearrange(start, end);
+        self.check_bounds(end - 1, row, col);
+
         // Theoretically compiler will optimize to single DIVREM instructions
         // https://stackoverflow.com/questions/69051429
         //      /what-is-the-function-to-get-the-quotient-and-remainder-divmod-for-rust
-        let chunk_row = row / self.stride;
-        let local_row = row % self.stride;
-        let chunk_col = col / self.stride;
-        let local_col = col % self.stride;
+        let chunk_row = row / self.chunks_sidelen;
+        let local_row = row % self.chunks_sidelen;
+        let chunk_col = col / self.chunks_sidelen;
+        let local_col = col % self.chunks_sidelen;
 
         let chunk = chunk_row * self.subsidelen + chunk_col;
         match self.references[chunk] {
@@ -105,6 +112,121 @@ where
                     )),
                 })
             }
+        }
+    }
+
+    /// Get a subarray of this Chunk.
+    ///
+    pub fn get_window(
+        self: &Rc<Self>,
+        start: usize,
+        end: usize,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+    ) -> io::Result<Array3<N>> {
+        let (start, end) = rearrange(start, end);
+        let (top, bottom) = rearrange(top, bottom);
+        let (left, right) = rearrange(left, right);
+        self.check_bounds(end - 1, bottom - 1, right - 1);
+
+        let instants = end - start;
+        let rows = bottom - top;
+        let cols = right - left;
+        let mut window = Array3::zeros([instants, rows, cols]);
+
+        self.fill_window(start, top, left, &mut window)?;
+
+        Ok(window)
+    }
+
+    /// Fill in a preallocated array with subarray from this chunk
+    ///
+    pub(crate) fn fill_window<S>(
+        self: &Rc<Self>,
+        start: usize,
+        top: usize,
+        left: usize,
+        window: &mut ArrayBase<S, Ix3>,
+    ) -> io::Result<()> 
+    where
+        S: DataMut<Elem = N>,
+    {
+        let shape = window.shape();
+        let instants = shape[0];
+        let rows = shape[1];
+        let cols = shape[2];
+
+        let bottom = top + rows;
+        let right = left + cols;
+
+        let chunks_top = top / self.chunks_sidelen;
+        let chunks_bottom = (bottom - 1) / self.chunks_sidelen;
+        let chunks_left = left / self.chunks_sidelen;
+        let chunks_right = (right - 1) / self.chunks_sidelen;
+
+        for chunk_row in chunks_top..=chunks_bottom {
+            let chunk_top = chunk_row * self.chunks_sidelen;
+            let window_top = cmp::max(chunk_top, top);
+            let local_top = window_top - chunk_top;
+            let slice_top = window_top - top;
+
+            let chunk_bottom = chunk_top + self.chunks_sidelen;
+            let window_bottom = cmp::min(chunk_bottom, bottom);
+            let slice_bottom = window_bottom - top;
+
+            for chunk_col in chunks_left..=chunks_right {
+                let chunk_left = chunk_col * self.chunks_sidelen;
+                let window_left = cmp::max(chunk_left, left);
+                let local_left = window_left - chunk_left;
+                let slice_left = window_left - left;
+
+                let chunk_right = chunk_left + self.chunks_sidelen;
+                let window_right = cmp::min(chunk_right, right);
+                let slice_right = window_right - left;
+
+                let mut subwindow = window.slice_mut(s![.., slice_top..slice_bottom, slice_left..slice_right]);
+
+                let chunk = chunk_row * self.subsidelen + chunk_col;
+                match self.references[chunk] {
+                    Reference::Elided => {
+                        let stride = self.subsidelen * self.subsidelen;
+                        let mut index = chunk + start * stride;
+                        for i in 0..instants {
+                            let value = self.max.get(index);
+                            let value = from_fixed(value, self.fractional_bits);
+                            let mut slice = subwindow.slice_mut(s![i, .., ..]);
+                            slice.fill(value);
+                            index += stride;
+                        }
+                    },
+                    Reference::Local(index) => {
+                        let chunk = &self.local[index];
+                        chunk.fill_window(start, local_top, local_left, &mut subwindow);
+                    },
+                    Reference::External(cid) => {
+                        let chunk = self.resolver.borrow_mut().get_chunk(cid)?;
+                        chunk.fill_window(start, local_top, local_left, &mut subwindow);
+                    },
+                }
+            }
+        }
+
+        Ok(())
+    }
+ 
+    /// Panics if given point is out of bounds for this chunk
+    fn check_bounds(&self, instant: usize, row: usize, col: usize) {
+        let [instants, rows, cols] = self.shape;
+        if instant >= instants || row >= rows || col >= cols {
+            panic!(
+                "dcdf::Superchunk: index[{}, {}, {}] is out of bounds for array of shape {:?}",
+                instant,
+                row,
+                col,
+                [instants, rows, cols],
+            );
         }
     }
 }
@@ -227,7 +349,7 @@ where
     k: i32,
     sidelen: usize,
     subsidelen: usize,
-    stride: usize,
+    chunks_sidelen: usize,
 }
 
 impl<M, N> SuperchunkBuilder<M, N>
@@ -251,13 +373,13 @@ where
         let sidelen = k.pow(sidelen.log(k as f64).ceil() as u32) as usize;
 
         let subsidelen = k.pow(levels as u32) as usize;
-        let stride = sidelen / subsidelen;
+        let chunks_sidelen = sidelen / subsidelen;
         let subchunks = subsidelen.pow(2);
         let mut builders = Vec::with_capacity(subchunks);
         let mut max = Vec::new();
         let mut min = Vec::new();
 
-        for (subarray, min_value, max_value) in iter_subarrays(first, subsidelen, stride) {
+        for (subarray, min_value, max_value) in iter_subarrays(first, subsidelen, chunks_sidelen) {
             builders.push(FBuilder::new(subarray, k, fraction));
             min.push(min_value);
             max.push(max_value);
@@ -276,13 +398,13 @@ where
             k,
             sidelen,
             subsidelen,
-            stride,
+            chunks_sidelen,
         }
     }
 
     fn push(&mut self, a: Array2<N>) {
         for ((subarray, min_value, max_value), builder) in
-            iter_subarrays(a, self.subsidelen, self.stride).zip(&mut self.builders)
+            iter_subarrays(a, self.subsidelen, self.chunks_sidelen).zip(&mut self.builders)
         {
             builder.push(subarray);
             self.min.push(min_value);
@@ -375,20 +497,24 @@ where
             local,
             resolver: Rc::new(RefCell::new(Resolver::new(self.mapper))),
             fractional_bits: bits,
-            stride: self.stride,
+            chunks_sidelen: self.chunks_sidelen,
             subsidelen: self.subsidelen,
         })
     }
 }
 
-fn iter_subarrays<N>(a: Array2<N>, subsidelen: usize, stride: usize) -> SubarrayIterator<N>
+/// Iterate over subarrays of array. 
+///
+/// Used to build individual chunks that comprise the superchunk.
+///
+fn iter_subarrays<N>(a: Array2<N>, subsidelen: usize, chunks_sidelen: usize) -> SubarrayIterator<N>
 where
     N: Float + Debug,
 {
     SubarrayIterator {
         a,
         subsidelen,
-        stride,
+        chunks_sidelen,
         row: 0,
         col: 0,
     }
@@ -400,7 +526,7 @@ where
 {
     a: Array2<N>,
     subsidelen: usize,
-    stride: usize,
+    chunks_sidelen: usize,
     row: usize,
     col: usize,
 }
@@ -420,8 +546,8 @@ where
         let rows = shape[0];
         let cols = shape[1];
 
-        let top = self.row * self.stride;
-        let left = self.col * self.stride;
+        let top = self.row * self.chunks_sidelen;
+        let left = self.col * self.chunks_sidelen;
 
         let col = self.col + 1;
         if col == self.subsidelen {
@@ -438,8 +564,8 @@ where
             return Some((Array2::zeros([0, 0]), N::zero(), N::zero()));
         }
 
-        let bottom = cmp::min(top + self.stride, rows);
-        let right = cmp::min(left + self.stride, cols);
+        let bottom = cmp::min(top + self.chunks_sidelen, rows);
+        let right = cmp::min(left + self.chunks_sidelen, cols);
         let subarray = self.a.slice(s![top..bottom, left..right]).to_owned();
 
         let value = subarray[[0, 0]];
@@ -468,9 +594,11 @@ where
 mod tests {
     use super::*;
 
-    use super::super::mapper::{Sha2_256Write, StoreWrite};
+    use crate::dag::mapper::{Sha2_256Write, StoreWrite};
+
     use cid::Cid;
     use ndarray::arr2;
+    use paste::paste;
     use std::collections::HashSet;
     use std::io::{Read, Write};
 
@@ -591,48 +719,120 @@ mod tests {
             .collect()
     }
 
-    fn test_all_the_things(
-        data: Vec<Array2<f32>>,
-        chunk: &Rc<Superchunk<MemoryMapper, f32>>,
-    ) -> io::Result<()> {
-        test_iter_cell(data, chunk)?;
-
-        Ok(())
-    }
-
-    fn test_iter_cell(
-        data: Vec<Array2<f32>>,
-        chunk: &Rc<Superchunk<MemoryMapper, f32>>,
-    ) -> io::Result<()> {
-        let [instants, rows, cols] = chunk.shape;
-        for row in 0..rows {
-            for col in 0..cols {
-                let start = row + col;
-                let end = instants - start;
-                let values: Vec<f32> = chunk.iter_cell(start, end, row, col)?.collect();
-                assert_eq!(values.len(), end - start);
-                for i in 0..values.len() {
-                    assert_eq!(values[i], data[i + start][[row, col]]);
+    macro_rules! test_all_the_things {
+        ($name:ident) => { paste! {
+            #[test]
+            fn [<$name _test_iter_cell>]() -> io::Result<()> {
+                let (data, chunk) = $name()?;
+                let [instants, rows, cols] = chunk.shape;
+                for row in 0..rows {
+                    for col in 0..cols {
+                        let start = row + col;
+                        let end = instants - start;
+                        let values: Vec<f32> = chunk.iter_cell(start, end, row, col)?.collect();
+                        assert_eq!(values.len(), end - start);
+                        for i in 0..values.len() {
+                            assert_eq!(values[i], data[i + start][[row, col]]);
+                        }
+                    }
                 }
-            }
-        }
 
-        Ok(())
+                Ok(())
+            }
+
+            #[test]
+            fn [<$name _test_iter_cell_rearrange>]() -> io::Result<()> {
+                let (data, chunk) = $name()?;
+                let [instants, rows, cols] = chunk.shape;
+                for row in 0..rows {
+                    for col in 0..cols {
+                        let start = row + col;
+                        let end = instants - start;
+                        let values: Vec<f32> = chunk.iter_cell(end, start, row, col)?.collect();
+                        assert_eq!(values.len(), end - start);
+                        for i in 0..values.len() {
+                            assert_eq!(values[i], data[i + start][[row, col]]);
+                        }
+                    }
+                }
+
+                Ok(())
+            }
+
+            #[test]
+            #[should_panic]
+            fn [<$name _test_iter_cell_time_out_of_bounds>]() {
+                let (_, chunk) = $name().expect("This should work");
+                let [instants, rows, cols] = chunk.shape;
+
+                let values: Vec<f32> = chunk.iter_cell(0, instants + 1, rows, cols)
+                    .expect("This isn't what causes the panic").collect();
+                assert_eq!(values.len(), instants + 1);
+            }
+
+            #[test]
+            #[should_panic]
+            fn [<$name _test_iter_cell_row_out_of_bounds>]() {
+                let (_, chunk) = $name().expect("This should work");
+                let [instants, rows, cols] = chunk.shape;
+
+                let values: Vec<f32> = chunk.iter_cell(0, instants, rows + 1, cols)
+                    .expect("This isn't what causes the panic").collect();
+                assert_eq!(values.len(), instants + 1);
+            }
+
+            #[test]
+            #[should_panic]
+            fn [<$name _test_iter_cell_col_out_of_bounds>]() {
+                let (_, chunk) = $name().expect("This should work");
+                let [instants, rows, cols] = chunk.shape;
+
+                let values: Vec<f32> = chunk.iter_cell(0, instants, rows, cols + 1)
+                    .expect("This isn't what causes the panic").collect();
+                assert_eq!(values.len(), instants + 1);
+            }
+
+            #[test]
+            fn [<$name _test_get_window>]() -> io::Result<()> {
+                let (data, chunk) = $name()?;
+                let [instants, rows, cols] = chunk.shape;
+                for top in 0..rows / 2 {
+                    let bottom = top + rows / 2;
+                    for left in 0..cols / 2 {
+                        let right = left + cols / 2;
+                        let start = top + bottom;
+                        let end = instants - start;
+                        let window = chunk.get_window(start, end, top, bottom, left, right)?;
+
+                        assert_eq!(window.shape(), 
+                                   [end - start, bottom - top, right - left]);
+                        
+                        for i in 0..end - start {
+                            assert_eq!(
+                                window.slice(s![i, .., ..]),
+                                data[start + i].slice(s![top..bottom, left..right])
+                            );
+                        }
+                    }
+                }
+
+                Ok(())
+            }
+        }}
     }
 
-    #[test]
-    fn build_no_subchunks() -> io::Result<()> {
+    fn no_subchunks() -> io::Result<(Vec<Array2<f32>>, Rc<Superchunk<MemoryMapper, f32>>)> {
         let data = array8();
         let chunk = build_superchunk(data.clone().into_iter(), mapper(), 3, 2, Precise(3), 0)?;
         let chunk = Rc::new(chunk);
         assert_eq!(chunk.references.len(), 64);
-        test_all_the_things(data, &chunk)?;
 
-        Ok(())
+        Ok((data, chunk))
     }
 
-    #[test]
-    fn build_local_subchunks() -> io::Result<()> {
+    test_all_the_things!(no_subchunks);
+
+    fn local_subchunks() -> io::Result<(Vec<Array2<f32>>, Rc<Superchunk<MemoryMapper, f32>>)> {
         let data = array(16);
         let chunk = build_superchunk(
             data.clone().into_iter(),
@@ -645,13 +845,13 @@ mod tests {
         let chunk = Rc::new(chunk);
         assert_eq!(chunk.references.len(), 16);
         assert_eq!(chunk.local.len(), 4);
-        test_all_the_things(data, &chunk)?;
 
-        Ok(())
+        Ok((data, chunk))
     }
 
-    #[test]
-    fn build_external_subchunks() -> io::Result<()> {
+    test_all_the_things!(local_subchunks);
+
+    fn external_subchunks() -> io::Result<(Vec<Array2<f32>>, Rc<Superchunk<MemoryMapper, f32>>)> {
         let data = array(16);
         let chunk = build_superchunk(data.clone().into_iter(), mapper(), 2, 2, Precise(3), 0)?;
         let chunk = Rc::new(chunk);
@@ -667,13 +867,12 @@ mod tests {
         let unique_cids: HashSet<Cid> = HashSet::from_iter(cids);
         assert_eq!(unique_cids.len(), 4);
 
-        test_all_the_things(data, &chunk)?;
-
-        Ok(())
+        Ok((data, chunk))
     }
 
-    #[test]
-    fn build_mixed_subchunks() -> io::Result<()> {
+    test_all_the_things!(external_subchunks);
+
+    fn mixed_subchunks() -> io::Result<(Vec<Array2<f32>>, Rc<Superchunk<MemoryMapper, f32>>)> {
         let data = array(17);
         let chunk = build_superchunk(data.clone().into_iter(), mapper(), 2, 2, Precise(3), 8000)?;
         let chunk = Rc::new(chunk);
@@ -699,8 +898,8 @@ mod tests {
         assert_eq!(local_count, 4);
         assert_eq!(elided_count, 8);
 
-        test_all_the_things(data, &chunk)?;
-
-        Ok(())
+        Ok((data, chunk))
     }
+
+    test_all_the_things!(mixed_subchunks);
 }
