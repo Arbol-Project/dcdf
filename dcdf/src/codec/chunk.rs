@@ -128,20 +128,24 @@ where
 
     /// Iterate over subarrays of successive time instants.
     ///
-    pub fn iter_window<'a>(
-        &'a self,
+    pub fn iter_window(
+        self: &Rc<Self>,
         start: usize,
         end: usize,
         top: usize,
         bottom: usize,
         left: usize,
         right: usize,
-    ) -> Box<dyn Iterator<Item = Array2<F>> + 'a> {
-        Box::new(
-            self.chunk
-                .iter_window(start, end, top, bottom, left, right)
-                .map(|w| w.map(|i| fixed::from_fixed(*i, self.fractional_bits))),
-        )
+    ) -> FWindowIter<F> {
+        FWindowIter {
+            _marker: PhantomData,
+            iter: Rc::new(RefCell::new(
+                self.chunk
+                    .clone()
+                    .iter_window(start, end, top, bottom, left, right),
+            )),
+            fractional_bits: self.fractional_bits,
+        }
     }
 
     /// Search a subarray for cells that fall in a given range.
@@ -212,6 +216,29 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter.borrow_mut().next() {
             Some(value) => Some(fixed::from_fixed(value, self.chunk.fractional_bits)),
+            None => None,
+        }
+    }
+}
+
+pub struct FWindowIter<F>
+where
+    F: Float + Debug,
+{
+    _marker: PhantomData<F>,
+    iter: Rc<RefCell<WindowIter<i64>>>,
+    fractional_bits: usize,
+}
+
+impl<F> Iterator for FWindowIter<F>
+where
+    F: Float + Debug,
+{
+    type Item = Array2<F>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.iter.borrow_mut().next() {
+            Some(w) => Some(w.map(|i| fixed::from_fixed(*i, self.fractional_bits))),
             None => None,
         }
     }
@@ -355,7 +382,7 @@ where
     /// Iterate over subarrays of successive time instants.
     ///
     pub fn iter_window(
-        self: &Rc<Self>,
+        self: Rc<Self>,
         start: usize,
         end: usize,
         top: usize,
@@ -1212,6 +1239,7 @@ mod tests {
                             let start = top * left;
                             let end = bottom * right + 36;
                             let windows: Vec<Array2<i32>> = chunk
+                                .clone()
                                 .iter_window(start, end, top, bottom, left, right)
                                 .collect();
                             assert_eq!(windows.len(), end - start);
@@ -1239,6 +1267,7 @@ mod tests {
                             let start = top * left;
                             let end = bottom * right + 36;
                             let windows: Vec<Array2<i32>> = chunk
+                                .clone()
                                 .iter_window(end, start, bottom, top, right, left)
                                 .collect();
                             assert_eq!(windows.len(), end - start);

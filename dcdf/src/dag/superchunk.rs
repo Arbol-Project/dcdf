@@ -217,6 +217,111 @@ where
         Ok(())
     }
 
+    /// Iterate over subarrays of successive time instants.
+    ///
+    pub fn iter_window(
+        self: &Rc<Self>,
+        start: usize,
+        end: usize,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+    ) -> io::Result<WindowIter<N>> {
+        let mut subiters: Vec<SubwindowIter<N>> = vec![];
+
+        let instants = end - start;
+        let rows = bottom - top;
+        let cols = right - left;
+
+        let chunks_top = top / self.chunks_sidelen;
+        let chunks_bottom = (bottom - 1) / self.chunks_sidelen;
+        let chunks_left = left / self.chunks_sidelen;
+        let chunks_right = (right - 1) / self.chunks_sidelen;
+
+        for chunk_row in chunks_top..=chunks_bottom {
+            let chunk_top = chunk_row * self.chunks_sidelen;
+            let window_top = cmp::max(chunk_top, top);
+            let local_top = window_top - chunk_top;
+            let slice_top = window_top - top;
+
+            let chunk_bottom = chunk_top + self.chunks_sidelen;
+            let window_bottom = cmp::min(chunk_bottom, bottom);
+            let local_bottom = window_bottom - chunk_top;
+            let slice_bottom = window_bottom - top;
+
+            for chunk_col in chunks_left..=chunks_right {
+                let chunk_left = chunk_col * self.chunks_sidelen;
+                let window_left = cmp::max(chunk_left, left);
+                let local_left = window_left - chunk_left;
+                let slice_left = window_left - left;
+
+                let chunk_right = chunk_left + self.chunks_sidelen;
+                let window_right = cmp::min(chunk_right, right);
+                let local_right = window_right - chunk_left;
+                let slice_right = window_right - left;
+
+                let chunk = chunk_row * self.subsidelen + chunk_col;
+                match self.references[chunk] {
+                    Reference::Elided => {
+                        let subiter = SuperWindowIter::new(
+                            self,
+                            start,
+                            end,
+                            chunk,
+                            slice_bottom - slice_top,
+                            slice_right - slice_left,
+                        );
+                        subiters.push(SubwindowIter {
+                            subiter: Rc::new(RefCell::new(subiter)),
+                            top: slice_top,
+                            left: slice_left,
+                        });
+                    }
+                    Reference::Local(index) => {
+                        let chunk = self.local[index].clone();
+                        let subiter = chunk.iter_window(
+                            start,
+                            end,
+                            local_top,
+                            local_bottom,
+                            local_left,
+                            local_right,
+                        );
+                        subiters.push(SubwindowIter {
+                            subiter: Rc::new(RefCell::new(subiter)),
+                            top: slice_top,
+                            left: slice_left,
+                        });
+                    }
+                    Reference::External(cid) => {
+                        let chunk = self.resolver.borrow_mut().get_chunk(cid)?;
+                        let subiter = chunk.iter_window(
+                            start,
+                            end,
+                            local_top,
+                            local_bottom,
+                            local_left,
+                            local_right,
+                        );
+                        subiters.push(SubwindowIter {
+                            subiter: Rc::new(RefCell::new(subiter)),
+                            top: slice_top,
+                            left: slice_left,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(WindowIter {
+            subiters,
+            rows,
+            cols,
+            remaining: instants,
+        })
+    }
+
     /// Panics if given point is out of bounds for this chunk
     fn check_bounds(&self, instant: usize, row: usize, col: usize) {
         let [instants, rows, cols] = self.shape;
@@ -301,6 +406,121 @@ where
                 self.remaining -= 1;
 
                 Some(from_fixed(value, self.superchunk.fractional_bits))
+            }
+        }
+    }
+}
+
+pub struct WindowIter<N>
+where
+    N: Float + Debug,
+{
+    subiters: Vec<SubwindowIter<N>>,
+    rows: usize,
+    cols: usize,
+    remaining: usize,
+}
+
+struct SubwindowIter<N>
+where
+    N: Float + Debug,
+{
+    subiter: Rc<RefCell<dyn Iterator<Item = Array2<N>>>>,
+    top: usize,
+    left: usize,
+}
+
+impl<N> Iterator for WindowIter<N>
+where
+    N: Float + Debug,
+{
+    type Item = Array2<N>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.remaining {
+            0 => None,
+            _ => {
+                let mut window = Array2::zeros([self.rows, self.cols]);
+                for subiter in &self.subiters {
+                    let top = subiter.top;
+                    let left = subiter.left;
+                    let mut subiter = subiter.subiter.borrow_mut();
+                    let subwindow = subiter.next().expect("There should still be subwindows.");
+                    let shape = subwindow.shape();
+                    let rows = shape[0];
+                    let cols = shape[1];
+
+                    window
+                        .slice_mut(s![top..top + rows, left..left + cols])
+                        .assign(&subwindow);
+                }
+
+                self.remaining -= 1;
+
+                Some(window)
+            }
+        }
+    }
+}
+
+struct SuperWindowIter<M, N>
+where
+    M: Mapper,
+    N: Float + Debug,
+{
+    superchunk: Rc<Superchunk<M, N>>,
+    index: usize,
+    stride: usize,
+    remaining: usize,
+    rows: usize,
+    cols: usize,
+}
+
+impl<M, N> SuperWindowIter<M, N>
+where
+    M: Mapper,
+    N: Float + Debug,
+{
+    fn new(
+        superchunk: &Rc<Superchunk<M, N>>,
+        start: usize,
+        end: usize,
+        chunk_index: usize,
+        rows: usize,
+        cols: usize,
+    ) -> Self {
+        let stride = superchunk.subsidelen * superchunk.subsidelen;
+        let index = chunk_index + start * stride;
+        let remaining = end - start;
+
+        Self {
+            superchunk: Rc::clone(superchunk),
+            index,
+            stride,
+            remaining,
+            rows,
+            cols,
+        }
+    }
+}
+
+impl<M, N> Iterator for SuperWindowIter<M, N>
+where
+    M: Mapper,
+    N: Float + Debug,
+{
+    type Item = Array2<N>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.remaining {
+            0 => None,
+            _ => {
+                let value = self.superchunk.max.get(self.index);
+                let value = from_fixed(value, self.superchunk.fractional_bits);
+                self.index += self.stride;
+                self.remaining -= 1;
+
+                Some(Array2::from_elem((self.rows, self.cols), value))
             }
         }
     }
@@ -820,11 +1040,41 @@ mod tests {
 
                     Ok(())
                 }
+
+                #[test]
+                fn [<$name _test_iter_window>]() -> io::Result<()> {
+                    let (data, chunk) = $name()?;
+                    let [instants, rows, cols] = chunk.shape;
+                    for top in 0..rows / 2 {
+                        let bottom = top + rows / 2;
+                        for left in 0..cols / 2 {
+                            let right = left + cols / 2;
+                            let start = top + bottom;
+                            let end = instants - start;
+                            let window: Vec<Array2<f32>> = chunk.iter_window(
+                                start, end, top, bottom, left, right
+                            )?.collect();
+
+                            assert_eq!(window.len(), end - start);
+                            for i in 0..end - start {
+                                assert_eq!(window[i].shape(), [bottom - top, right - left]);
+                                assert_eq!(
+                                    window[i],
+                                    data[start + i].slice(s![top..bottom, left..right])
+                                );
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
             }
         };
     }
 
-    fn no_subchunks() -> io::Result<(Vec<Array2<f32>>, Rc<Superchunk<MemoryMapper, f32>>)> {
+    type DataChunk = io::Result<(Vec<Array2<f32>>, Rc<Superchunk<MemoryMapper, f32>>)>;
+
+    fn no_subchunks() -> DataChunk {
         let data = array8();
         let chunk = build_superchunk(data.clone().into_iter(), mapper(), 3, 2, Precise(3), 0)?;
         let chunk = Rc::new(chunk);
@@ -835,7 +1085,7 @@ mod tests {
 
     test_all_the_things!(no_subchunks);
 
-    fn local_subchunks() -> io::Result<(Vec<Array2<f32>>, Rc<Superchunk<MemoryMapper, f32>>)> {
+    fn local_subchunks() -> DataChunk {
         let data = array(16);
         let chunk = build_superchunk(
             data.clone().into_iter(),
@@ -854,7 +1104,7 @@ mod tests {
 
     test_all_the_things!(local_subchunks);
 
-    fn external_subchunks() -> io::Result<(Vec<Array2<f32>>, Rc<Superchunk<MemoryMapper, f32>>)> {
+    fn external_subchunks() -> DataChunk {
         let data = array(16);
         let chunk = build_superchunk(data.clone().into_iter(), mapper(), 2, 2, Precise(3), 0)?;
         let chunk = Rc::new(chunk);
@@ -875,7 +1125,7 @@ mod tests {
 
     test_all_the_things!(external_subchunks);
 
-    fn mixed_subchunks() -> io::Result<(Vec<Array2<f32>>, Rc<Superchunk<MemoryMapper, f32>>)> {
+    fn mixed_subchunks() -> DataChunk {
         let data = array(17);
         let chunk = build_superchunk(data.clone().into_iter(), mapper(), 2, 2, Precise(3), 8000)?;
         let chunk = Rc::new(chunk);
