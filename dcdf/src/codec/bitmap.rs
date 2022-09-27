@@ -1,8 +1,10 @@
-use crate::extio::{ExtendedRead, ExtendedWrite};
 use num_traits::PrimInt;
 use std::fmt::Debug;
 use std::io;
 use std::io::{Read, Write};
+
+use crate::cache::Cacheable;
+use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
 
 /// Used to build up a BitMap.
 ///
@@ -115,10 +117,10 @@ pub struct BitMap {
     pub bitmap: Vec<u32>,
 }
 
-impl BitMap {
+impl Serialize for BitMap {
     /// Write the bitmap to a stream
     ///
-    pub fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
+    fn write_to(&self, stream: &mut impl Write) -> io::Result<()> {
         stream.write_u32(self.length as u32)?;
         stream.write_u32(self.k as u32)?;
         for index_block in &self.index {
@@ -132,7 +134,7 @@ impl BitMap {
 
     /// Read a bitmap from a stream
     ///
-    pub fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
+    fn read_from(stream: &mut impl Read) -> io::Result<Self> {
         let length = stream.read_u32()? as usize;
         let k = stream.read_u32()? as usize;
 
@@ -155,13 +157,17 @@ impl BitMap {
             bitmap,
         })
     }
+}
 
+impl Cacheable for BitMap {
     /// Return number of bytes in serialized representation
     ///
-    pub fn size(&self) -> u64 {
+    fn size(&self) -> u64 {
         (4 + 4 + self.index.len() * 4 + self.bitmap.len() * 4) as u64
     }
+}
 
+impl BitMap {
     /// Get the bit at position `i`
     pub fn get(&self, i: usize) -> bool {
         let word_index = i / 32;

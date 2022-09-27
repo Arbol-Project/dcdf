@@ -6,10 +6,13 @@ use std::io;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 
+use crate::cache::Cacheable;
+use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
+use crate::geom;
+
 use super::bitmap::{BitMap, BitMapBuilder};
 use super::dac::Dac;
 use super::snapshot::Snapshot;
-use crate::extio::{ExtendedRead, ExtendedWrite};
 
 /// K²-Raster encoded Log
 ///
@@ -49,35 +52,35 @@ where
     sidelen: usize,
 }
 
-impl<I> Log<I>
+impl<I> Serialize for Log<I>
 where
     I: PrimInt + Debug,
 {
     /// Write a log to a stream
     ///
-    pub fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
+    fn write_to(&self, stream: &mut impl Write) -> io::Result<()> {
         stream.write_byte(self.k as u8)?;
         stream.write_u32(self.shape[0] as u32)?;
         stream.write_u32(self.shape[1] as u32)?;
         stream.write_u32(self.sidelen as u32)?;
-        self.nodemap.serialize(stream)?;
-        self.equal.serialize(stream)?;
-        self.max.serialize(stream)?;
-        self.min.serialize(stream)?;
+        self.nodemap.write_to(stream)?;
+        self.equal.write_to(stream)?;
+        self.max.write_to(stream)?;
+        self.min.write_to(stream)?;
 
         Ok(())
     }
 
     /// Read a log from a stream
     ///
-    pub fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
+    fn read_from(stream: &mut impl Read) -> io::Result<Self> {
         let k = stream.read_byte()? as i32;
         let shape = [stream.read_u32()? as usize, stream.read_u32()? as usize];
         let sidelen = stream.read_u32()? as usize;
-        let nodemap = BitMap::deserialize(stream)?;
-        let equal = BitMap::deserialize(stream)?;
-        let max = Dac::deserialize(stream)?;
-        let min = Dac::deserialize(stream)?;
+        let nodemap = BitMap::read_from(stream)?;
+        let equal = BitMap::read_from(stream)?;
+        let max = Dac::read_from(stream)?;
+        let min = Dac::read_from(stream)?;
 
         Ok(Self {
             _marker: PhantomData,
@@ -90,13 +93,23 @@ where
             sidelen,
         })
     }
+}
 
+impl<I> Cacheable for Log<I>
+where
+    I: PrimInt + Debug,
+{
     /// Return number of bytes in serialized representation
     ///
-    pub fn size(&self) -> u64 {
+    fn size(&self) -> u64 {
         1 + 4 + 4 + 4 + self.nodemap.size() + self.equal.size() + self.max.size() + self.min.size()
     }
+}
 
+impl<I> Log<I>
+where
+    I: PrimInt + Debug,
+{
     /// Build a log from a pair of two-dimensional arrays.
     ///
     /// The notional two-dimensional arrays are represented by `get_s' and `get_t`, which are
@@ -310,20 +323,10 @@ where
     ///
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
-    pub fn fill_window<S>(
-        &self,
-        mut set: S,
-        snapshot: &Snapshot<I>,
-        top: usize,
-        bottom: usize,
-        left: usize,
-        right: usize,
-    ) where
+    pub fn fill_window<S>(&self, mut set: S, snapshot: &Snapshot<I>, bounds: &geom::Rect)
+    where
         S: FnMut(usize, usize, i64),
     {
-        let rows = bottom - top;
-        let cols = right - left;
-
         let single_t = !self.nodemap.get(0);
         let single_s = !snapshot.nodemap.get(0);
 
@@ -332,33 +335,33 @@ where
             // for all cells
             let max_t: i64 = self.max.get(0);
             let max_s: i64 = snapshot.max.get(0);
-            for row in 0..rows {
-                for col in 0..cols {
+            for row in 0..bounds.rows() {
+                for col in 0..bounds.cols() {
                     set(row, col, max_t + max_s);
                 }
             }
         } else {
-            self._get_window(
+            self._fill_window(
                 &mut set,
                 snapshot,
                 self.sidelen,
-                top,
-                bottom - 1,
-                left,
-                right - 1,
+                bounds.top,
+                bounds.bottom - 1,
+                bounds.left,
+                bounds.right - 1,
                 if single_t { None } else { Some(0) },
                 if single_s { None } else { Some(0) },
                 self.max.get(0),
                 snapshot.max.get(0),
-                top,
-                left,
+                bounds.top,
+                bounds.left,
                 0,
                 0,
             );
         }
     }
 
-    fn _get_window<S>(
+    fn _fill_window<S>(
         &self,
         set: &mut S,
         snapshot: &Snapshot<I>,
@@ -443,7 +446,7 @@ where
                         }
                     }
                 } else if leaf_s {
-                    self._get_window(
+                    self._fill_window(
                         set,
                         snapshot,
                         sidelen,
@@ -479,7 +482,7 @@ where
                             }
                         }
                     }
-                    self._get_window(
+                    self._fill_window(
                         set,
                         snapshot,
                         sidelen,
@@ -497,7 +500,7 @@ where
                         left_offset_,
                     );
                 } else {
-                    self._get_window(
+                    self._fill_window(
                         set,
                         snapshot,
                         sidelen,
@@ -531,10 +534,7 @@ where
     pub fn search_window(
         &self,
         snapshot: &Snapshot<I>,
-        top: usize,
-        bottom: usize,
-        left: usize,
-        right: usize,
+        bounds: &geom::Rect,
         lower: I,
         upper: I,
     ) -> Vec<(usize, usize)> {
@@ -545,10 +545,10 @@ where
         self._search_window(
             snapshot,
             self.sidelen,
-            top,
-            bottom - 1,
-            left,
-            right - 1,
+            bounds.top,
+            bounds.bottom - 1,
+            bounds.left,
+            bounds.right - 1,
             lower.to_i64().unwrap(),
             upper.to_i64().unwrap(),
             if single_t { None } else { Some(0) },
@@ -960,7 +960,6 @@ mod tests {
         data.slice_mut(s![.., ..8, ..8]).assign(&array8());
         data.slice_mut(s![0, .., ..])
             .assign(&array9().slice(s![0, .., ..]));
-        println!("{data:?}");
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
 
@@ -1160,7 +1159,8 @@ mod tests {
             for bottom in top + 1..=8 {
                 for left in 0..8 {
                     for right in left + 1..=8 {
-                        let window = log.get_window(&snapshot, top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = log.get_window(&snapshot, &bounds);
                         let expected = data.slice(s![1, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1173,7 +1173,8 @@ mod tests {
             for bottom in top + 1..=8 {
                 for left in 0..8 {
                     for right in left + 1..=8 {
-                        let window = log.get_window(&snapshot, top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = log.get_window(&snapshot, &bounds);
                         let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1192,7 +1193,8 @@ mod tests {
             for bottom in top + 1..=8 {
                 for left in 0..8 {
                     for right in left + 1..=8 {
-                        let window = log.get_window(&snapshot, top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = log.get_window(&snapshot, &bounds);
                         let expected = data.slice(s![1, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1205,7 +1207,8 @@ mod tests {
             for bottom in top + 1..=8 {
                 for left in 0..8 {
                     for right in left + 1..=8 {
-                        let window = log.get_window(&snapshot, top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = log.get_window(&snapshot, &bounds);
                         let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1224,7 +1227,8 @@ mod tests {
             for bottom in top + 1..=9 {
                 for left in 0..9 {
                     for right in left + 1..=9 {
-                        let window = log.get_window(&snapshot, top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = log.get_window(&snapshot, &bounds);
                         let expected = data.slice(s![1, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1237,7 +1241,8 @@ mod tests {
             for bottom in top + 1..=9 {
                 for left in 0..9 {
                     for right in left + 1..=9 {
-                        let window = log.get_window(&snapshot, top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = log.get_window(&snapshot, &bounds);
                         let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1256,7 +1261,8 @@ mod tests {
             for bottom in top + 1..=9 {
                 for left in 0..9 {
                     for right in left + 1..=9 {
-                        let window = log.get_window(&snapshot, top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = log.get_window(&snapshot, &bounds);
                         let expected = data.slice(s![1, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1269,7 +1275,8 @@ mod tests {
             for bottom in top + 1..=9 {
                 for left in 0..9 {
                     for right in left + 1..=9 {
-                        let window = log.get_window(&snapshot, top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = log.get_window(&snapshot, &bounds);
                         let expected = data.slice(s![2, top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1289,7 +1296,8 @@ mod tests {
             for bottom in top + 1..=8 {
                 for left in 0..8 {
                     for right in left + 1..=8 {
-                        let window = log.get_window(&snapshot, top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = log.get_window(&snapshot, &bounds);
                         let expected = data_t.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1310,7 +1318,8 @@ mod tests {
             for bottom in top + 1..=8 {
                 for left in 0..8 {
                     for right in left + 1..=8 {
-                        let window = log.get_window(&snapshot, top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = log.get_window(&snapshot, &bounds);
                         let expected = data_t.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1331,7 +1340,8 @@ mod tests {
             for bottom in top + 1..=8 {
                 for left in 0..8 {
                     for right in left + 1..=8 {
-                        let window = log.get_window(&snapshot, top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = log.get_window(&snapshot, &bounds);
                         let expected = data_t.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1351,7 +1361,8 @@ mod tests {
             for bottom in top + 1..=8 {
                 for left in 0..8 {
                     for right in left + 1..=8 {
-                        let window = log.get_window(&snapshot, top, bottom, left, right);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let window = log.get_window(&snapshot, &bounds);
                         let expected = data_s.slice(s![top..bottom, left..right]);
                         assert_eq!(window, expected);
                     }
@@ -1380,9 +1391,8 @@ mod tests {
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
-                                let coords = log.search_window(
-                                    &snapshot, top, bottom, left, right, lower, upper,
-                                );
+                                let bounds = geom::Rect::new(top, bottom, left, right);
+                                let coords = log.search_window(&snapshot, &bounds, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -1407,9 +1417,8 @@ mod tests {
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
-                                let coords = log.search_window(
-                                    &snapshot, top, bottom, left, right, lower, upper,
-                                );
+                                let bounds = geom::Rect::new(top, bottom, left, right);
+                                let coords = log.search_window(&snapshot, &bounds, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -1441,9 +1450,8 @@ mod tests {
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
-                                let coords = log.search_window(
-                                    &snapshot, top, bottom, left, right, lower, upper,
-                                );
+                                let bounds = geom::Rect::new(top, bottom, left, right);
+                                let coords = log.search_window(&snapshot, &bounds, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -1468,9 +1476,8 @@ mod tests {
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
-                                let coords = log.search_window(
-                                    &snapshot, top, bottom, left, right, lower, upper,
-                                );
+                                let bounds = geom::Rect::new(top, bottom, left, right);
+                                let coords = log.search_window(&snapshot, &bounds, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -1496,16 +1503,14 @@ mod tests {
                     for right in left + 1..=9 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
-                                println!("{top}:{bottom},{left}:{right} {lower}-{upper}");
                                 let expected: Vec<(usize, usize)> = array_search_window(
                                     data1, top, bottom, left, right, lower, upper,
                                 );
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
-                                let coords = log.search_window(
-                                    &snapshot, top, bottom, left, right, lower, upper,
-                                );
+                                let bounds = geom::Rect::new(top, bottom, left, right);
+                                let coords = log.search_window(&snapshot, &bounds, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -1530,9 +1535,8 @@ mod tests {
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
-                                let coords = log.search_window(
-                                    &snapshot, top, bottom, left, right, lower, upper,
-                                );
+                                let bounds = geom::Rect::new(top, bottom, left, right);
+                                let coords = log.search_window(&snapshot, &bounds, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -1564,9 +1568,8 @@ mod tests {
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
-                                let coords = log.search_window(
-                                    &snapshot, top, bottom, left, right, lower, upper,
-                                );
+                                let bounds = geom::Rect::new(top, bottom, left, right);
+                                let coords = log.search_window(&snapshot, &bounds, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -1591,9 +1594,8 @@ mod tests {
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
-                                let coords = log.search_window(
-                                    &snapshot, top, bottom, left, right, lower, upper,
-                                );
+                                let bounds = geom::Rect::new(top, bottom, left, right);
+                                let coords = log.search_window(&snapshot, &bounds, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -1630,9 +1632,8 @@ mod tests {
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
-                                let coords = log.search_window(
-                                    &snapshot, top, bottom, left, right, lower, upper,
-                                );
+                                let bounds = geom::Rect::new(top, bottom, left, right);
+                                let coords = log.search_window(&snapshot, &bounds, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -1670,9 +1671,8 @@ mod tests {
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
-                                let coords = log.search_window(
-                                    &snapshot, top, bottom, left, right, lower, upper,
-                                );
+                                let bounds = geom::Rect::new(top, bottom, left, right);
+                                let coords = log.search_window(&snapshot, &bounds, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -1710,9 +1710,8 @@ mod tests {
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
-                                let coords = log.search_window(
-                                    &snapshot, top, bottom, left, right, lower, upper,
-                                );
+                                let bounds = geom::Rect::new(top, bottom, left, right);
+                                let coords = log.search_window(&snapshot, &bounds, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -1749,9 +1748,8 @@ mod tests {
                                 let expected: HashSet<(usize, usize)> =
                                     HashSet::from_iter(expected.iter().cloned());
 
-                                let coords = log.search_window(
-                                    &snapshot, top, bottom, left, right, lower, upper,
-                                );
+                                let bounds = geom::Rect::new(top, bottom, left, right);
+                                let coords = log.search_window(&snapshot, &bounds, lower, upper);
                                 let coords = HashSet::from_iter(coords.iter().cloned());
 
                                 assert_eq!(coords, expected);
@@ -1775,8 +1773,8 @@ mod tests {
             for bottom in top + 1..=8 {
                 for left in 0..8 {
                     for right in left + 1..=8 {
-                        let coords =
-                            log.search_window(&snapshot, top, bottom, left, right, 100, 200);
+                        let bounds = geom::Rect::new(top, bottom, left, right);
+                        let coords = log.search_window(&snapshot, &bounds, 100, 200);
                         assert_eq!(coords.len(), 0);
                     }
                 }

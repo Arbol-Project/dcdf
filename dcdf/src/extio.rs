@@ -2,6 +2,20 @@
 //!
 use std::io;
 
+pub trait Serialize: Sized {
+    /// Write self to a stream
+    fn write_to(&self, _stream: &mut impl io::Write) -> io::Result<()> {
+        // SMELL
+        unimplemented!("This object cannot be deserialized.");
+    }
+
+    /// Read Self from a stream
+    fn read_from(_stream: &mut impl io::Read) -> io::Result<Self> {
+        // SMELL
+        unimplemented!("This object cannot be deserialized.");
+    }
+}
+
 pub trait ExtendedRead: io::Read {
     /// Read a byte from a stream
     fn read_byte(&mut self) -> io::Result<u8>;

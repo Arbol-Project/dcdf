@@ -6,9 +6,16 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+cid = "0.8"
 num-traits = "0.2"
 ndarray = "0.15"
+parking_lot = "0.12"
 
 [dev-dependencies]
+multibase = "0.9"
+multihash = "0.16"
+paste = "1.0"
 rand = "0.8"
+serde = "1.0"
+serde_json = "1.0"
 tempfile = "3.3"

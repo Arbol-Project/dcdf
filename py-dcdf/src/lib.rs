@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::mem;
 use std::path::Path;
+use std::sync::Arc;
 
 use dcdf;
 
@@ -91,12 +92,14 @@ impl PyBuildI32 {
 
 #[pyclass]
 struct PyChunkI32 {
-    inner: dcdf::Chunk<i32>,
+    inner: Arc<dcdf::Chunk<i32>>,
 }
 
 impl PyChunkI32 {
     fn new(inner: dcdf::Chunk<i32>) -> Self {
-        Self { inner }
+        Self {
+            inner: Arc::new(inner),
+        }
     }
 }
 
@@ -146,11 +149,8 @@ impl PyChunkI32 {
         let rows = bottom - top;
         let cols = right - left;
         let mut a = Array::zeros((end - start, rows, cols));
-        for (i, w) in self
-            .inner
-            .iter_window(start, end, top, bottom, left, right)
-            .enumerate()
-        {
+        let bounds = dcdf::Cube::new(start, end, top, bottom, left, right);
+        for (i, w) in self.inner.iter_window(&bounds).enumerate() {
             // There must be a better way to do this
             for row in 0..rows {
                 for col in 0..cols {
@@ -172,9 +172,8 @@ impl PyChunkI32 {
         lower: i32,
         upper: i32,
     ) -> Vec<(usize, usize, usize)> {
-        self.inner
-            .iter_search(start, end, top, bottom, left, right, lower, upper)
-            .collect()
+        let bounds = dcdf::Cube::new(start, end, top, bottom, left, right);
+        self.inner.iter_search(&bounds, lower, upper).collect()
     }
 }
 
@@ -265,12 +264,14 @@ impl PyBuildF32 {
 
 #[pyclass]
 struct PyChunkF32 {
-    inner: dcdf::FChunk<f32>,
+    inner: Arc<dcdf::FChunk<f32>>,
 }
 
 impl PyChunkF32 {
     fn new(inner: dcdf::FChunk<f32>) -> Self {
-        Self { inner }
+        Self {
+            inner: Arc::new(inner),
+        }
     }
 }
 
@@ -317,7 +318,8 @@ impl PyChunkF32 {
         left: usize,
         right: usize,
     ) -> &'py PyArray3<f32> {
-        let a = self.inner.get_window(start, end, top, bottom, left, right);
+        let bounds = dcdf::Cube::new(start, end, top, bottom, left, right);
+        let a = self.inner.get_window(&bounds);
 
         a.into_pyarray(py)
     }
@@ -333,9 +335,8 @@ impl PyChunkF32 {
         lower: f32,
         upper: f32,
     ) -> Vec<(usize, usize, usize)> {
-        self.inner
-            .iter_search(start, end, top, bottom, left, right, lower, upper)
-            .collect()
+        let bounds = dcdf::Cube::new(start, end, top, bottom, left, right);
+        self.inner.iter_search(&bounds, lower, upper).collect()
     }
 }
 

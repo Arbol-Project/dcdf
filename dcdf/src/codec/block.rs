@@ -4,9 +4,12 @@ use std::fmt::Debug;
 use std::io;
 use std::io::{Read, Write};
 
+use crate::cache::Cacheable;
+use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
+use crate::geom;
+
 use super::log::Log;
 use super::snapshot::Snapshot;
-use crate::extio::{ExtendedRead, ExtendedWrite};
 
 /// A short series of time instants made up of one Snapshot encoding the first time instant and
 /// Logs encoding subsequent time instants.
@@ -62,23 +65,14 @@ where
     /// and call `block.fill_window` for each instant of interest, which is the strategy used by
     /// `chunk::Chunk.get_window`.
     ///
-    pub fn get_window(
-        &self,
-        instant: usize,
-        top: usize,
-        bottom: usize,
-        left: usize,
-        right: usize,
-    ) -> Array2<I>
+    pub fn get_window(&self, instant: usize, bounds: &geom::Rect) -> Array2<I>
     where
         I: PrimInt + Debug,
     {
-        let rows = bottom - top;
-        let cols = right - left;
-        let mut window = Array2::zeros([rows, cols]);
+        let mut window = Array2::zeros([bounds.rows(), bounds.cols()]);
         let set = |row, col, value| window[[row, col]] = I::from(value).unwrap();
 
-        self.fill_window(set, instant, top, bottom, left, right);
+        self.fill_window(set, instant, bounds);
 
         window
     }
@@ -90,20 +84,13 @@ where
     /// from the stored i64 to whatever the destination data type is. This is used, for instance,
     /// to convert from fixed point to floating point representation for floating point datasets.
     ///
-    pub fn fill_window<S>(
-        &self,
-        set: S,
-        instant: usize,
-        top: usize,
-        bottom: usize,
-        left: usize,
-        right: usize,
-    ) where
+    pub fn fill_window<S>(&self, set: S, instant: usize, bounds: &geom::Rect)
+    where
         S: FnMut(usize, usize, i64),
     {
         match instant {
-            0 => self.snapshot.fill_window(set, top, bottom, left, right),
-            _ => self.logs[instant - 1].fill_window(set, &self.snapshot, top, bottom, left, right),
+            0 => self.snapshot.fill_window(set, &bounds),
+            _ => self.logs[instant - 1].fill_window(set, &self.snapshot, bounds),
         }
     }
 
@@ -114,10 +101,7 @@ where
     pub fn search_window(
         &self,
         instant: usize,
-        top: usize,
-        bottom: usize,
-        left: usize,
-        right: usize,
+        bounds: &geom::Rect,
         lower: I,
         upper: I,
     ) -> Vec<(usize, usize)>
@@ -125,48 +109,48 @@ where
         I: PrimInt + Debug,
     {
         match instant {
-            0 => self
-                .snapshot
-                .search_window(top, bottom, left, right, lower, upper),
-            _ => self.logs[instant - 1].search_window(
-                &self.snapshot,
-                top,
-                bottom,
-                left,
-                right,
-                lower,
-                upper,
-            ),
+            0 => self.snapshot.search_window(bounds, lower, upper),
+            _ => self.logs[instant - 1].search_window(&self.snapshot, bounds, lower, upper),
         }
     }
+}
 
+impl<I> Serialize for Block<I>
+where
+    I: PrimInt + Debug,
+{
     /// Write a block to a stream
     ///
-    pub fn serialize(&self, stream: &mut impl Write) -> io::Result<()> {
+    fn write_to(&self, stream: &mut impl Write) -> io::Result<()> {
         stream.write_byte((self.logs.len() + 1) as u8)?;
-        self.snapshot.serialize(stream)?;
+        self.snapshot.write_to(stream)?;
         for log in &self.logs {
-            log.serialize(stream)?;
+            log.write_to(stream)?;
         }
         Ok(())
     }
 
     /// Read a block from a stream
     ///
-    pub fn deserialize(stream: &mut impl Read) -> io::Result<Self> {
+    fn read_from(stream: &mut impl Read) -> io::Result<Self> {
         let n_instants = stream.read_byte()? as usize;
-        let snapshot = Snapshot::deserialize(stream)?;
+        let snapshot = Snapshot::read_from(stream)?;
         let mut logs: Vec<Log<I>> = Vec::with_capacity(n_instants - 1);
         for _ in 0..n_instants - 1 {
-            let log = Log::deserialize(stream)?;
+            let log = Log::read_from(stream)?;
             logs.push(log);
         }
 
         Ok(Self { snapshot, logs })
     }
+}
 
+impl<I> Cacheable for Block<I>
+where
+    I: PrimInt + Debug,
+{
     /// Return the number of bytes in the serialized representation of the block
-    pub fn size(&self) -> u64 {
+    fn size(&self) -> u64 {
         1 // number of instants
         + self.snapshot.size()
         + self.logs.iter().map(|l| l.size()).sum::<u64>()
@@ -236,14 +220,14 @@ mod tests {
         );
 
         let mut file = tempfile()?;
-        block.serialize(&mut file)?;
+        block.write_to(&mut file)?;
         file.sync_all()?;
         file.rewind()?;
 
         // The number of time instants in the block is written as a single byte, so the maximum
         // number lof logs we can actually store in this block is 254. If we're allowed to actually
         // create the block, then serializing and deserializing will lead to incorrect behavior.
-        let block: Block<i32> = Block::deserialize(&mut file)?;
+        let block: Block<i32> = Block::read_from(&mut file)?;
         assert_eq!(block.logs.len(), 300);
 
         Ok(())
@@ -304,7 +288,8 @@ mod tests {
                     for left in 0..8 {
                         for right in left + 1..=8 {
                             let expected = data[t].slice(s![top..bottom, left..right]);
-                            assert_eq!(block.get_window(t, top, bottom, left, right), expected,);
+                            let bounds = geom::Rect::new(top, bottom, left, right);
+                            assert_eq!(block.get_window(t, &bounds), expected);
                         }
                     }
                 }
@@ -341,8 +326,8 @@ mod tests {
                                     );
                                     let expected: HashSet<(usize, usize)> =
                                         HashSet::from_iter(expected.into_iter());
-                                    let cells = block
-                                        .search_window(t, top, bottom, left, right, lower, upper);
+                                    let window = geom::Rect::new(top, bottom, left, right);
+                                    let cells = block.search_window(t, &window, lower, upper);
                                     let cells = HashSet::from_iter(cells.into_iter());
                                     assert_eq!(cells, expected);
                                 }
