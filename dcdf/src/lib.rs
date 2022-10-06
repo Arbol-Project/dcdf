@@ -13,13 +13,17 @@ pub use codec::Chunk;
 pub use codec::FChunk;
 
 pub use dag::commit::Commit;
+pub use dag::folder::Folder;
+pub use dag::folder::FolderItem;
 pub use dag::mapper::Link;
 pub use dag::mapper::Mapper;
 pub use dag::mapper::StoreWrite;
 pub use dag::resolver::Resolver;
 pub use dag::superchunk::build_superchunk;
 pub use dag::superchunk::Superchunk;
+pub use dag::superchunk::SuperchunkBuilder;
 
+pub use errors::Error;
 pub use errors::Result;
 
 pub use fixed::suggest_fraction;

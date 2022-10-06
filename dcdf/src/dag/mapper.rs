@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 
 /// A trait for storing and loading data from an arbitrary IPLD store.
 ///
-pub trait Mapper {
+pub trait Mapper: Send + Sync {
     /// Obtain an output stream for writing an object to the store.
     ///
     /// The CID for the object can be obtained from the `finish` method of the returned

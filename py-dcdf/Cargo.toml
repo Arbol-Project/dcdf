@@ -11,7 +11,9 @@ name = "py_dcdf"
 crate-type = ["cdylib"]
 
 [dependencies]
-dcdf = { path = "../dcdf"}
+cid = "0.8"
+dcdf = { path = "../dcdf" }
+dcdf-ipfs = { path = "../dcdf-ipfs" }
 ndarray = "0.15"
 numpy = "0.16"
 pyo3 = { version = "0.16", features = ["extension-module"] }

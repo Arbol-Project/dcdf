@@ -140,6 +140,14 @@ where
         self.shape
     }
 
+    /// Get a cell's value at a particular time instant.
+    ///
+    pub fn get(self: &Arc<Self>, instant: usize, row: usize, col: usize) -> Result<N> {
+        let mut iter = self.iter_cell(instant, instant + 1, row, col)?;
+
+        Ok(iter.next().unwrap())
+    }
+
     /// Iterate over a cell's value across time instants.
     ///
     pub fn iter_cell(
@@ -1242,6 +1250,22 @@ mod tests {
     macro_rules! test_all_the_things {
         ($name:ident) => {
             paste! {
+                #[test]
+                fn [<$name _test_get>]() -> Result<()> {
+                    let (data, chunk) = $name()?;
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    for instant in 0..instants {
+                        for row in 0..rows {
+                            for col in 0..cols {
+                                assert_eq!(chunk.get(instant, row, col)?, data[instant][[row, col]]);
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+
                 #[test]
                 fn [<$name _test_iter_cell>]() -> Result<()> {
                     let (data, chunk) = $name()?;

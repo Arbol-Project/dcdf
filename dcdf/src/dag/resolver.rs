@@ -146,7 +146,7 @@ where
 
     /// Compute the hash for a subchunk.
     ///
-    pub fn hash_subchunk(self: &Arc<Resolver<N>>, object: &FChunk<N>) -> Result<Cid> {
+    pub(crate) fn hash_subchunk(self: &Arc<Resolver<N>>, object: &FChunk<N>) -> Result<Cid> {
         let mut hasher = self.mapper.hash();
         object.write_to(&mut hasher)?;
 
