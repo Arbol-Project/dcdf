@@ -89,6 +89,9 @@ def datastream(dtype, resolver):
 
     c = c.update("b", b.cid)
 
+    bob = resolver.store_object(b"Hi mom!\n")
+    c = c.update("README.txt", bob)
+
     commit2 = dcdf.commit("Second commit", c, commit1, resolver)
 
     print(f"HEAD ({dtype}): {commit2}")
@@ -102,6 +105,9 @@ def test_make_a_couple_of_commits(datastream, resolver):
     assert commit.message == "Second commit"
 
     c = commit.root
+    bob = resolver.load_object(c["README.txt"].cid)
+    assert bob == b"Hi mom!\n"
+
     a = resolver.get_folder(c["a"].cid)
     b = resolver.get_folder(c["b"].cid)
 

@@ -8,6 +8,7 @@ use numpy::{IntoPyArray, PyArray1, PyArray3, PyReadonlyArray2};
 
 use pyo3::exceptions::{PyIndexError, PyKeyError};
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 
 use dcdf;
 use dcdf_ipfs::IpfsMapper;
@@ -60,6 +61,26 @@ impl PyResolverF32 {
         let root = Cid::from_str(root).expect("Invalid cid");
         let object = Cid::from_str(object).expect("Invalid cid");
         self.inner.insert(&root, path, &object).to_string()
+    }
+
+    pub fn load_object<'py>(&self, py: Python<'py>, cid: &str) -> PyResult<Option<PyObject>> {
+        let cid = Cid::from_str(cid).expect("Invalid cid");
+        Ok(match self.inner.load(&cid) {
+            Some(mut stream) => {
+                let mut object = Vec::new();
+                stream.read_to_end(&mut object)?;
+
+                Some(PyBytes::new(py, &object).into())
+            }
+            None => None,
+        })
+    }
+
+    pub fn store_object(&self, object: &[u8]) -> PyResult<String> {
+        let mut stream = self.inner.store();
+        stream.write_all(object)?;
+
+        Ok(stream.finish().to_string())
     }
 }
 
