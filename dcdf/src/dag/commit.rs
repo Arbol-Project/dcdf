@@ -47,7 +47,7 @@ where
         self.message.as_ref()
     }
 
-    pub fn prev(&self) -> Result<Option<Arc<Commit<N>>>> {
+    pub fn prev(&self) -> Result<Option<Arc<Self>>> {
         match self.prev {
             Some(cid) => Ok(Some(self.resolver.get_commit(&cid)?)),
             None => Ok(None),

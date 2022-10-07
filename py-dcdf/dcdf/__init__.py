@@ -7,6 +7,16 @@ _BUILDERS = {
     "float32": _dcdf.PyBuilderF32,
 }
 
+_SUPERCHUNK_BUILDERS = {
+    "float32": _dcdf.PySuperchunkBuilderF32,
+}
+
+_COMMIT_FUNCTIONS = {
+    _dcdf.PyFolderF32: _dcdf.commit_f32,
+}
+
+_256_MB = 1 << 28
+
 
 def build(instants, k=2, fraction=24, round=False):
     instants = iter(instants)
@@ -60,3 +70,30 @@ def load(file_or_path):
         return _dcdf.load(file_or_path)
 
     return _dcdf.load_from(file_or_path)
+
+
+def IpfsResolver(cache_bytes=_256_MB):
+    return _dcdf.new_ipfs_resolver(cache_bytes)
+
+
+def build_superchunk(
+    instants, levels, resolver, k=2, fraction=24, round=False, local_threshold=512
+):
+    instants = iter(instants)
+    first = next(instants)
+    dtype = first.dtype.name
+    Builder = _SUPERCHUNK_BUILDERS.get(dtype)
+    if Builder is None:
+        raise ValueError(f"Unsupported dtype: {dtype}")
+
+    builder = Builder(first, k, fraction, round, levels, resolver, local_threshold)
+
+    for instant in instants:
+        builder.push(instant)
+
+    return builder.finish()
+
+
+def commit(message, root, prev, resolver):
+    func = _COMMIT_FUNCTIONS[type(root)]
+    return func(message, root.cid, prev, resolver)
