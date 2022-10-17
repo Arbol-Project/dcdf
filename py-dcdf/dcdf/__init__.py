@@ -1,10 +1,30 @@
 import itertools
+import numpy
 
 from dcdf import _dcdf
+from dcdf.interfaces import (
+    Cid,
+    Commit,
+    Folder,
+    FolderItem,
+    Resolver,
+    Superchunk,
+)
+
+Resolver.register(_dcdf.PyResolverF32)
+Folder.register(_dcdf.PyFolderF32)
+FolderItem.register(_dcdf.PyFolderItem)
+Commit.register(_dcdf.PyCommitF32)
+Superchunk.register(_dcdf.PySuperchunkF32)
+
 
 _BUILDERS = {
     "int32": _dcdf.PyBuilderI32,
     "float32": _dcdf.PyBuilderF32,
+}
+
+_IPFS_RESOLVER_FACTORIES = {
+    "float32": _dcdf.new_ipfs_resolver_f32,
 }
 
 _SUPERCHUNK_BUILDERS = {
@@ -72,8 +92,13 @@ def load(file_or_path):
     return _dcdf.load_from(file_or_path)
 
 
-def IpfsResolver(cache_bytes=_256_MB):
-    return _dcdf.new_ipfs_resolver(cache_bytes)
+def new_ipfs_resolver(cache_bytes=_256_MB, dtype=numpy.float32):
+    dtype = numpy.dtype(dtype).name
+    factory = _IPFS_RESOLVER_FACTORIES.get(dtype)
+    if factory is None:
+        raise ValueError(f"Unsupported dtype: {dtype}")
+
+    return factory(cache_bytes)
 
 
 def build_superchunk(

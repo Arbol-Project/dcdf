@@ -77,6 +77,10 @@ impl dcdf::Mapper for IpfsMapper {
     fn insert(&self, root: &Cid, path: &str, object: &Cid) -> Cid {
         let root = root.to_string();
         let object = object.to_string();
+        println!("oh, um, hai!?");
+        println!("\troot: {root}");
+        println!("\tpath: {path}");
+        println!("\tobject: {object}");
         let future = self
             .client
             .object_patch_add_link(&root, path, &object, true);

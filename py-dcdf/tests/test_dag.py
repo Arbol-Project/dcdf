@@ -64,8 +64,7 @@ def dtype(request):
 
 @pytest.fixture(scope="session")
 def resolver(dtype):
-    if dtype == numpy.float32:
-        return dcdf.IpfsResolver()
+    return dcdf.new_ipfs_resolver(dtype=dtype)
 
 
 @pytest.fixture(scope="session")

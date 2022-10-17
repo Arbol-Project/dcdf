@@ -71,7 +71,7 @@ where
         let get_s = |row, col| self.snap_array[[row, col]].to_i64().unwrap();
         let new_log = Log::build(get_s, get_t, [self.rows, self.cols], self.k);
 
-        if new_snapshot.size() <= new_log.size() {
+        if self.logs.len() == 254 || new_snapshot.size() <= new_log.size() {
             self.count_snapshots += 1;
             self.count_logs += self.logs.len();
 
@@ -187,7 +187,7 @@ where
         };
         let new_log = Log::build(get_s, get_t, [self.rows, self.cols], self.k);
 
-        if new_snapshot.size() <= new_log.size() {
+        if self.logs.len() == 254 || new_snapshot.size() <= new_log.size() {
             self.count_snapshots += 1;
             self.count_logs += self.logs.len();
 

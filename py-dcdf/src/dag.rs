@@ -20,7 +20,7 @@ fn convert_error(cause: dcdf::Error) -> PyErr {
 }
 
 #[pyfunction]
-pub fn new_ipfs_resolver(cache_bytes: u64) -> PyResolverF32 {
+pub fn new_ipfs_resolver_f32(cache_bytes: u64) -> PyResolverF32 {
     let mapper = Box::new(IpfsMapper::new());
     PyResolverF32 {
         inner: Arc::new(dcdf::Resolver::new(mapper, cache_bytes)),
@@ -226,6 +226,7 @@ impl PySuperchunkBuilderF32 {
     fn finish(&mut self) -> PyResult<String> {
         let build = mem::replace(&mut self.inner, None).expect("finish called twice");
         let chunk = build.finish().map_err(convert_error)?;
+        println!("oh my! {}", chunk.size());
         let cid = self.resolver.save(chunk).map_err(convert_error)?;
 
         Ok(cid.to_string())

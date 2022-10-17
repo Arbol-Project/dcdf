@@ -399,7 +399,7 @@ where
     }
 
     /// Return size of serialized superchunk in bytes
-    pub(crate) fn size(&self) -> u64 {
+    pub fn size(&self) -> u64 {
         4 * 3  // shape
         + 4    // sidelen
         + 1    // levels
@@ -1030,6 +1030,8 @@ where
         let mut max = Vec::new();
         let mut min = Vec::new();
 
+        println!("Building superchunk with {subsidelen}x{subsidelen} ({subchunks}) subchunks");
+        println!("\tsubchunk size: {chunks_sidelen}x{chunks_sidelen}");
         for (subarray, min_value, max_value) in iter_subarrays(first, subsidelen, chunks_sidelen) {
             builders.push(FBuilder::new(subarray, k, fraction));
             min.push(min_value);
@@ -1110,9 +1112,13 @@ where
                 };
                 references.push(Reference::Local(index))
             } else {
+                let size = chunk.size();
                 let cid = self.resolver.save_leaf(chunk)?;
                 let short = cid.to_string();
                 let short = short[short.len() - 8..].as_bytes();
+                if size > 1000000 {
+                    println!("Big chunk: {:?}: {}", short, size);
+                }
                 external.insert(short.clone().try_into().unwrap(), cid);
                 references.push(Reference::External(short.try_into().unwrap()));
             }
