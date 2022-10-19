@@ -2,11 +2,11 @@ use num_traits::PrimInt;
 use std::cmp::min;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::io;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 
 use crate::cache::Cacheable;
+use crate::errors::Result;
 use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
 use crate::geom;
 
@@ -58,7 +58,7 @@ where
 {
     /// Write a log to a stream
     ///
-    fn write_to(&self, stream: &mut impl Write) -> io::Result<()> {
+    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
         stream.write_byte(self.k as u8)?;
         stream.write_u32(self.shape[0] as u32)?;
         stream.write_u32(self.shape[1] as u32)?;
@@ -73,7 +73,7 @@ where
 
     /// Read a log from a stream
     ///
-    fn read_from(stream: &mut impl Read) -> io::Result<Self> {
+    fn read_from(stream: &mut impl Read) -> Result<Self> {
         let k = stream.read_byte()? as i32;
         let shape = [stream.read_u32()? as usize, stream.read_u32()? as usize];
         let sidelen = stream.read_u32()? as usize;

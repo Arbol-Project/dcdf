@@ -2,12 +2,12 @@ use ndarray::Array2;
 use num_traits::{Float, PrimInt};
 use std::any::TypeId;
 use std::fmt::Debug;
-use std::io;
 use std::io::{Read, Write};
 use std::mem::{replace, size_of};
 
 use super::cache::Cacheable;
 use super::codec::{Block, Chunk, FChunk, Log, Snapshot};
+use super::errors::Result;
 use super::extio::{ExtendedRead, ExtendedWrite, Serialize};
 use super::fixed::{to_fixed, Fraction, Precise, Round};
 
@@ -249,7 +249,7 @@ impl<I: 'static> Build<I>
 where
     I: PrimInt + Debug,
 {
-    pub fn save(&self, stream: &mut impl Write) -> io::Result<()> {
+    pub fn save(&self, stream: &mut impl Write) -> Result<()> {
         stream.write_u16(MAGIC_NUMBER)?;
         stream.write_u32(FORMAT_VERSION)?;
         stream.write_i32(self.type_code())?;
@@ -282,7 +282,7 @@ impl<F> FBuild<F>
 where
     F: Float + Debug,
 {
-    pub fn save(&self, stream: &mut impl Write) -> io::Result<()> {
+    pub fn save(&self, stream: &mut impl Write) -> Result<()> {
         let type_code = size_of::<F>() as i32 * 8;
         stream.write_u16(MAGIC_NUMBER)?;
         stream.write_u32(FORMAT_VERSION)?;
@@ -304,7 +304,7 @@ pub enum DataChunk {
 
 pub use DataChunk::{F32, F64, I32, I64, U32, U64};
 
-pub fn load(stream: &mut impl Read) -> io::Result<DataChunk> {
+pub fn load(stream: &mut impl Read) -> Result<DataChunk> {
     let magic_number = stream.read_u16()?;
     if magic_number != MAGIC_NUMBER {
         panic!("File is not a DCDF file.");
@@ -424,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn save_load_i32() -> io::Result<()> {
+    fn save_load_i32() -> Result<()> {
         let data = array();
         let built = build(data.into_iter(), 2);
 
@@ -450,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn save_load_u32() -> io::Result<()> {
+    fn save_load_u32() -> Result<()> {
         let data = array();
         let data: Vec<Array2<u32>> = data.into_iter().map(|a| a.map(|n| *n as u32)).collect();
         let built = build(data.into_iter(), 2);
@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn save_load_i64() -> io::Result<()> {
+    fn save_load_i64() -> Result<()> {
         let data = array();
         let data: Vec<Array2<i64>> = data.into_iter().map(|a| a.map(|n| *n as i64)).collect();
         let built = build(data.into_iter(), 2);
@@ -504,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn save_load_u64() -> io::Result<()> {
+    fn save_load_u64() -> Result<()> {
         let data = array();
         let data: Vec<Array2<u64>> = data.into_iter().map(|a| a.map(|n| *n as u64)).collect();
         let built = build(data.into_iter(), 2);
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn save_load_f32() -> io::Result<()> {
+    fn save_load_f32() -> Result<()> {
         let data = array_float();
         let built = buildf(data.into_iter(), 2, Precise(3));
 
@@ -571,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn save_load_f64() -> io::Result<()> {
+    fn save_load_f64() -> Result<()> {
         let data = array_float();
         let data: Vec<Array2<f64>> = data.into_iter().map(|a| a.map(|n| *n as f64)).collect();
         let built = buildf(data.into_iter(), 2, Precise(3));
@@ -598,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn save_load_f64_round() -> io::Result<()> {
+    fn save_load_f64_round() -> Result<()> {
         let data = array_float();
         let data: Vec<Array2<f64>> = data.into_iter().map(|a| a.map(|n| *n as f64)).collect();
         let built = buildf(data.into_iter(), 2, Round(2));

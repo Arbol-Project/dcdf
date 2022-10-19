@@ -1,15 +1,16 @@
 use std::cell::RefCell;
 use std::cmp;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io;
 use std::mem;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use cid::Cid;
 use ndarray::{s, Array2, Array3, ArrayBase, DataMut, Ix3};
 use num_traits::Float;
+use parking_lot::Mutex;
 
 use crate::cache::Cacheable;
 use crate::codec::Dac;
@@ -21,11 +22,9 @@ use crate::geom;
 use crate::helpers::rearrange;
 use crate::simple::FBuilder;
 
-use super::node::Node;
+use super::links::Links;
+use super::node::{Node, NODE_SUPERCHUNK};
 use super::resolver::Resolver;
-
-const NODE_SUPERCHUNK: u8 = 2;
-type ShortHash = [u8; 8];
 
 /// A time series raster subdivided into a number of K²-Raster encoded chunks.
 ///
@@ -63,7 +62,8 @@ where
     local: Vec<Arc<FChunk<N>>>,
 
     /// Hashes of externally stored subchunks
-    external: BTreeMap<ShortHash, Cid>,
+    external_cid: Cid,
+    external: Mutex<Option<Weak<Links>>>,
 
     /// Resolver for retrieving subchunks
     resolver: Arc<Resolver<N>>,
@@ -82,58 +82,6 @@ impl<N> Superchunk<N>
 where
     N: Float + Debug + 'static,
 {
-    /// Load superchunk from a stream
-    fn load_from(
-        resolver: &Arc<Resolver<N>>,
-        stream: &mut impl io::Read,
-        external: BTreeMap<ShortHash, Cid>,
-    ) -> Result<Self> {
-        Self::read_header(stream)?;
-
-        let instants = stream.read_u32()? as usize;
-        let rows = stream.read_u32()? as usize;
-        let cols = stream.read_u32()? as usize;
-        let shape = [instants, rows, cols];
-
-        let sidelen = stream.read_u32()? as usize;
-        let levels = stream.read_byte()? as usize;
-        let chunks_sidelen = stream.read_u32()? as usize;
-        let subsidelen = stream.read_u32()? as usize;
-        let fractional_bits = stream.read_byte()? as usize;
-
-        let n_references = stream.read_u32()? as usize;
-        let mut references = Vec::with_capacity(n_references);
-        for _ in 0..n_references {
-            let reference = Reference::read_from(stream)?;
-            references.push(reference);
-        }
-
-        let n_local = stream.read_u32()? as usize;
-        let mut local = Vec::with_capacity(n_local);
-        for _ in 0..n_local {
-            let chunk = FChunk::read_from(stream)?;
-            local.push(Arc::new(chunk));
-        }
-
-        let max = Dac::read_from(stream)?;
-        let min = Dac::read_from(stream)?;
-
-        Ok(Self {
-            shape,
-            sidelen,
-            levels,
-            chunks_sidelen,
-            subsidelen,
-            fractional_bits,
-            references,
-            local,
-            external,
-            max,
-            min,
-            resolver: Arc::clone(resolver),
-        })
-    }
-
     /// Get the shape of the overall time series raster
     ///
     pub fn shape(&self) -> [usize; 3] {
@@ -181,9 +129,10 @@ where
                     )),
                 })
             }
-            Reference::External(short) => {
-                let cid = self.external.get(&short).unwrap();
-                let chunk = self.resolver.get_subchunk(&cid)?;
+            Reference::External(index) => {
+                let external = &self.external()?;
+                let cid = &external[index];
+                let chunk = self.resolver.get_subchunk(cid)?;
 
                 Ok(CellIter {
                     inner: Rc::new(RefCell::new(
@@ -246,9 +195,10 @@ where
                     let chunk = &self.local[index];
                     chunk.fill_window(&bounds, &mut subwindow);
                 }
-                Reference::External(short) => {
-                    let cid = self.external.get(&short).unwrap();
-                    let chunk = self.resolver.get_subchunk(&cid)?;
+                Reference::External(index) => {
+                    let external = &self.external()?;
+                    let cid = &external[index];
+                    let chunk = self.resolver.get_subchunk(cid)?;
                     chunk.fill_window(&bounds, &mut subwindow);
                 }
             }
@@ -298,8 +248,9 @@ where
                         left: subchunk.slice.left,
                     });
                 }
-                Reference::External(short) => {
-                    let cid = self.external.get(&short).unwrap();
+                Reference::External(index) => {
+                    let external = self.external()?;
+                    let cid = external[index];
                     let chunk = self.resolver.get_subchunk(&cid)?;
                     let subiter = chunk.iter_window(&bounds);
                     subiters.push(SubwindowIter {
@@ -398,8 +349,29 @@ where
         }
     }
 
+    fn external(&self) -> Result<Arc<Links>> {
+        // Try to use cached version. Because we only store a weak reference locally, the LRU cache
+        // is still in charge of whether an object is still available.
+        let mut external = self.external.lock();
+        if let Some(links) = &*external {
+            if let Some(links) = links.upgrade() {
+                return Ok(links);
+            }
+        }
+
+        let links = self.resolver.get_links(&self.external_cid)?;
+        *external = Some(Arc::downgrade(&links));
+
+        Ok(links)
+    }
+}
+
+impl<N> Cacheable for Superchunk<N>
+where
+    N: Float + Debug + 'static,
+{
     /// Return size of serialized superchunk in bytes
-    pub fn size(&self) -> u64 {
+    fn size(&self) -> u64 {
         4 * 3  // shape
         + 4    // sidelen
         + 1    // levels
@@ -421,30 +393,55 @@ where
 {
     const NODE_TYPE: u8 = NODE_SUPERCHUNK;
 
-    fn store(self, resolver: &Arc<Resolver<N>>) -> Result<Cid> {
-        let mut folder = resolver.init();
-        for (name, cid) in &self.external {
-            folder = folder.update(String::from_utf8_lossy(name), cid);
+    /// Load superchunk from a stream
+    fn load_from(resolver: &Arc<Resolver<N>>, stream: &mut impl io::Read) -> Result<Self> {
+        Self::read_header(stream)?;
+
+        let instants = stream.read_u32()? as usize;
+        let rows = stream.read_u32()? as usize;
+        let cols = stream.read_u32()? as usize;
+        let shape = [instants, rows, cols];
+
+        let sidelen = stream.read_u32()? as usize;
+        let levels = stream.read_byte()? as usize;
+        let chunks_sidelen = stream.read_u32()? as usize;
+        let subsidelen = stream.read_u32()? as usize;
+        let fractional_bits = stream.read_byte()? as usize;
+
+        let n_references = stream.read_u32()? as usize;
+        let mut references = Vec::with_capacity(n_references);
+        for _ in 0..n_references {
+            let reference = Reference::read_from(stream)?;
+            references.push(reference);
         }
-        folder = folder.update("index.dat", &resolver.save_leaf(self)?);
 
-        Ok(folder.cid())
-    }
+        let external_cid = Cid::read_bytes(&mut *stream)?;
 
-    fn retrieve(resolver: &Arc<Resolver<N>>, cid: &Cid) -> Result<Option<Self>> {
-        let folder = resolver.get_folder(cid);
-        let mut external = BTreeMap::new();
-        for (name, item) in folder.iter() {
-            if name == "index.dat" {
-                continue;
-            }
-            external.insert(name.as_bytes().try_into().expect("invalid name"), item.cid);
+        let n_local = stream.read_u32()? as usize;
+        let mut local = Vec::with_capacity(n_local);
+        for _ in 0..n_local {
+            let chunk = FChunk::read_from(stream)?;
+            local.push(Arc::new(chunk));
         }
 
-        let index = folder.get("index.dat").expect("Not a superchunk.");
-        let mut stream = resolver.load(&index.cid).unwrap();
+        let max = Dac::read_from(stream)?;
+        let min = Dac::read_from(stream)?;
 
-        Ok(Some(Self::load_from(resolver, &mut stream, external)?))
+        Ok(Self {
+            shape,
+            sidelen,
+            levels,
+            chunks_sidelen,
+            subsidelen,
+            fractional_bits,
+            references,
+            local,
+            external_cid,
+            external: Mutex::new(None),
+            max,
+            min,
+            resolver: Arc::clone(resolver),
+        })
     }
 }
 
@@ -453,7 +450,7 @@ where
     N: Float + Debug + 'static,
 {
     /// Save superchunk to a stream
-    fn write_to(&self, stream: &mut impl io::Write) -> io::Result<()> {
+    fn write_to(&self, stream: &mut impl io::Write) -> Result<()> {
         stream.write_u32(self.shape[0] as u32)?;
         stream.write_u32(self.shape[1] as u32)?;
         stream.write_u32(self.shape[2] as u32)?;
@@ -468,6 +465,8 @@ where
         for reference in &self.references {
             reference.write_to(stream)?;
         }
+
+        self.external_cid.write_bytes(&mut *stream)?;
 
         stream.write_u32(self.local.len() as u32)?;
         for chunk in &self.local {
@@ -771,8 +770,9 @@ where
 
                         Some(Rc::new(RefCell::new(subiter)))
                     }
-                    Reference::External(short) => {
-                        let cid = self.chunk.external.get(&short).unwrap();
+                    Reference::External(index) => {
+                        let external = self.chunk.external()?;
+                        let cid = &external[index];
                         let chunk = self.chunk.resolver.get_subchunk(&cid)?;
                         let subiter = chunk.iter_search(&bounds, self.lower, self.upper);
 
@@ -911,7 +911,7 @@ where
 enum Reference {
     Elided,
     Local(usize),
-    External(ShortHash),
+    External(usize),
 }
 
 const REFERENCE_ELIDED: u8 = 0;
@@ -920,7 +920,7 @@ const REFERENCE_EXTERNAL: u8 = 2;
 
 impl Serialize for Reference {
     /// Write self to a stream
-    fn write_to(&self, stream: &mut impl io::Write) -> io::Result<()> {
+    fn write_to(&self, stream: &mut impl io::Write) -> Result<()> {
         match self {
             Reference::Elided => {
                 stream.write_byte(REFERENCE_ELIDED)?;
@@ -929,9 +929,9 @@ impl Serialize for Reference {
                 stream.write_byte(REFERENCE_LOCAL)?;
                 stream.write_u32(*index as u32)?;
             }
-            Reference::External(short) => {
+            Reference::External(index) => {
                 stream.write_byte(REFERENCE_EXTERNAL)?;
-                stream.write_all(short)?;
+                stream.write_u32(*index as u32)?;
             }
         }
 
@@ -939,15 +939,11 @@ impl Serialize for Reference {
     }
 
     /// Read Self from a stream
-    fn read_from(stream: &mut impl io::Read) -> io::Result<Self> {
+    fn read_from(stream: &mut impl io::Read) -> Result<Self> {
         let node = match stream.read_byte()? {
             REFERENCE_ELIDED => Reference::Elided,
             REFERENCE_LOCAL => Reference::Local(stream.read_u32()? as usize),
-            REFERENCE_EXTERNAL => {
-                let mut short = [0; 8];
-                stream.read_exact(&mut short)?;
-                Reference::External(short)
-            }
+            REFERENCE_EXTERNAL => Reference::External(stream.read_u32()? as usize),
             _ => panic!("Unrecognized reference type"),
         };
 
@@ -961,7 +957,7 @@ impl Cacheable for Reference {
         match self {
             Reference::Elided => 1,
             Reference::Local(_) => 1 + 4,
-            Reference::External(_) => 1 + 8,
+            Reference::External(_) => 1 + 4,
         }
     }
 }
@@ -1092,7 +1088,8 @@ where
             .collect();
         let mut local_references: HashMap<Cid, usize> = HashMap::new();
         let mut local = Vec::new();
-        let mut external = BTreeMap::new();
+        let mut external_references: HashMap<Cid, usize> = HashMap::new();
+        let mut external = Links::new();
         let mut references = Vec::new();
         let instants = chunks[0].shape()[0];
         for (i, chunk) in chunks.into_iter().enumerate() {
@@ -1112,17 +1109,22 @@ where
                 };
                 references.push(Reference::Local(index))
             } else {
-                let size = chunk.size();
                 let cid = self.resolver.save_leaf(chunk)?;
-                let short = cid.to_string();
-                let short = short[short.len() - 8..].as_bytes();
-                if size > 1000000 {
-                    println!("Big chunk: {:?}: {}", short, size);
-                }
-                external.insert(short.clone().try_into().unwrap(), cid);
-                references.push(Reference::External(short.try_into().unwrap()));
+                let index = match external_references.get(&cid) {
+                    Some(index) => *index,
+                    None => {
+                        let index = external.len();
+                        external.push(cid);
+                        external_references.insert(cid, index);
+
+                        index
+                    }
+                };
+                references.push(Reference::External(index));
             }
         }
+
+        let external_cid = self.resolver.save(external)?;
 
         let (round, bits) = match self.fraction {
             Round(bits) => (true, bits),
@@ -1148,7 +1150,8 @@ where
             max: Dac::from(max),
             min: Dac::from(min),
             local,
-            external,
+            external_cid,
+            external: Mutex::new(None),
             resolver: Arc::clone(&self.resolver),
             fractional_bits: bits,
             chunks_sidelen: self.chunks_sidelen,
@@ -1693,15 +1696,16 @@ mod tests {
         )?;
         assert_eq!(chunk.references.len(), 16);
 
-        let cids = chunk.references.iter().map(|r| match r {
-            Reference::External(cid) => *cid,
-            _ => {
-                panic!("Expecting extnernal references only");
+        for reference in &chunk.references {
+            match reference {
+                Reference::External(_) => {}
+                _ => {
+                    panic!("Expecting external references only");
+                }
             }
-        });
+        }
 
-        let unique_cids: HashSet<ShortHash> = HashSet::from_iter(cids);
-        assert_eq!(unique_cids.len(), 4);
+        assert_eq!(chunk.external()?.len(), 4);
 
         Ok((data, chunk))
     }

@@ -1,10 +1,10 @@
 use ndarray::Array2;
 use num_traits::PrimInt;
 use std::fmt::Debug;
-use std::io;
 use std::io::{Read, Write};
 
 use crate::cache::Cacheable;
+use crate::errors::Result;
 use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
 use crate::geom;
 
@@ -121,7 +121,7 @@ where
 {
     /// Write a block to a stream
     ///
-    fn write_to(&self, stream: &mut impl Write) -> io::Result<()> {
+    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
         stream.write_byte((self.logs.len() + 1) as u8)?;
         self.snapshot.write_to(stream)?;
         for log in &self.logs {
@@ -132,7 +132,7 @@ where
 
     /// Read a block from a stream
     ///
-    fn read_from(stream: &mut impl Read) -> io::Result<Self> {
+    fn read_from(stream: &mut impl Read) -> Result<Self> {
         let n_instants = stream.read_byte()? as usize;
         let snapshot = Snapshot::read_from(stream)?;
         let mut logs: Vec<Log<I>> = Vec::with_capacity(n_instants - 1);
@@ -201,7 +201,7 @@ mod tests {
         ])
     }
 
-    fn too_many_logs() -> io::Result<()> {
+    fn too_many_logs() -> Result<()> {
         let data = array8();
         let snapshot = data.slice(s![0, .., ..]);
         let logs = vec![

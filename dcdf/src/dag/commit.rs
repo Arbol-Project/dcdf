@@ -9,10 +9,8 @@ use crate::errors::Result;
 use crate::extio::Serialize;
 
 use super::folder::Folder;
-use super::node::Node;
+use super::node::{Node, NODE_COMMIT};
 use super::resolver::Resolver;
-
-const NODE_COMMIT: u8 = 4;
 
 pub struct Commit<N>
 where

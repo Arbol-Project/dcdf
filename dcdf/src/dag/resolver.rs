@@ -11,6 +11,7 @@ use crate::extio::Serialize;
 
 use super::commit::Commit;
 use super::folder::Folder;
+use super::links::Links;
 use super::mapper::{Mapper, StoreWrite};
 use super::node::Node;
 use super::superchunk::Superchunk;
@@ -34,6 +35,7 @@ where
     N: Float + Debug + 'static,
 {
     Commit(Arc<Commit<N>>),
+    Links(Arc<Links>),
     Subchunk(Arc<FChunk<N>>),
     Superchunk(Arc<Superchunk<N>>),
 }
@@ -45,6 +47,7 @@ where
     fn size(&self) -> u64 {
         match self {
             CacheItem::Commit(_) => 1, // not important
+            CacheItem::Links(links) => links.size(),
             CacheItem::Subchunk(chunk) => chunk.size(),
             CacheItem::Superchunk(chunk) => chunk.size(),
         }
@@ -141,6 +144,27 @@ where
         match &*item {
             CacheItem::Subchunk(chunk) => Ok(Arc::clone(&chunk)),
             _ => panic!("Expecting subchunk."),
+        }
+    }
+
+    /// Get a `Links` from the data store.
+    ///
+    /// # Arguments
+    ///
+    /// * `cid` - The CID of the links to retreive.
+    ///
+    pub(crate) fn get_links(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<Links>> {
+        let item = self.cache.get(cid, |cid| {
+            let links = Links::retrieve(self, &cid)?;
+            match links {
+                Some(links) => Ok(Some(CacheItem::Links(Arc::new(links)))),
+                None => Ok(None),
+            }
+        })?;
+
+        match &*item {
+            CacheItem::Links(links) => Ok(Arc::clone(&links)),
+            _ => panic!("Expecting links."),
         }
     }
 

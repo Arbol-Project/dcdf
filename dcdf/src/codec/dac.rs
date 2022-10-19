@@ -14,10 +14,10 @@
 //!
 use num_traits::PrimInt;
 use std::fmt::Debug;
-use std::io;
 use std::io::{Read, Write};
 
 use crate::cache::Cacheable;
+use crate::errors::Result;
 use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
 
 use super::bitmap::{BitMap, BitMapBuilder};
@@ -30,7 +30,7 @@ pub struct Dac {
 impl Serialize for Dac {
     /// Write the dac to a stream
     ///
-    fn write_to(&self, stream: &mut impl Write) -> io::Result<()> {
+    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
         stream.write_byte(self.levels.len() as u8)?;
         for (bitmap, bytes) in &self.levels {
             bitmap.write_to(stream)?;
@@ -41,7 +41,7 @@ impl Serialize for Dac {
 
     /// Read the dac from a stream
     ///
-    fn read_from(stream: &mut impl Read) -> io::Result<Self> {
+    fn read_from(stream: &mut impl Read) -> Result<Self> {
         let n_levels = stream.read_byte()? as usize;
         let mut levels = Vec::with_capacity(n_levels);
         for _ in 0..n_levels {
