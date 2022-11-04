@@ -35,6 +35,7 @@ where
     N: Float + Debug + 'static,
 {
     Commit(Arc<Commit<N>>),
+    Folder(Arc<Folder<N>>),
     Links(Arc<Links>),
     Subchunk(Arc<FChunk<N>>),
     Superchunk(Arc<Superchunk<N>>),
@@ -47,6 +48,7 @@ where
     fn size(&self) -> u64 {
         match self {
             CacheItem::Commit(_) => 1, // not important
+            CacheItem::Folder(folder) => folder.size(),
             CacheItem::Links(links) => links.size(),
             CacheItem::Subchunk(chunk) => chunk.size(),
             CacheItem::Superchunk(chunk) => chunk.size(),
@@ -80,8 +82,19 @@ where
     ///
     /// * `cid` - The CID of the folder to retreive.
     ///
-    pub fn get_folder(self: &Arc<Resolver<N>>, cid: &Cid) -> Arc<Folder<N>> {
-        Folder::new(self, *cid, self.mapper.ls(cid))
+    pub fn get_folder(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<Folder<N>>> {
+        let item = self.cache.get(cid, |cid| {
+            let folder = Folder::retrieve(self, &cid)?;
+            match folder {
+                Some(folder) => Ok(Some(CacheItem::Folder(Arc::new(folder)))),
+                None => Ok(None),
+            }
+        })?;
+
+        match &*item {
+            CacheItem::Folder(folder) => Ok(Arc::clone(&folder)),
+            _ => panic!("Expecting folder."),
+        }
     }
 
     /// Get a `Commit` from the data store.
@@ -213,19 +226,5 @@ where
     ///
     pub fn store(&self) -> Box<dyn StoreWrite + '_> {
         self.mapper.store()
-    }
-
-    /// Initialize a new DAG
-    ///
-    pub fn init(self: &Arc<Resolver<N>>) -> Arc<Folder<N>> {
-        let cid = self.mapper.init();
-
-        Folder::new(self, cid, vec![])
-    }
-
-    /// Place an object in the DAG filesystem tree and return the new root CID
-    ///
-    pub fn insert(&self, root: &Cid, path: &str, object: &Cid) -> Cid {
-        self.mapper.insert(root, path, object)
     }
 }

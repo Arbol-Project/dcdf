@@ -20,24 +20,6 @@ pub trait Mapper: Send + Sync {
     /// Should return `Option::None` if given `cid` isn't in the store.
     ///
     fn load(&self, cid: &Cid) -> Option<Box<dyn Read + '_>>;
-
-    /// Return a CID for an empty filesystem folder
-    ///
-    fn init(&self) -> Cid;
-
-    /// Place an object in the DAG filesystem tree and return the new root CID
-    ///
-    fn insert(&self, root: &Cid, path: &str, object: &Cid) -> Cid;
-
-    /// Get a listing of the contents of a folder in the DAG
-    ///
-    fn ls(&self, cid: &Cid) -> Vec<Link>;
-}
-
-pub struct Link {
-    pub name: String,
-    pub cid: Cid,
-    pub size: u64,
 }
 
 /// An extension to Write that computes a hash for the written data.

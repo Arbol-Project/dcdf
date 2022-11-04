@@ -1,89 +1,126 @@
 use std::collections::{btree_map, BTreeMap};
 use std::fmt::Debug;
+use std::io::{Read, Write};
 use std::sync::Arc;
 
 use cid::Cid;
 use num_traits::Float;
 
+use crate::cache::Cacheable;
 use crate::errors::Result;
+use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
 
-use super::mapper::Link;
-use super::node::Node;
+use super::node::{Node, NODE_FOLDER};
 use super::resolver::Resolver;
 
 pub struct Folder<N>
 where
     N: Float + Debug + 'static,
 {
-    cid: Cid,
-    items: BTreeMap<String, FolderItem>,
+    items: BTreeMap<String, Cid>,
     resolver: Arc<Resolver<N>>,
-}
-
-#[derive(Clone)]
-pub struct FolderItem {
-    pub cid: Cid,
-    pub size: u64,
 }
 
 impl<N> Folder<N>
 where
     N: Float + Debug + 'static,
 {
-    pub(crate) fn new(resolver: &Arc<Resolver<N>>, cid: Cid, links: Vec<Link>) -> Arc<Self> {
-        let mut items = BTreeMap::new();
-        for link in links {
-            let item = FolderItem {
-                cid: link.cid,
-                size: link.size,
-            };
-            items.insert(link.name, item);
-        }
-        Arc::new(Self {
-            cid,
-            items,
+    pub fn new(resolver: &Arc<Resolver<N>>) -> Self {
+        Self {
+            items: BTreeMap::new(),
             resolver: Arc::clone(resolver),
-        })
+        }
     }
 
-    pub fn update<S>(&self, name: S, object: &Cid) -> Arc<Self>
+    pub fn update<S>(&self, name: S, object: Cid) -> Self
     where
         S: Into<String>,
     {
+        let mut items = self.items.clone();
         let name = name.into();
-        let new_root = self.resolver.insert(&self.cid, &name, object);
-        self.resolver.get_folder(&new_root)
+        items.insert(name, object);
+
+        Self {
+            items,
+            resolver: Arc::clone(&self.resolver),
+        }
     }
 
-    pub fn insert<O, S>(&self, name: S, object: O) -> Result<Arc<Self>>
+    pub fn insert<O, S>(&self, name: S, object: O) -> Result<Self>
     where
         O: Node<N>,
         S: Into<String>,
     {
-        let name = name.into();
         let object = self.resolver.save(object)?;
-        let new_root = self.resolver.insert(&self.cid, &name, &object);
 
-        Ok(self.resolver.get_folder(&new_root))
+        Ok(self.update(name, object))
     }
 
-    pub fn iter(&self) -> btree_map::Iter<String, FolderItem> {
+    pub fn iter(&self) -> btree_map::Iter<String, Cid> {
         self.items.iter()
     }
 
-    pub fn get<S>(&self, key: S) -> Option<FolderItem>
+    pub fn get<S>(&self, key: S) -> Option<Cid>
     where
         S: Into<String>,
     {
         let key = key.into();
-        match self.items.get(&key) {
-            Some(value) => Some(value.clone()),
-            None => None,
-        }
+        self.items.get(&key).and_then(|cid| Some(cid.clone()))
     }
+}
 
-    pub fn cid(&self) -> Cid {
-        self.cid
+impl<N> Node<N> for Folder<N>
+where
+    N: Float + Debug + 'static,
+{
+    const NODE_TYPE: u8 = NODE_FOLDER;
+
+    fn load_from(resolver: &Arc<Resolver<N>>, stream: &mut impl Read) -> Result<Self> {
+        Self::read_header(stream)?;
+        let mut items = BTreeMap::new();
+        let n_items = stream.read_u32()? as usize;
+        for _ in 0..n_items {
+            let strlen = stream.read_byte()? as u64;
+            let mut key = String::with_capacity(strlen as usize);
+            stream.take(strlen).read_to_string(&mut key)?;
+
+            let item = Cid::read_bytes(&mut *stream)?;
+            items.insert(key, item);
+        }
+
+        Ok(Self {
+            items,
+            resolver: Arc::clone(resolver),
+        })
+    }
+}
+
+impl<N> Serialize for Folder<N>
+where
+    N: Float + Debug + 'static,
+{
+    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
+        stream.write_u32(self.items.len() as u32)?;
+        for (key, value) in &self.items {
+            stream.write_byte(key.len() as u8)?;
+            stream.write_all(key.as_bytes())?;
+            value.write_bytes(&mut *stream)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl<N> Cacheable for Folder<N>
+where
+    N: Float + Debug + 'static,
+{
+    fn size(&self) -> u64 {
+        4 + self
+            .items
+            .iter()
+            .map(|(key, value)| 1 + key.len() + value.to_bytes().len())
+            .sum::<usize>() as u64
     }
 }
 
@@ -102,66 +139,52 @@ mod tests {
         let superchunk1 = testing::superchunk(&data1, resolver)?;
         let superchunk1 = resolver.save(superchunk1)?;
 
-        let a = resolver.init();
-        let a = a.update("data", &superchunk1);
+        let a = Folder::new(resolver);
+        let a = a.update("data", superchunk1);
 
         let data2 = testing::array(15);
         let superchunk2 = testing::superchunk(&data2, resolver)?;
         let superchunk2 = resolver.save(superchunk2)?;
 
-        let b = resolver.init();
-        let b = b.update("data", &superchunk2);
+        let b = Folder::new(resolver);
+        let b = b.update("data", superchunk2);
 
-        let c = resolver.init();
-        let c = c.update("a", &a.cid);
-        let c = c.update("b", &b.cid);
-        let c = c.update("d/e/f", &superchunk1);
+        let c = Folder::new(resolver);
+        let c = c.update("a", resolver.save(a)?);
+        let c = c.update("b", resolver.save(b)?);
 
-        Ok(c.cid)
+        resolver.save(c)
     }
 
     #[test]
     fn test_iter() -> Result<()> {
         let resolver = testing::resolver();
         let cid = folders(&resolver)?;
-        let c = resolver.get_folder(&cid);
+        let c = resolver.get_folder(&cid)?;
 
         let mut contents = c.iter();
-        let (key, item) = contents.next().expect("Expecting folder a");
+        let (key, cid) = contents.next().expect("Expecting folder a");
         assert_eq!(key, "a");
-        let a = resolver.get_folder(&item.cid);
+        let a = resolver.get_folder(&cid)?;
 
-        let (key, item) = contents.next().expect("Expecting folder b");
+        let (key, cid) = contents.next().expect("Expecting folder b");
         assert_eq!(key, "b");
-        let b = resolver.get_folder(&item.cid);
-
-        let (key, item) = contents.next().expect("Expecting folder d");
-        assert_eq!(key, "d");
-        let d = resolver.get_folder(&item.cid);
-
-        let (key, item) = d.iter().next().expect("Expecting folder e");
-        assert_eq!(key, "e");
-        let e = resolver.get_folder(&item.cid);
-
-        let (key, item) = e.iter().next().expect("Expecting superchunk f");
-        assert_eq!(key, "f");
-        let f = resolver.get_superchunk(&item.cid)?;
-        assert_eq!(f.shape(), [100, 16, 16]);
+        let b = resolver.get_folder(&cid)?;
 
         assert!(contents.next().is_none());
 
         let mut contents = a.iter();
-        let (key, item) = contents.next().expect("Expecting data superchunk");
+        let (key, cid) = contents.next().expect("Expecting data superchunk");
         assert_eq!(key, "data");
-        let superchunk = resolver.get_superchunk(&item.cid)?;
+        let superchunk = resolver.get_superchunk(&cid)?;
 
         assert_eq!(superchunk.shape(), [100, 16, 16]);
         assert!(contents.next().is_none());
 
         let mut contents = b.iter();
-        let (key, item) = contents.next().expect("Expecting data superchunk");
+        let (key, cid) = contents.next().expect("Expecting data superchunk");
         assert_eq!(key, "data");
-        let superchunk = resolver.get_superchunk(&item.cid)?;
+        let superchunk = resolver.get_superchunk(&cid)?;
 
         assert_eq!(superchunk.shape(), [100, 15, 15]);
         assert!(contents.next().is_none());
@@ -173,34 +196,23 @@ mod tests {
     fn test_get() -> Result<()> {
         let resolver = testing::resolver();
         let cid = folders(&resolver)?;
-        let c = resolver.get_folder(&cid);
+        let c = resolver.get_folder(&cid)?;
 
         let a = c.get("a").expect("no value for a");
-        let a = resolver.get_folder(&a.cid);
+        let a = resolver.get_folder(&a)?;
 
         let b = c.get("b").expect("no value for b");
-        let b = resolver.get_folder(&b.cid);
+        let b = resolver.get_folder(&b)?;
 
         let superchunk = a.get("data").expect("no value for data");
-        let superchunk = resolver.get_superchunk(&superchunk.cid)?;
+        let superchunk = resolver.get_superchunk(&superchunk)?;
 
         assert_eq!(superchunk.shape(), [100, 16, 16]);
 
         let superchunk = b.get("data").expect("no value for data");
-        let superchunk = resolver.get_superchunk(&superchunk.cid)?;
+        let superchunk = resolver.get_superchunk(&superchunk)?;
 
         assert_eq!(superchunk.shape(), [100, 15, 15]);
-
-        let d = c.get("d").expect("no value for d");
-        let d = resolver.get_folder(&d.cid);
-
-        let e = d.get("e").expect("no value for e");
-        let e = resolver.get_folder(&e.cid);
-
-        let f = e.get("f").expect("no value for f");
-        let f = resolver.get_superchunk(&f.cid)?;
-
-        assert_eq!(f.shape(), [100, 16, 16]);
 
         Ok(())
     }

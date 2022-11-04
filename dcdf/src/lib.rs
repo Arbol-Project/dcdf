@@ -14,8 +14,6 @@ pub use codec::FChunk;
 
 pub use dag::commit::Commit;
 pub use dag::folder::Folder;
-pub use dag::folder::FolderItem;
-pub use dag::mapper::Link;
 pub use dag::mapper::Mapper;
 pub use dag::mapper::StoreWrite;
 pub use dag::resolver::Resolver;

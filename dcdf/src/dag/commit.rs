@@ -53,7 +53,9 @@ where
     }
 
     pub fn root(&self) -> Arc<Folder<N>> {
-        self.resolver.get_folder(&self.root)
+        self.resolver
+            .get_folder(&self.root)
+            .expect("Root not found")
     }
 }
 
@@ -117,24 +119,27 @@ mod tests {
         let data1 = testing::array(16);
         let superchunk1 = testing::superchunk(&data1, &resolver)?;
 
-        let a = resolver.init();
+        let a = Folder::new(&resolver);
         let a = a.insert("data", superchunk1)?;
 
-        let c = resolver.init();
-        let c = c.update("a", &a.cid());
+        let c = Folder::new(&resolver);
+        let c = c.update("a", resolver.save(a)?);
+        let c_cid = resolver.save(c)?;
 
-        let commit1 = Commit::new("First commit", c.cid(), None, &resolver);
+        let commit1 = Commit::new("First commit", c_cid, None, &resolver);
         let commit1_cid = resolver.save(commit1)?;
 
         let data2 = testing::array(15);
         let superchunk2 = testing::superchunk(&data2, &resolver)?;
 
-        let b = resolver.init();
+        let b = Folder::new(&resolver);
         let b = b.insert("data", superchunk2)?;
 
-        let c = c.update("b", &b.cid());
+        let c = resolver.get_folder(&c_cid)?;
+        let c = c.update("b", resolver.save(b)?);
+        let c_cid = resolver.save(c)?;
 
-        let commit2 = Commit::new("Second commit", c.cid(), Some(commit1_cid), &resolver);
+        let commit2 = Commit::new("Second commit", c_cid, Some(commit1_cid), &resolver);
 
         let cid = resolver.save(commit2)?;
 
@@ -144,14 +149,14 @@ mod tests {
 
         let c = commit.root();
         let a = c.get("a").expect("no value for a");
-        let a = resolver.get_folder(&a.cid);
+        let a = resolver.get_folder(&a)?;
         let b = c.get("b").expect("no value for b");
-        let b = resolver.get_folder(&b.cid);
+        let b = resolver.get_folder(&b)?;
 
-        let superchunk = resolver.get_superchunk(&a.get("data").expect("no value for data").cid)?;
+        let superchunk = resolver.get_superchunk(&a.get("data").expect("no value for data"))?;
         assert_eq!(superchunk.shape(), [100, 16, 16]);
 
-        let superchunk = resolver.get_superchunk(&b.get("data").expect("no value for data").cid)?;
+        let superchunk = resolver.get_superchunk(&b.get("data").expect("no value for data"))?;
         assert_eq!(superchunk.shape(), [100, 15, 15]);
 
         let commit = commit.prev()?.expect("Expected previous commit");
@@ -159,9 +164,9 @@ mod tests {
 
         let c = commit.root();
         let a = c.get("a").expect("no value for a");
-        let a = resolver.get_folder(&a.cid);
+        let a = resolver.get_folder(&a)?;
 
-        let superchunk = resolver.get_superchunk(&a.get("data").expect("no value for data").cid)?;
+        let superchunk = resolver.get_superchunk(&a.get("data").expect("no value for data"))?;
         assert_eq!(superchunk.shape(), [100, 16, 16]);
 
         assert!(c.get("b").is_none());

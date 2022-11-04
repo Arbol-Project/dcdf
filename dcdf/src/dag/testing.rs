@@ -1,24 +1,20 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io;
 use std::io::{Cursor, Read, Write};
 use std::mem;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use cid::Cid;
-use multibase::Base::Base64;
 use multihash::{Hasher, MultihashGeneric, Sha2_256};
 use ndarray::{arr2, Array2, ArrayView2};
 use num_traits::{Float, Num};
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
-use serde_json;
 
 use crate::errors::Result;
 use crate::fixed::Precise;
 
-use super::mapper::{Link, Mapper, StoreWrite};
+use super::mapper::{Mapper, StoreWrite};
 use super::resolver::Resolver;
 use super::superchunk::{build_superchunk, Superchunk};
 
@@ -79,56 +75,6 @@ impl Mapper for MemoryMapper {
         let objects = self.objects.lock();
         let object = objects.get(cid)?;
         Some(Box::new(Cursor::new(object.clone())))
-    }
-
-    fn init(&self) -> Cid {
-        self.save_folder(MemoryFolder::new())
-    }
-
-    fn insert(&self, root: &Cid, path: &str, object: &Cid) -> Cid {
-        let folder = self.load_folder(root);
-        let folder = match path.split_once("/") {
-            None => folder.update(path, *object),
-            Some((name, rest)) => {
-                let child = match folder.links.get(name) {
-                    None => self.init(),
-                    Some(cid) => Cid::from_str(cid).unwrap(),
-                };
-                let child = self.insert(&child, rest, object);
-                folder.update(name, child)
-            }
-        };
-
-        self.save_folder(folder)
-    }
-
-    fn ls(&self, cid: &Cid) -> Vec<Link> {
-        let folder = self.load_folder(cid);
-        let mut links = vec![];
-        let objects = self.objects.lock();
-        for (name, cid) in folder.links.iter() {
-            let name = name.to_string();
-            let cid = Cid::from_str(cid).unwrap();
-            let size = objects.get(&cid).expect("couldn't find child").len() as u64;
-            links.push(Link { name, cid, size });
-        }
-
-        links
-    }
-}
-
-impl MemoryMapper {
-    fn save_folder(&self, folder: MemoryFolder) -> Cid {
-        let buf = serde_json::to_vec(&folder).expect("Error writing folder");
-        let mut writer = self.store();
-        writer.write_all(&buf).expect("Error writing folder");
-
-        writer.finish()
-    }
-
-    fn load_folder(&self, cid: &Cid) -> MemoryFolder {
-        let reader = self.load(cid).expect("Folder not found");
-        serde_json::from_reader(reader).expect("Error reading folder")
     }
 }
 
@@ -218,27 +164,6 @@ where
         let hash = MultihashGeneric::wrap(SHA2_256, &digest).expect("Not really sure.");
 
         Cid::new_v1(SHA2_256, hash)
-    }
-}
-#[derive(Deserialize, Serialize)]
-struct MemoryFolder {
-    links: BTreeMap<String, String>,
-}
-
-impl MemoryFolder {
-    fn new() -> Self {
-        MemoryFolder {
-            links: BTreeMap::new(),
-        }
-    }
-
-    fn update(self, name: &str, object: Cid) -> Self {
-        let name = String::from(name);
-        let object = object.to_string_of_base(Base64).unwrap();
-        let mut links = self.links.clone();
-        links.insert(name, object);
-
-        MemoryFolder { links }
     }
 }
 
