@@ -72,26 +72,21 @@ def datastream(dtype, resolver):
     data1 = array(dtype, 16)
     superchunk1 = build_superchunk(data1, resolver)
 
-    a = resolver.init()
-    a = a.update("data", superchunk1)
+    a = resolver.insert(None, "data", superchunk1)
+    c = resolver.insert(None, "a", a)
 
-    c = resolver.init()
-    c = c.update("a", a.cid)
-
-    commit1 = dcdf.commit("First commit", c, None, resolver)
+    commit1 = resolver.commit("First commit", c, None)
 
     data2 = array(dtype, 15)
     superchunk2 = build_superchunk(data2, resolver)
 
-    b = resolver.init()
-    b = b.update("data", superchunk2)
-
-    c = c.update("b", b.cid)
+    b = resolver.insert(None, "data", superchunk2)
+    c = resolver.insert(c, "b", b)
 
     bob = resolver.store_object(b"Hi mom!\n")
-    c = c.update("README.txt", bob)
+    c = resolver.insert(c, "README.txt", bob)
 
-    commit2 = dcdf.commit("Second commit", c, commit1, resolver)
+    commit2 = resolver.commit("Second commit", c, commit1)
 
     print(f"HEAD ({dtype}): {commit2}")
 
@@ -104,25 +99,25 @@ def test_make_a_couple_of_commits(datastream, resolver):
     assert commit.message == "Second commit"
 
     c = commit.root
-    bob = resolver.load_object(c["README.txt"].cid)
+    bob = resolver.load_object(c["README.txt"])
     assert bob == b"Hi mom!\n"
 
-    a = resolver.get_folder(c["a"].cid)
-    b = resolver.get_folder(c["b"].cid)
+    a = resolver.get_folder(c["a"])
+    b = resolver.get_folder(c["b"])
 
-    superchunk = resolver.get_superchunk(a["data"].cid)
+    superchunk = resolver.get_superchunk(a["data"])
     assert superchunk.shape == (100, 16, 16)
 
-    superchunk = resolver.get_superchunk(b["data"].cid)
+    superchunk = resolver.get_superchunk(b["data"])
     assert superchunk.shape == (100, 15, 15)
 
     commit = commit.prev
     assert commit.message == "First commit"
 
     c = commit.root
-    a = resolver.get_folder(c["a"].cid)
+    a = resolver.get_folder(c["a"])
 
-    superchunk = resolver.get_superchunk(a["data"].cid)
+    superchunk = resolver.get_superchunk(a["data"])
     assert superchunk.shape == (100, 16, 16)
 
     assert "b" not in c
@@ -132,8 +127,8 @@ def test_make_a_couple_of_commits(datastream, resolver):
 @pytest.fixture(scope="session")
 def superchunk(datastream, resolver):
     commit = resolver.get_commit(datastream)
-    a = resolver.get_folder(commit.root["a"].cid)
-    superchunk = resolver.get_superchunk(a["data"].cid)
+    a = resolver.get_folder(commit.root["a"])
+    superchunk = resolver.get_superchunk(a["data"])
     assert superchunk.shape == (100, 16, 16)
 
     """

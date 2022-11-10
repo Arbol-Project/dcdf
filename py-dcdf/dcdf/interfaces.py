@@ -11,8 +11,8 @@ Path = str
 
 class Resolver(abc.ABC):
     @abc.abstractmethod
-    def init(self) -> Folder:
-        """Initialize an empty dataset"""
+    def new_folder(self) -> Folder:
+        """Create an empty folder"""
 
     @abc.abstractmethod
     def get_folder(self, cid: Cid) -> typing.Optional[Folder]:

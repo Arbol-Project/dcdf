@@ -13,11 +13,7 @@ use pyo3::types::PyBytes;
 use dcdf;
 use dcdf_ipfs::IpfsMapper;
 
-fn convert_error(cause: dcdf::Error) -> PyErr {
-    match cause {
-        dcdf::Error::IO(cause) => cause.into(),
-    }
-}
+use super::helpers::convert_error;
 
 #[pyfunction]
 pub fn new_ipfs_resolver_f32(cache_bytes: u64) -> PyResolverF32 {
@@ -36,7 +32,9 @@ pub struct PyResolverF32 {
 impl PyResolverF32 {
     fn get_folder(&self, cid: &str) -> PyResult<PyFolderF32> {
         let cid = Cid::from_str(cid).expect("Invalid cid");
-        Ok(PyFolderF32::wrap(self.inner.get_folder(&cid)))
+        Ok(PyFolderF32::wrap(
+            self.inner.get_folder(&cid).map_err(convert_error)?,
+        ))
     }
 
     fn get_commit(&self, cid: &str) -> PyResult<PyCommitF32> {
@@ -51,16 +49,6 @@ impl PyResolverF32 {
         Ok(PySuperchunkF32::wrap(
             self.inner.get_superchunk(&cid).map_err(convert_error)?,
         ))
-    }
-
-    fn init(&self) -> PyFolderF32 {
-        PyFolderF32::wrap(self.inner.init())
-    }
-
-    fn insert(&self, root: &str, path: &str, object: &str) -> String {
-        let root = Cid::from_str(root).expect("Invalid cid");
-        let object = Cid::from_str(object).expect("Invalid cid");
-        self.inner.insert(&root, path, &object).to_string()
     }
 
     pub fn load_object<'py>(&self, py: Python<'py>, cid: &str) -> PyResult<Option<PyObject>> {
@@ -82,6 +70,55 @@ impl PyResolverF32 {
 
         Ok(stream.finish().to_string())
     }
+
+    pub fn insert(&self, root: Option<&str>, path: &str, object: &str) -> PyResult<String> {
+        let root = match root {
+            None => Arc::new(dcdf::Folder::new(&self.inner)),
+            Some(cid) => {
+                let cid = Cid::from_str(cid).expect("Invalid cid");
+                self.inner.get_folder(&cid).map_err(convert_error)?
+            }
+        };
+
+        let object = Cid::from_str(object).expect("Invalid cid");
+        let root = self._insert(root, path, object).map_err(convert_error)?;
+
+        Ok(root.to_string())
+    }
+
+    pub fn commit(&self, message: &str, root: &str, prev: Option<&str>) -> PyResult<String> {
+        let root = Cid::from_str(root).expect("Invalid cid");
+        let prev = match prev {
+            Some(cid) => Some(Cid::from_str(cid).expect("Invalid cid")),
+            None => None,
+        };
+        let commit = dcdf::Commit::new(message, root, prev, &self.inner);
+        let cid = self.inner.save(commit).map_err(convert_error)?;
+
+        Ok(cid.to_string())
+    }
+}
+
+impl PyResolverF32 {
+    fn _insert(
+        &self,
+        folder: Arc<dcdf::Folder<f32>>,
+        path: &str,
+        object: Cid,
+    ) -> dcdf::Result<Cid> {
+        let folder = match path.split_once("/") {
+            None => folder.update(path, object),
+            Some((name, rest)) => {
+                let child = match folder.get(name) {
+                    None => Arc::new(dcdf::Folder::new(&self.inner)),
+                    Some(cid) => self.inner.get_folder(&cid)?,
+                };
+                folder.update(name, self._insert(child, rest, object)?)
+            }
+        };
+
+        self.inner.save(folder)
+    }
 }
 
 #[pyclass]
@@ -97,19 +134,14 @@ impl PyFolderF32 {
 
 #[pymethods]
 impl PyFolderF32 {
-    fn update(&self, name: &str, object: &str) -> PyResult<Self> {
-        let object = Cid::from_str(object).expect("Invalid cid");
-        Ok(Self::wrap(self.inner.update(name, &object)))
-    }
-
-    fn get(&self, key: &str) -> Option<PyFolderItem> {
+    fn get(&self, key: &str) -> Option<String> {
         match self.inner.get(key) {
-            Some(item) => Some(PyFolderItem::wrap(item)),
+            Some(cid) => Some(cid.to_string()),
             None => None,
         }
     }
 
-    fn __getitem__(&self, key: &str) -> PyResult<PyFolderItem> {
+    fn __getitem__(&self, key: &str) -> PyResult<String> {
         match self.get(key) {
             Some(item) => Ok(item),
             None => Err(PyKeyError::new_err(format!("{}", key))),
@@ -119,29 +151,6 @@ impl PyFolderF32 {
     fn __contains__(&self, key: &str) -> bool {
         self.inner.get(key).is_some()
     }
-
-    #[getter]
-    fn cid(&self) -> String {
-        self.inner.cid().to_string()
-    }
-}
-
-#[pyfunction]
-pub fn commit_f32(
-    message: &str,
-    root: &str,
-    prev: Option<&str>,
-    resolver: &PyResolverF32,
-) -> PyResult<String> {
-    let root = Cid::from_str(root).expect("Invalid cid");
-    let prev = match prev {
-        Some(cid) => Some(Cid::from_str(cid).expect("Invalid cid")),
-        None => None,
-    };
-    let commit = dcdf::Commit::new(message, root, prev, &resolver.inner);
-    let cid = resolver.inner.save(commit).map_err(convert_error)?;
-
-    Ok(cid.to_string())
 }
 
 #[pyclass]
@@ -226,7 +235,6 @@ impl PySuperchunkBuilderF32 {
     fn finish(&mut self) -> PyResult<String> {
         let build = mem::replace(&mut self.inner, None).expect("finish called twice");
         let chunk = build.finish().map_err(convert_error)?;
-        println!("oh my! {}", chunk.size());
         let cid = self.resolver.save(chunk).map_err(convert_error)?;
 
         Ok(cid.to_string())
@@ -323,29 +331,5 @@ impl PySuperchunkF32 {
         }
 
         Ok(py_results)
-    }
-}
-
-#[pyclass]
-pub struct PyFolderItem {
-    inner: dcdf::FolderItem,
-}
-
-impl PyFolderItem {
-    fn wrap(inner: dcdf::FolderItem) -> Self {
-        Self { inner }
-    }
-}
-
-#[pymethods]
-impl PyFolderItem {
-    #[getter]
-    fn cid(&self) -> String {
-        self.inner.cid.to_string()
-    }
-
-    #[getter]
-    fn size(&self) -> u64 {
-        self.inner.size
     }
 }

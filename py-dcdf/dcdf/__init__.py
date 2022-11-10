@@ -6,14 +6,12 @@ from dcdf.interfaces import (
     Cid,
     Commit,
     Folder,
-    FolderItem,
     Resolver,
     Superchunk,
 )
 
 Resolver.register(_dcdf.PyResolverF32)
 Folder.register(_dcdf.PyFolderF32)
-FolderItem.register(_dcdf.PyFolderItem)
 Commit.register(_dcdf.PyCommitF32)
 Superchunk.register(_dcdf.PySuperchunkF32)
 
@@ -29,10 +27,6 @@ _IPFS_RESOLVER_FACTORIES = {
 
 _SUPERCHUNK_BUILDERS = {
     "float32": _dcdf.PySuperchunkBuilderF32,
-}
-
-_COMMIT_FUNCTIONS = {
-    _dcdf.PyFolderF32: _dcdf.commit_f32,
 }
 
 _256_MB = 1 << 28
@@ -117,8 +111,3 @@ def build_superchunk(
         builder.push(instant)
 
     return builder.finish()
-
-
-def commit(message, root, prev, resolver):
-    func = _COMMIT_FUNCTIONS[type(root)]
-    return func(message, root.cid, prev, resolver)
