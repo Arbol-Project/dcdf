@@ -17,8 +17,8 @@ where
     N: Float + Debug + 'static,
 {
     message: String,
-    prev: Option<Cid>,
-    root: Cid,
+    pub prev: Option<Cid>,
+    pub root: Cid,
 
     resolver: Arc<Resolver<N>>,
 }

@@ -14,6 +14,7 @@ import docopt
 import os
 import sys
 
+from dateutil.parser import parse as parse_date
 import numpy
 import xarray
 
@@ -44,6 +45,12 @@ def cli_main():
         if args["add"]:
             return cli_add(data, args["<input_file>"])
 
+        if args["query"]:
+            date = parse_date(args["<datetime>"])
+            lat = float(args["<latitude>"])
+            lon = float(args["<longitude>"])
+            return cli_query(data, date, lat, lon)
+
         return cli_error("not implemented")
 
     except DataError as error:
@@ -54,10 +61,8 @@ def cli_init(resolver):
     if os.path.exists(HEAD):
         return cli_error(f"Dataset already exists. Head is written to {HEAD}")
 
-    root = resolver.init()
     message = "Initial commit."
-
-    cli_new_head(dcdf.commit(message, root, None, resolver))
+    cli_new_head(resolver.commit(message, None, None))
 
     return cli_ok(f"New HEAD written to {HEAD}")
 
@@ -79,16 +84,22 @@ def cli_add(dataset, input_file):
     suggestion = dcdf.suggest_fraction(data, max_value)
 
     if suggestion.round:
-        print(f"Data must be rounded to use {suggestion.fractional_bits} bit fractions "
-              "in order to be able to be encoded.")
+        print(
+            f"Data must be rounded to use {suggestion.fractional_bits} bit fractions "
+            "in order to be able to be encoded."
+        )
 
     else:
-        print("Data can be encoded without loss of precision using "
-              f"{suggestion.fractional_bits} bit fractions.")
+        print(
+            "Data can be encoded without loss of precision using "
+            f"{suggestion.fractional_bits} bit fractions."
+        )
 
     # Immutable data means "modifying" the dataset creates a new one
     print("Building...")
-    dataset = dataset.add_chunk(time, data, suggestion.fractional_bits, suggestion.round)
+    dataset = dataset.add_chunk(
+        time, data, suggestion.fractional_bits, suggestion.round
+    )
 
     cli_new_head(dataset.cid)
 
@@ -98,6 +109,14 @@ def cli_add(dataset, input_file):
 def cli_new_head(cid):
     with open(HEAD, "w") as f:
         print(cid, file=f)
+
+
+def cli_query(data, date, lat, lon):
+    (date, lat, lon), value = data.get(numpy.datetime64(date), lat, lon)
+    message = (
+        f"date: {date}\n" f"lat: {lat}\n" f"lon: {lon}\n" f"Precipitation: {value}\n"
+    )
+    return cli_ok(message)
 
 
 def cli_ok(message):
@@ -111,10 +130,10 @@ def cli_error(message):
 
 
 class CpcPrecipDataset(dataset.Dataset):
-    LEVELS = 6
-    """2^2^5 = 4096 subchunks"""
+    LEVELS = 4
+    """2^2^4 = 256 subchunks"""
 
-    LOCAL_THRESHOLD = 0    #1<<12   # 4096
+    LOCAL_THRESHOLD = 0  # 1<<12   # 4096
     """Subchunks smaller than this number of bytes will be stored on the superchunk
     rather than as separate objects."""
 
@@ -144,6 +163,7 @@ class DailyLayout:
     This layout is two levels, with each top level folder containing a century and each
     century containing superchunks that each contain a year. Each time instant is a day.
     """
+
     step = numpy.timedelta64(1, "D")
 
     def verify(self, data):
@@ -193,6 +213,7 @@ class DailyLayout:
 @dataclasses.dataclass
 class CpcGeoSpace:
     """GeoSpace with latitude and longitude spaced at regular intervals."""
+
     lat = numpy.linspace(89.75, -89.75, 360)
     lon = numpy.linspace(0.25, 359.75, 720)
 
@@ -204,15 +225,16 @@ class CpcGeoSpace:
         if not numpy.array_equal(data.lon.data, self.lon):
             raise DataError("Unexpected longitude data.")
 
-    def locate(self, lat: float, lon: float
-              ) -> tuple[tuple[int, int], tuple[float, float]]:
-        row = abs(self.lon - lon).argmin()
-        col = abs(self.lat - lat).argmin()
+    def locate(
+        self, lat: float, lon: float
+    ) -> tuple[tuple[int, int], tuple[float, float]]:
+        row = abs(self.lat - lat).argmin()
+        col = abs(self.lon - lon).argmin()
 
-        return (row, col), (self.lon[row], self.lat[col])
+        return (row, col), (self.lat[row], self.lon[col])
 
     def coord_at(self, row: int, col: int) -> tuple[float, float]:
-        return self.lon[row], self.lat[col]
+        return self.lat[row], self.lon[col]
 
 
 class DataError(Exception):

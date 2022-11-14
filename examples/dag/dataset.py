@@ -4,9 +4,9 @@ The concept of a dataset that spans multiple encoded files arranged in a DAG.
 Eventually some implementation of this will be moved into the core library as Rust code,
 but for now it is easier/faster to explore this idea as a Python example. The Rust core
 has everything needed to create a DAG, but in this layer we map from real world time and
-space coordinates to files in the DAG and logical coordinates.
+space coordinates to "files" in the DAG and logical coordinates.
 
-Conceptually, you can think of the DAG is a filesystem tree containing data in
+Conceptually, you can think of the DAG as a filesystem tree containing data in
 superchunks, which in turn, are composed of subchunks. A superchunk decomposes a chunk
 of time series raster data across geographic space, and a chunk's placement in the
 filesystem tree encodes its position in time.
@@ -103,8 +103,9 @@ class GeoSpace(abc.ABC):
     """
 
     @abc.abstractmethod
-    def locate(self, lat: float, lon: float
-              ) -> tuple[tuple[int, int], tuple[float, float]]:
+    def locate(
+        self, lat: float, lon: float
+    ) -> tuple[tuple[int, int], tuple[float, float]]:
         """Convert geographic coordinate to array coordinate.
 
         Finds the nearest array cell to the specified lat/lon coordinate and returns the
@@ -149,27 +150,50 @@ class Dataset:
     ) -> Dataset:
         path, index, actual = self.layout.locate(time)
         if index != 0 or actual != time:
-            raise ValueError("time passed to add_chunk must be at a superchunk boundary")
+            raise ValueError(
+                "time passed to add_chunk must be at a superchunk boundary"
+            )
 
         # TODO: Make sure shape for each instant matches shape of datastream
-        chunk = dcdf.build_superchunk(data, levels, self.resolver, k=k,
-                                      fraction=fraction, round=round,
-                                      local_threshold=local_threshold)
+        chunk = dcdf.build_superchunk(
+            data,
+            levels,
+            self.resolver,
+            k=k,
+            fraction=fraction,
+            round=round,
+            local_threshold=local_threshold,
+        )
         prev = self.resolver.get_commit(self.cid)
-        new_root = prev.root.update(path, chunk)
+        new_root = self.resolver.insert(prev.root_cid, path, chunk)
 
         message = f"Added data at {time}"
-        commit = dcdf.commit(message, new_root, prev, self.resolver)
+        commit = self.resolver.commit(message, new_root, self.cid)
 
-        return self._update(commit.cid)
+        return self._update(commit)
 
     def _update(self, cid: dcdf.Cid):
-        return type(self)(cid, self.resolver, self.layout, self.geo, self.dtype)
+        new_self = object.__new__(type(self))
+        new_self.__dict__.update(self.__dict__)
+        new_self.cid = cid
 
-    def get(self, time: numpy.datetime64, lat: float, lon: float
-           ) -> tuple[tuple[numpy.datetime64, float, float], float]:
+        return new_self
+
+    def get(
+        self, time: numpy.datetime64, lat: float, lon: float
+    ) -> tuple[tuple[numpy.datetime64, float, float], float]:
         path, index, time = self.layout.locate(time)
         (row, col), (lat, lon) = self.geo.locate(lat, lon)
-        chunk = self.resolver.get_superchunk(path)
+        chunk = self.resolver.get_superchunk(self._lookup(path))
 
         return (time, lat, lon), chunk.get(index, row, col)
+
+    def _lookup(self, path: str) -> dcdf.Cid:
+        commit = self.resolver.get_commit(self.cid)
+        folder = commit.root
+        path = path.lstrip("/").split("/")
+        for name in path[:-1]:
+            cid = folder[name]
+            folder = self.resolver.get_folder(cid)
+
+        return folder[path[-1]]

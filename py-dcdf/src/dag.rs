@@ -86,8 +86,19 @@ impl PyResolverF32 {
         Ok(root.to_string())
     }
 
-    pub fn commit(&self, message: &str, root: &str, prev: Option<&str>) -> PyResult<String> {
-        let root = Cid::from_str(root).expect("Invalid cid");
+    pub fn commit(
+        &self,
+        message: &str,
+        root: Option<&str>,
+        prev: Option<&str>,
+    ) -> PyResult<String> {
+        let root = match root {
+            Some(root) => Cid::from_str(root).expect("Invalid cid"),
+            None => self
+                .inner
+                .save(dcdf::Folder::new(&self.inner))
+                .map_err(convert_error)?,
+        };
         let prev = match prev {
             Some(cid) => Some(Cid::from_str(cid).expect("Invalid cid")),
             None => None,
@@ -184,6 +195,11 @@ impl PyCommitF32 {
     #[getter]
     fn root(&self) -> PyFolderF32 {
         PyFolderF32::wrap(self.inner.root())
+    }
+
+    #[getter]
+    fn root_cid(&self) -> String {
+        self.inner.root.to_string()
     }
 }
 
