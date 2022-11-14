@@ -8,9 +8,11 @@ pub use simple::{
 mod dag;
 
 pub use dag::{
-    commit_f32, new_ipfs_resolver, PyCommitF32, PyFolderF32, PyFolderItem, PyResolverF32,
-    PySuperchunkBuilderF32, PySuperchunkF32,
+    new_ipfs_resolver_f32, PyCommitF32, PyFolderF32, PyResolverF32, PySuperchunkBuilderF32,
+    PySuperchunkF32,
 };
+
+mod helpers;
 
 use pyo3::prelude::*;
 
@@ -33,10 +35,8 @@ fn _dcdf(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyResolverF32>()?;
     m.add_class::<PySuperchunkF32>()?;
     m.add_class::<PySuperchunkBuilderF32>()?;
-    m.add_class::<PyFolderItem>()?;
 
-    m.add_function(wrap_pyfunction!(commit_f32, m)?)?;
-    m.add_function(wrap_pyfunction!(new_ipfs_resolver, m)?)?;
+    m.add_function(wrap_pyfunction!(new_ipfs_resolver_f32, m)?)?;
 
     Ok(())
 }

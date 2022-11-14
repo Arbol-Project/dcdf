@@ -26,15 +26,21 @@ def main():
     suggestion = dcdf.suggest_fraction(data, max_value)
 
     if suggestion.round:
-        print(f"Data must be rounded to use {suggestion.fractional_bits} bit fractions "
-              "in order to be able to be encoded.")
+        print(
+            f"Data must be rounded to use {suggestion.fractional_bits} bit fractions "
+            "in order to be able to be encoded."
+        )
 
     else:
-        print("Data can be encoded without loss of precision, using "
-              f"{suggestion.fractional_bits} bit fractions.")
+        print(
+            "Data can be encoded without loss of precision, using "
+            f"{suggestion.fractional_bits} bit fractions."
+        )
 
     print("Building...")
-    built = dcdf.build(data, fraction=suggestion.fractional_bits, round=suggestion.round)
+    built = dcdf.build(
+        data, fraction=suggestion.fractional_bits, round=suggestion.round
+    )
 
     print("Built:")
     print(f"\tCompression: {built.compression * 100:0.2f}%")

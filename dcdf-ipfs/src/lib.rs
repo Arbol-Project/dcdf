@@ -9,7 +9,7 @@ use std::str::FromStr;
 use bytes::Bytes;
 use cid::Cid;
 use futures::{Stream, StreamExt};
-use ipfs_api_backend_hyper::{request, Error as IpfsError, IpfsApi, IpfsClient, ObjectTemplate};
+use ipfs_api_backend_hyper::{request, Error as IpfsError, IpfsApi, IpfsClient};
 use tokio::runtime::Runtime;
 
 use dcdf;
@@ -58,57 +58,6 @@ impl dcdf::Mapper for IpfsMapper {
         let reader = IpfsReader::new(&self.runtime, stream);
 
         Some(Box::new(reader))
-    }
-
-    /// Return a CID for an empty filesystem folder
-    ///
-    fn init(&self) -> Cid {
-        let future = self.client.object_new(Some(ObjectTemplate::UnixFsDir));
-        let response = self
-            .runtime
-            .block_on(future)
-            .expect("Error creating a new folder");
-
-        Cid::from_str(&response.hash).expect("invalid hash")
-    }
-
-    /// Place an object in the DAG filesystem tree and return the new root CID
-    ///
-    fn insert(&self, root: &Cid, path: &str, object: &Cid) -> Cid {
-        let root = root.to_string();
-        let object = object.to_string();
-        let future = self
-            .client
-            .object_patch_add_link(&root, path, &object, true);
-        let response = self
-            .runtime
-            .block_on(future)
-            .expect("Error adding object to folder");
-
-        Cid::from_str(&response.hash).expect("invalid hash")
-    }
-
-    /// Get a listing of the contents of a folder in the DAG
-    ///
-    fn ls(&self, cid: &Cid) -> Vec<dcdf::Link> {
-        let folder = cid.to_string();
-        let future = self.client.ls(&folder);
-        let response = self
-            .runtime
-            .block_on(future)
-            .expect("Error getting folder listing");
-        assert_eq!(response.objects.len(), 1); // sanity check
-        let object = response.objects.into_iter().next().unwrap();
-
-        object
-            .links
-            .into_iter()
-            .map(|link| dcdf::Link {
-                name: link.name,
-                cid: Cid::from_str(&link.hash).expect("invalid hash"),
-                size: link.size,
-            })
-            .collect()
     }
 }
 
@@ -226,6 +175,8 @@ mod tests {
 
     use ndarray::{arr2, Array2};
 
+    use dcdf::Folder;
+
     fn resolver() -> Arc<dcdf::Resolver<f32>> {
         Arc::new(dcdf::Resolver::new(Box::new(IpfsMapper::new()), 0))
     }
@@ -298,24 +249,27 @@ mod tests {
         let data1 = array(16);
         let superchunk1 = superchunk(&data1, &resolver)?;
 
-        let a = resolver.init();
+        let a = Folder::new(&resolver);
         let a = a.insert("data", superchunk1)?;
 
-        let c = resolver.init();
-        let c = c.update("a", &a.cid());
+        let c = Folder::new(&resolver);
+        let c = c.insert("a", a)?;
+        let c_cid = resolver.save(c)?;
 
-        let commit1 = dcdf::Commit::new("First commit", c.cid(), None, &resolver);
+        let commit1 = dcdf::Commit::new("First commit", c_cid, None, &resolver);
         let commit1_cid = resolver.save(commit1)?;
 
         let data2 = array(15);
         let superchunk2 = superchunk(&data2, &resolver)?;
 
-        let b = resolver.init();
+        let b = Folder::new(&resolver);
         let b = b.insert("data", superchunk2)?;
 
-        let c = c.update("b", &b.cid());
+        let c = resolver.get_folder(&c_cid)?;
+        let c = c.insert("b", b)?;
+        let c_cid = resolver.save(c)?;
 
-        let commit2 = dcdf::Commit::new("Second commit", c.cid(), Some(commit1_cid), &resolver);
+        let commit2 = dcdf::Commit::new("Second commit", c_cid, Some(commit1_cid), &resolver);
 
         let cid = resolver.save(commit2)?;
         println!("HEAD: {:?}", cid);
@@ -326,14 +280,14 @@ mod tests {
 
         let c = commit.root();
         let a = c.get("a").expect("no value for a");
-        let a = resolver.get_folder(&a.cid);
+        let a = resolver.get_folder(&a)?;
         let b = c.get("b").expect("no value for b");
-        let b = resolver.get_folder(&b.cid);
+        let b = resolver.get_folder(&b)?;
 
-        let superchunk = resolver.get_superchunk(&a.get("data").expect("no value for data").cid)?;
+        let superchunk = resolver.get_superchunk(&a.get("data").expect("no value for data"))?;
         assert_eq!(superchunk.shape(), [100, 16, 16]);
 
-        let superchunk = resolver.get_superchunk(&b.get("data").expect("no value for data").cid)?;
+        let superchunk = resolver.get_superchunk(&b.get("data").expect("no value for data"))?;
         assert_eq!(superchunk.shape(), [100, 15, 15]);
 
         let commit = commit.prev()?.expect("Expected previous commit");
@@ -341,9 +295,9 @@ mod tests {
 
         let c = commit.root();
         let a = c.get("a").expect("no value for a");
-        let a = resolver.get_folder(&a.cid);
+        let a = resolver.get_folder(&a)?;
 
-        let superchunk = resolver.get_superchunk(&a.get("data").expect("no value for data").cid)?;
+        let superchunk = resolver.get_superchunk(&a.get("data").expect("no value for data"))?;
         assert_eq!(superchunk.shape(), [100, 16, 16]);
 
         assert!(c.get("b").is_none());

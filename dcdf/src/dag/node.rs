@@ -12,10 +12,14 @@ use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
 
 use super::resolver::Resolver;
 
+pub(crate) const NODE_COMMIT: u8 = 4;
+pub(crate) const NODE_LINKS: u8 = 5;
+pub(crate) const NODE_FOLDER: u8 = 3;
+pub(crate) const NODE_SUBCHUNK: u8 = 1;
+pub(crate) const NODE_SUPERCHUNK: u8 = 2;
+
 const MAGIC_NUMBER: u16 = 0xDCDF + 1;
 const FORMAT_VERSION: u32 = 0;
-
-const NODE_SUBCHUNK: u8 = 1;
 
 const TYPE_F32: u8 = 32;
 const TYPE_F64: u8 = 64;

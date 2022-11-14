@@ -1,9 +1,9 @@
 use num_traits::PrimInt;
 use std::fmt::Debug;
-use std::io;
 use std::io::{Read, Write};
 
 use crate::cache::Cacheable;
+use crate::errors::Result;
 use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
 
 /// Used to build up a BitMap.
@@ -120,7 +120,7 @@ pub struct BitMap {
 impl Serialize for BitMap {
     /// Write the bitmap to a stream
     ///
-    fn write_to(&self, stream: &mut impl Write) -> io::Result<()> {
+    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
         stream.write_u32(self.length as u32)?;
         stream.write_u32(self.k as u32)?;
         for index_block in &self.index {
@@ -134,7 +134,7 @@ impl Serialize for BitMap {
 
     /// Read a bitmap from a stream
     ///
-    fn read_from(stream: &mut impl Read) -> io::Result<Self> {
+    fn read_from(stream: &mut impl Read) -> Result<Self> {
         let length = stream.read_u32()? as usize;
         let k = stream.read_u32()? as usize;
 

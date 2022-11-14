@@ -1,26 +1,24 @@
 use std::fmt::Debug;
-use std::io::Read;
+use std::io;
 use std::sync::Arc;
 
 use cid::Cid;
 use num_traits::Float;
 
 use crate::errors::Result;
-use crate::extio::Serialize;
+use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
 
 use super::folder::Folder;
-use super::node::Node;
+use super::node::{Node, NODE_COMMIT};
 use super::resolver::Resolver;
-
-const NODE_COMMIT: u8 = 4;
 
 pub struct Commit<N>
 where
     N: Float + Debug + 'static,
 {
     message: String,
-    prev: Option<Cid>,
-    root: Cid,
+    pub prev: Option<Cid>,
+    pub root: Cid,
 
     resolver: Arc<Resolver<N>>,
 }
@@ -55,7 +53,9 @@ where
     }
 
     pub fn root(&self) -> Arc<Folder<N>> {
-        self.resolver.get_folder(&self.root)
+        self.resolver
+            .get_folder(&self.root)
+            .expect("Root not found")
     }
 }
 
@@ -63,44 +63,25 @@ impl<N> Node<N> for Commit<N>
 where
     N: Float + Debug + 'static,
 {
-    const NODE_TYPE: u8 = NODE_COMMIT; // SMELL Not actually used
+    const NODE_TYPE: u8 = NODE_COMMIT;
 
-    fn store(self, resolver: &Arc<Resolver<N>>) -> Result<Cid> {
-        let mut writer = resolver.store();
-        writer.write_all(self.message.as_bytes())?;
-        let message = writer.finish();
-
-        let mut commit = resolver.init();
-        commit = commit.update("root", &self.root);
-        if let Some(prev) = self.prev {
-            commit = commit.update("prev", &prev);
-        }
-        commit = commit.update("message.txt", &message);
-
-        Ok(commit.cid())
-    }
-
-    fn retrieve(resolver: &Arc<Resolver<N>>, cid: &Cid) -> Result<Option<Self>> {
-        let commit = resolver.get_folder(cid);
-
-        let message_txt = commit.get("message.txt").expect("missing message.txt");
-        let mut reader = resolver.load(&message_txt.cid).expect("missing object");
-        let mut message = String::new();
-        reader.read_to_string(&mut message)?;
-
-        let root = commit.get("root").expect("missing root").cid;
-        let prev = match commit.get("prev") {
-            Some(item) => Some(item.cid),
-            None => None,
+    fn load_from(resolver: &Arc<Resolver<N>>, stream: &mut impl io::Read) -> Result<Self> {
+        Self::read_header(stream)?;
+        let root = Cid::read_bytes(&mut *stream)?;
+        let prev = match stream.read_byte()? {
+            0 => None,
+            _ => Some(Cid::read_bytes(&mut *stream)?),
         };
+        let mut message = String::new();
+        stream.read_to_string(&mut message)?;
 
-        Ok(Some(Self {
+        Ok(Self {
             root,
             prev,
             message,
 
             resolver: Arc::clone(resolver),
-        }))
+        })
     }
 }
 
@@ -108,7 +89,21 @@ impl<N> Serialize for Commit<N>
 where
     N: Float + Debug + 'static,
 {
-    // SMELL Poorly factored, must implement but not used
+    fn write_to(&self, stream: &mut impl io::Write) -> Result<()> {
+        self.root.write_bytes(&mut *stream)?;
+        match self.prev {
+            Some(cid) => {
+                stream.write_byte(1)?;
+                cid.write_bytes(&mut *stream)?;
+            }
+            None => {
+                stream.write_byte(0)?;
+            }
+        }
+        stream.write_all(self.message.as_bytes())?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -124,24 +119,27 @@ mod tests {
         let data1 = testing::array(16);
         let superchunk1 = testing::superchunk(&data1, &resolver)?;
 
-        let a = resolver.init();
+        let a = Folder::new(&resolver);
         let a = a.insert("data", superchunk1)?;
 
-        let c = resolver.init();
-        let c = c.update("a", &a.cid());
+        let c = Folder::new(&resolver);
+        let c = c.update("a", resolver.save(a)?);
+        let c_cid = resolver.save(c)?;
 
-        let commit1 = Commit::new("First commit", c.cid(), None, &resolver);
+        let commit1 = Commit::new("First commit", c_cid, None, &resolver);
         let commit1_cid = resolver.save(commit1)?;
 
         let data2 = testing::array(15);
         let superchunk2 = testing::superchunk(&data2, &resolver)?;
 
-        let b = resolver.init();
+        let b = Folder::new(&resolver);
         let b = b.insert("data", superchunk2)?;
 
-        let c = c.update("b", &b.cid());
+        let c = resolver.get_folder(&c_cid)?;
+        let c = c.update("b", resolver.save(b)?);
+        let c_cid = resolver.save(c)?;
 
-        let commit2 = Commit::new("Second commit", c.cid(), Some(commit1_cid), &resolver);
+        let commit2 = Commit::new("Second commit", c_cid, Some(commit1_cid), &resolver);
 
         let cid = resolver.save(commit2)?;
 
@@ -151,14 +149,14 @@ mod tests {
 
         let c = commit.root();
         let a = c.get("a").expect("no value for a");
-        let a = resolver.get_folder(&a.cid);
+        let a = resolver.get_folder(&a)?;
         let b = c.get("b").expect("no value for b");
-        let b = resolver.get_folder(&b.cid);
+        let b = resolver.get_folder(&b)?;
 
-        let superchunk = resolver.get_superchunk(&a.get("data").expect("no value for data").cid)?;
+        let superchunk = resolver.get_superchunk(&a.get("data").expect("no value for data"))?;
         assert_eq!(superchunk.shape(), [100, 16, 16]);
 
-        let superchunk = resolver.get_superchunk(&b.get("data").expect("no value for data").cid)?;
+        let superchunk = resolver.get_superchunk(&b.get("data").expect("no value for data"))?;
         assert_eq!(superchunk.shape(), [100, 15, 15]);
 
         let commit = commit.prev()?.expect("Expected previous commit");
@@ -166,9 +164,9 @@ mod tests {
 
         let c = commit.root();
         let a = c.get("a").expect("no value for a");
-        let a = resolver.get_folder(&a.cid);
+        let a = resolver.get_folder(&a)?;
 
-        let superchunk = resolver.get_superchunk(&a.get("data").expect("no value for data").cid)?;
+        let superchunk = resolver.get_superchunk(&a.get("data").expect("no value for data"))?;
         assert_eq!(superchunk.shape(), [100, 16, 16]);
 
         assert!(c.get("b").is_none());

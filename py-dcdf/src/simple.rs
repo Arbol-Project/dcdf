@@ -1,14 +1,17 @@
-use ndarray::Array;
-use numpy::{IntoPyArray, PyArray1, PyArray3, PyReadonlyArray2};
-use pyo3::prelude::*;
-use pyo3_file::PyFileLikeObject;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::mem;
 use std::path::Path;
 use std::sync::Arc;
 
+use ndarray::Array;
+use numpy::{IntoPyArray, PyArray1, PyArray3, PyReadonlyArray2};
+use pyo3::prelude::*;
+use pyo3_file::PyFileLikeObject;
+
 use dcdf;
+
+use super::helpers::convert_error;
 
 // =================== Integers ==============
 
@@ -68,7 +71,7 @@ impl PyBuildI32 {
     }
 
     fn _save(&self, mut file: impl Write) -> PyResult<()> {
-        self.inner.save(&mut file)?;
+        self.inner.save(&mut file).map_err(convert_error)?;
 
         Ok(())
     }
@@ -240,7 +243,7 @@ impl PyBuildF32 {
     }
 
     fn _save(&self, mut file: impl Write) -> PyResult<()> {
-        self.inner.save(&mut file)?;
+        self.inner.save(&mut file).map_err(convert_error)?;
 
         Ok(())
     }
@@ -393,7 +396,7 @@ pub fn load_from(py: Python, path: &str) -> PyResult<PyObject> {
 }
 
 fn _load(py: Python, mut file: impl Read + Seek) -> PyResult<PyObject> {
-    let inner = dcdf::load(&mut file)?;
+    let inner = dcdf::load(&mut file).map_err(convert_error)?;
     let chunk = match inner {
         dcdf::I32(chunk) => Py::new(py, PyChunkI32::new(chunk))?.to_object(py),
         dcdf::F32(chunk) => Py::new(py, PyChunkF32::new(chunk))?.to_object(py),

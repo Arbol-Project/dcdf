@@ -2,7 +2,6 @@ use ndarray::{s, Array2, Array3, ArrayBase, DataMut, Ix3};
 use num_traits::{Float, PrimInt};
 use std::cell::RefCell;
 use std::fmt::Debug;
-use std::io;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -10,6 +9,7 @@ use std::sync::Arc;
 use std::vec::IntoIter as VecIntoIter;
 
 use crate::cache::Cacheable;
+use crate::errors::Result;
 use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
 use crate::fixed;
 use crate::geom;
@@ -135,7 +135,7 @@ where
 {
     /// Write a chunk to a stream
     ///
-    fn write_to(&self, stream: &mut impl Write) -> io::Result<()> {
+    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
         stream.write_byte(self.fractional_bits as u8)?;
         self.chunk.write_to(stream)?;
         Ok(())
@@ -143,7 +143,7 @@ where
 
     /// Read a chunk from a stream
     ///
-    fn read_from(stream: &mut impl Read) -> io::Result<Self> {
+    fn read_from(stream: &mut impl Read) -> Result<Self> {
         let fractional_bits = stream.read_byte()? as usize;
         Ok(FChunk::new(Chunk::read_from(stream)?, fractional_bits))
     }
@@ -382,7 +382,7 @@ where
 {
     /// Write a chunk to a stream
     ///
-    fn write_to(&self, stream: &mut impl Write) -> io::Result<()> {
+    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
         stream.write_u32(self.blocks.len() as u32)?;
         for block in &self.blocks {
             block.write_to(stream)?;
@@ -392,7 +392,7 @@ where
 
     /// Read a chunk from a stream
     ///
-    fn read_from(stream: &mut impl Read) -> io::Result<Self> {
+    fn read_from(stream: &mut impl Read) -> Result<Self> {
         let n_blocks = stream.read_u32()? as usize;
         let mut blocks = Vec::with_capacity(n_blocks);
         let mut index = Vec::with_capacity(n_blocks);
@@ -930,7 +930,7 @@ mod tests {
         }
 
         #[test]
-        fn serialize_deserialize() -> io::Result<()> {
+        fn serialize_deserialize() -> Result<()> {
             let data = array();
             let chunk = chunk(data.clone());
             let mut file = tempfile()?;
