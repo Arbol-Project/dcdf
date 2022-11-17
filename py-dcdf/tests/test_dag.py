@@ -70,17 +70,17 @@ def resolver(dtype):
 @pytest.fixture(scope="session")
 def datastream(dtype, resolver):
     data1 = array(dtype, 16)
-    superchunk1 = build_superchunk(data1, resolver)
+    build = build_superchunk(data1, resolver)
 
-    a = resolver.insert(None, "data", superchunk1)
+    a = resolver.insert(None, "data", build.cid)
     c = resolver.insert(None, "a", a)
 
     commit1 = resolver.commit("First commit", c, None)
 
     data2 = array(dtype, 15)
-    superchunk2 = build_superchunk(data2, resolver)
+    build = build_superchunk(data2, resolver)
 
-    b = resolver.insert(None, "data", superchunk2)
+    b = resolver.insert(None, "data", build.cid)
     c = resolver.insert(c, "b", b)
 
     bob = resolver.store_object(b"Hi mom!\n")

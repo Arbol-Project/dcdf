@@ -20,7 +20,7 @@ use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
 use crate::fixed::{from_fixed, to_fixed, Fraction, Precise, Round};
 use crate::geom;
 use crate::helpers::rearrange;
-use crate::simple::FBuilder;
+use crate::simple::{FBuild, FBuilder};
 
 use super::links::Links;
 use super::node::{Node, NODE_SUPERCHUNK};
@@ -962,6 +962,20 @@ impl Cacheable for Reference {
     }
 }
 
+pub struct SuperchunkBuild<N>
+where
+    N: Float + Debug + 'static,
+{
+    pub data: Superchunk<N>,
+    pub size: u64,
+    pub size_external: u64,
+    pub sizes: Vec<u64>,
+    pub compression: f32,
+    pub elided: usize,
+    pub local: usize,
+    pub external: usize,
+}
+
 pub fn build_superchunk<I, N>(
     mut instants: I,
     resolver: Arc<Resolver<N>>,
@@ -969,7 +983,7 @@ pub fn build_superchunk<I, N>(
     k: i32,
     fraction: Fraction,
     local_threshold: u64,
-) -> Result<Superchunk<N>>
+) -> Result<SuperchunkBuild<N>>
 where
     I: Iterator<Item = Array2<N>>,
     N: Float + Debug,
@@ -1079,29 +1093,33 @@ where
         true
     }
 
-    pub fn finish(mut self) -> Result<Superchunk<N>> {
+    pub fn finish(mut self) -> Result<SuperchunkBuild<N>> {
         // Swap builders out of self before moving so that self can be borrowed by methods later.
         let builders = mem::replace(&mut self.builders, vec![]);
-        let chunks: Vec<FChunk<N>> = builders
+        let builds: Vec<FBuild<N>> = builders
             .into_iter()
-            .map(|builder| builder.finish().data)
+            .map(|builder| builder.finish())
             .collect();
+
         let mut local_references: HashMap<Cid, usize> = HashMap::new();
         let mut local = Vec::new();
         let mut external_references: HashMap<Cid, usize> = HashMap::new();
         let mut external = Links::new();
         let mut references = Vec::new();
-        let instants = chunks[0].shape()[0];
-        for (i, chunk) in chunks.into_iter().enumerate() {
+        let mut sizes = Vec::new();
+        let mut elided = 0;
+        let instants = builds[0].data.shape()[0];
+        for (i, build) in builds.into_iter().enumerate() {
             if self.elide(i) {
+                elided += 1;
                 references.push(Reference::Elided);
-            } else if chunk.size() < self.local_threshold {
-                let cid = self.resolver.hash_subchunk(&chunk)?;
+            } else if build.data.size() < self.local_threshold {
+                let cid = self.resolver.hash_subchunk(&build.data)?;
                 let index = match local_references.get(&cid) {
                     Some(index) => *index,
                     None => {
                         let index = local.len();
-                        local.push(Arc::new(chunk));
+                        local.push(Arc::new(build.data));
                         local_references.insert(cid, index);
 
                         index
@@ -1109,7 +1127,8 @@ where
                 };
                 references.push(Reference::Local(index))
             } else {
-                let cid = self.resolver.save_leaf(chunk)?;
+                sizes.push(build.data.size());
+                let cid = self.resolver.save_leaf(build.data)?;
                 let index = match external_references.get(&cid) {
                     Some(index) => *index,
                     None => {
@@ -1124,6 +1143,9 @@ where
             }
         }
 
+        let size_external = external.size();
+        let local_len = local.len();
+        let external_len = external.len();
         let external_cid = self.resolver.save(external)?;
 
         let (round, bits) = match self.fraction {
@@ -1142,7 +1164,7 @@ where
             .map(|n| to_fixed(n, bits, round))
             .collect();
 
-        Ok(Superchunk {
+        let data = Superchunk {
             shape: [instants, self.rows, self.cols],
             sidelen: self.sidelen,
             levels: self.levels,
@@ -1156,6 +1178,23 @@ where
             fractional_bits: bits,
             chunks_sidelen: self.chunks_sidelen,
             subsidelen: self.subsidelen,
+        };
+
+        let size = data.size();
+        let compressed = size + size_external + sizes.iter().sum::<u64>();
+        let word_size = mem::size_of::<N>();
+        let uncompressed = instants * self.rows * self.cols * word_size;
+        let compression = compressed as f32 / uncompressed as f32;
+
+        Ok(SuperchunkBuild {
+            data,
+            size,
+            size_external,
+            sizes,
+            compression,
+            elided,
+            local: local_len,
+            external: external_len,
         })
     }
 }
@@ -1623,7 +1662,7 @@ mod tests {
 
     fn no_subchunks() -> DataChunk {
         let data = testing::array8();
-        let chunk = build_superchunk(
+        let build = build_superchunk(
             data.clone().into_iter(),
             testing::resolver(),
             3,
@@ -1631,9 +1670,9 @@ mod tests {
             Precise(3),
             0,
         )?;
-        assert_eq!(chunk.references.len(), 64);
+        assert_eq!(build.data.references.len(), 64);
 
-        Ok((data, chunk))
+        Ok((data, build.data))
     }
 
     test_all_the_things!(no_subchunks);
@@ -1645,7 +1684,7 @@ mod tests {
             .map(|a| Array2::from_shape_fn((16, 16), |(row, col)| a[[row / 2, col / 2]]))
             .collect();
 
-        let chunk = build_superchunk(
+        let build = build_superchunk(
             data.clone().into_iter(),
             testing::resolver(),
             3,
@@ -1653,22 +1692,22 @@ mod tests {
             Precise(3),
             0,
         )?;
-        assert_eq!(chunk.references.len(), 64);
-        for reference in &chunk.references {
+        assert_eq!(build.data.references.len(), 64);
+        for reference in &build.data.references {
             match reference {
                 Reference::Elided => continue,
                 _ => panic!("not elided"),
             }
         }
 
-        Ok((data, chunk))
+        Ok((data, build.data))
     }
 
     test_all_the_things!(no_subchunks_coarse);
 
     fn local_subchunks() -> DataChunk {
         let data = testing::array(16);
-        let chunk = build_superchunk(
+        let build = build_superchunk(
             data.clone().into_iter(),
             testing::resolver(),
             2,
@@ -1676,17 +1715,17 @@ mod tests {
             Precise(3),
             1 << 14,
         )?;
-        assert_eq!(chunk.references.len(), 16);
-        assert_eq!(chunk.local.len(), 4);
+        assert_eq!(build.data.references.len(), 16);
+        assert_eq!(build.data.local.len(), 4);
 
-        Ok((data, chunk))
+        Ok((data, build.data))
     }
 
     test_all_the_things!(local_subchunks);
 
     fn external_subchunks() -> DataChunk {
         let data = testing::array(16);
-        let chunk = build_superchunk(
+        let build = build_superchunk(
             data.clone().into_iter(),
             testing::resolver(),
             2,
@@ -1694,9 +1733,9 @@ mod tests {
             Precise(3),
             0,
         )?;
-        assert_eq!(chunk.references.len(), 16);
+        assert_eq!(build.data.references.len(), 16);
 
-        for reference in &chunk.references {
+        for reference in &build.data.references {
             match reference {
                 Reference::External(_) => {}
                 _ => {
@@ -1705,16 +1744,16 @@ mod tests {
             }
         }
 
-        assert_eq!(chunk.external()?.len(), 4);
+        assert_eq!(build.data.external()?.len(), 4);
 
-        Ok((data, chunk))
+        Ok((data, build.data))
     }
 
     test_all_the_things!(external_subchunks);
 
     fn mixed_subchunks() -> DataChunk {
         let data = testing::array(17);
-        let chunk = build_superchunk(
+        let build = build_superchunk(
             data.clone().into_iter(),
             testing::resolver(),
             2,
@@ -1722,12 +1761,12 @@ mod tests {
             Precise(3),
             8000,
         )?;
-        assert_eq!(chunk.references.len(), 16);
+        assert_eq!(build.data.references.len(), 16);
 
         let mut local_count = 0;
         let mut external_count = 0;
         let mut elided_count = 0;
-        for r in chunk.references.iter() {
+        for r in build.data.references.iter() {
             match r {
                 Reference::External(_) => {
                     external_count += 1;
@@ -1744,7 +1783,7 @@ mod tests {
         assert_eq!(local_count, 4);
         assert_eq!(elided_count, 8);
 
-        Ok((data, chunk))
+        Ok((data, build.data))
     }
 
     test_all_the_things!(mixed_subchunks);

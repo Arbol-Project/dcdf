@@ -223,7 +223,7 @@ pub fn superchunk(
     data: &Vec<Array2<f32>>,
     resolver: &Arc<Resolver<f32>>,
 ) -> Result<Superchunk<f32>> {
-    let chunk = build_superchunk(
+    let build = build_superchunk(
         data.clone().into_iter(),
         Arc::clone(resolver),
         3,
@@ -232,5 +232,5 @@ pub fn superchunk(
         0,
     )?;
 
-    Ok(chunk)
+    Ok(build.data)
 }

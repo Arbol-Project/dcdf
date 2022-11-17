@@ -22,6 +22,7 @@ import dataset
 import dcdf
 
 HEAD = ".cpc_precip_head"
+CHUNK_SIZE = 37  # 10 superchunks/year
 
 
 def cli_main():
@@ -69,37 +70,38 @@ def cli_init(resolver):
 
 def cli_add(dataset, input_file):
     print("Loading...")
-    data = xarray.open_dataset(input_file)
-    dataset.layout.verify(data)
-    dataset.geo.verify(data)
-    time = data.time.data[0]
-
-    data = data.precip.data
-    shape = data.shape[1:]
+    xdata = xarray.open_dataset(input_file)
+    dataset.geo.verify(xdata)
+    dataset.layout.verify(xdata)
+    shape = xdata.precip.data.shape[1:]
     if shape != dataset.shape:
         raise DataError(f"Expected shape: {dataset.shape}, got: {shape}")
 
-    print("Computing encoding requirements...")
-    max_value = numpy.nanmax(data)
-    suggestion = dcdf.suggest_fraction(data, max_value)
+    for start_day in range(0, 366, CHUNK_SIZE):
+        time = xdata.time.data[start_day]
+        data = xdata.precip.data[start_day : start_day + CHUNK_SIZE]
 
-    if suggestion.round:
-        print(
-            f"Data must be rounded to use {suggestion.fractional_bits} bit fractions "
-            "in order to be able to be encoded."
+        print("Computing encoding requirements...")
+        max_value = numpy.nanmax(data)
+        suggestion = dcdf.suggest_fraction(data, max_value)
+
+        if suggestion.round:
+            print(
+                f"Data must be rounded to use {suggestion.fractional_bits} bit fractions "
+                "in order to be able to be encoded."
+            )
+
+        else:
+            print(
+                "Data can be encoded without loss of precision using "
+                f"{suggestion.fractional_bits} bit fractions."
+            )
+
+        # Immutable data means "modifying" the dataset creates a new one
+        print("Building...")
+        dataset = dataset.add_chunk(
+            time, data, suggestion.fractional_bits, suggestion.round
         )
-
-    else:
-        print(
-            "Data can be encoded without loss of precision using "
-            f"{suggestion.fractional_bits} bit fractions."
-        )
-
-    # Immutable data means "modifying" the dataset creates a new one
-    print("Building...")
-    dataset = dataset.add_chunk(
-        time, data, suggestion.fractional_bits, suggestion.round
-    )
 
     cli_new_head(dataset.cid)
 
@@ -141,7 +143,7 @@ class CpcPrecipDataset(dataset.Dataset):
         super().__init__(
             cid=cid,
             resolver=resolver,
-            layout=DailyLayout(),
+            layout=DailyLayout(CHUNK_SIZE),
             geo=CpcGeoSpace(),
             shape=(360, 720),
         )
@@ -161,10 +163,14 @@ class DailyLayout:
     """Layout for data collected daily.
 
     This layout is two levels, with each top level folder containing a century and each
-    century containing superchunks that each contain a year. Each time instant is a day.
+    century containing folders for each year with each year containing superchunks that
+    each contain a part of a year. Each time instant is a day.
     """
 
     step = numpy.timedelta64(1, "D")
+
+    def __init__(self, chunk_size: int):
+        self.chunk_size = chunk_size
 
     def verify(self, data):
         """Verify that times in xarray loaded data actually match our assumptions."""
@@ -186,12 +192,18 @@ class DailyLayout:
         # datetimes. Why?!
         year, month, day = str(instant.astype("datetime64[D]")).split("-")
 
-        # Top folder is first two digits of year, then next level is the year
-        path = f"{year[:2]}/{year}"
+        # Number of full days since Jan 1
+        days = (instant - numpy.datetime64(year)) / self.step
+        days = int(days)
 
-        # Index is the number of full days since Jan 1
-        index = (instant - numpy.datetime64(year)) / self.step
-        index = int(index)
+        # Find superchunk for day
+        chunk = days // self.chunk_size
+        first_day = chunk * self.chunk_size
+        index = days - first_day
+
+        # Top folder is first two digits of year, then next level is the year, and the
+        # third level is the 0 indexed chunk within that year
+        path = f"{year[:2]}/{year}/{chunk}"
 
         # Instant is rounded down to day
         instant = numpy.datetime64(f"{year}-{month}-{day}")
@@ -201,7 +213,12 @@ class DailyLayout:
     def time_at(self, path: str, index: int) -> numpy.datetime64:
         # Get timestamp of beginning of year from path
         _, year = path.split("/")
+        year, half = year.split(".")
         instant = numpy.datetime64(year)
+
+        # If second half of year, add 183 more days
+        if half == "1":
+            index += 183
 
         # Add index number of days
         instant += index * self.step

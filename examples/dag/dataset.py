@@ -155,7 +155,7 @@ class Dataset:
             )
 
         # TODO: Make sure shape for each instant matches shape of datastream
-        chunk = dcdf.build_superchunk(
+        build = dcdf.build_superchunk(
             data,
             levels,
             self.resolver,
@@ -165,10 +165,23 @@ class Dataset:
             local_threshold=local_threshold,
         )
         prev = self.resolver.get_commit(self.cid)
-        new_root = self.resolver.insert(prev.root_cid, path, chunk)
+        new_root = self.resolver.insert(prev.root_cid, path, build.cid)
 
-        message = f"Added data at {time}"
+        sizes = numpy.array(build.sizes)
+        message = (
+            f"Added data at {time}\n\n"
+            f"Superchunk size: {human(build.size)}\n"
+            f"External links size: {human(build.size_external)}\n"
+            f"Maximum subchunk size: {human(sizes.max())}\n"
+            f"Average subchunk size: {human(sizes.mean())}\n"
+            f"Compression: {build.compression:0.2f}\n"
+            f"Elided subchunks: {build.elided}\n"
+            f"Local subchunks: {build.local}\n"
+            f"External subchunks: {build.external}\n"
+        )
         commit = self.resolver.commit(message, new_root, self.cid)
+
+        print(message)
 
         return self._update(commit)
 
@@ -197,3 +210,23 @@ class Dataset:
             folder = self.resolver.get_folder(cid)
 
         return folder[path[-1]]
+
+
+def human(n: int) -> str:
+    """Format an integer as a human readable amount
+
+    Uses k (kilo), m (mega), and g (giga) suffixes where appropriate.
+    """
+    k = 1 << 10
+    if n < k:
+        return str(n)
+
+    m = 1 << 20
+    if n < m:
+        return f"{n / k:0.2f}k"
+
+    g = 1 << 30
+    if n < g:
+        return f"{n / m:0.2f}m"
+
+    return f"{n / g:0.2f}g"

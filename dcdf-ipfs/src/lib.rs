@@ -230,7 +230,7 @@ mod tests {
         data: &Vec<Array2<f32>>,
         resolver: &Arc<dcdf::Resolver<f32>>,
     ) -> dcdf::Result<dcdf::Superchunk<f32>> {
-        let chunk = dcdf::build_superchunk(
+        let build = dcdf::build_superchunk(
             data.clone().into_iter(),
             Arc::clone(resolver),
             3,
@@ -239,7 +239,7 @@ mod tests {
             0,
         )?;
 
-        Ok(chunk)
+        Ok(build.data)
     }
 
     #[test]

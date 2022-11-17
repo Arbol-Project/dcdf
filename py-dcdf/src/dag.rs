@@ -248,12 +248,21 @@ impl PySuperchunkBuilderF32 {
         }
     }
 
-    fn finish(&mut self) -> PyResult<String> {
-        let build = mem::replace(&mut self.inner, None).expect("finish called twice");
-        let chunk = build.finish().map_err(convert_error)?;
-        let cid = self.resolver.save(chunk).map_err(convert_error)?;
+    fn finish(&mut self) -> PyResult<PySuperchunkBuild> {
+        let builder = mem::replace(&mut self.inner, None).expect("finish called twice");
+        let build = builder.finish().map_err(convert_error)?;
+        let cid = self.resolver.save(build.data).map_err(convert_error)?;
 
-        Ok(cid.to_string())
+        Ok(PySuperchunkBuild {
+            cid: cid.to_string(),
+            size: build.size,
+            size_external: build.size_external,
+            sizes: build.sizes,
+            compression: build.compression,
+            elided: build.elided,
+            local: build.local,
+            external: build.external,
+        })
     }
 }
 
@@ -348,4 +357,31 @@ impl PySuperchunkF32 {
 
         Ok(py_results)
     }
+}
+
+#[pyclass]
+pub struct PySuperchunkBuild {
+    #[pyo3(get)]
+    pub cid: String,
+
+    #[pyo3(get)]
+    pub size: u64,
+
+    #[pyo3(get)]
+    pub size_external: u64,
+
+    #[pyo3(get)]
+    pub sizes: Vec<u64>,
+
+    #[pyo3(get)]
+    pub compression: f32,
+
+    #[pyo3(get)]
+    pub elided: usize,
+
+    #[pyo3(get)]
+    pub local: usize,
+
+    #[pyo3(get)]
+    pub external: usize,
 }
