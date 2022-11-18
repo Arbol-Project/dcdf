@@ -16,19 +16,8 @@ tree structure allows queries to be performed without having to retrieve the ent
 dataset for the time period in question, and the use of compact data structures allows
 space efficient files to be queried in place without a decompression step. 
 
-What is here currently is just a start. The work in "Low Level Encoding" from the [Road
-Map](ROADMAP.md) is largely finished. There is still testing, debugging, documentation,
-and possible refactoring to do, but largely this part works.
-
-What this doesn't do yet is any kind of metadata or mapping from logical coordinates to
-real coordinates. So, for instance, you'll access a datapoint with the indices of its
-time instant, row, and column. There is no facility for mapping these indices to
-datetime values, or latitude/longitude coordinates, so that will have to be handled by
-the calling code.
-
-This library, currently, can only produce standalone files. Sharding of datasets into
-smaller chunks and use of IPLD for storage and retrieval are still in the theoretical
-future.
+To get a good, quick idea of current capabilities, see `examples/dag/cpc_precip.py` and
+`examples/dag/dataset.py` which is a dependency of the former. 
 
 ## Quick Start
 
@@ -41,10 +30,7 @@ Then:
     $ pip install -U pip setuptools
     $ pip install -e py-dcdf[dev,examples]
 
-From there, you should be able to run anything in the "examples" directory. There is an
-example, currently, of converting a netcdf file from the cpc daily global precipitation
-dataset to a dcdf file that can be loaded with the "load.py" example. The netcdf files
-from this dataset contain a year's worth of data.
+From there, you should be able to run anything in the "examples" directory.
 
 When this package sees a release, then binary wheels will be available containing
 compiled Rust code, so a Rust toolchain will not be needed to use released versions of
