@@ -41,7 +41,7 @@ where
     }
 
     // Shift the point fractional_bits bits to the left
-    let mut shifted = n * F::from(1 << fractional_bits).unwrap();
+    let mut shifted = n * F::from(1_i64 << fractional_bits).unwrap();
 
     // Check to make sure we don't have any bits to the right of the point after shifting
     if shifted.fract() > F::zero() {
@@ -78,7 +78,7 @@ where
 pub fn from_fixed<F: Float>(n: i64, fractional_bits: usize) -> F {
     match n {
         0 => F::nan(),
-        _ => F::from(n - 1).unwrap() / F::from(1 << (fractional_bits + 1)).unwrap(),
+        _ => F::from(n - 1).unwrap() / F::from(1_i64 << (fractional_bits + 1)).unwrap(),
     }
 }
 
@@ -327,6 +327,16 @@ mod tests {
     fn test_to_fixed_overflow() {
         let n = 1.5e100;
         to_fixed(n, 1, false);
+    }
+
+    /// Regression test for issue #5
+    ///
+    /// https://github.com/Arbol-Project/dcdf/issues/5
+    ///
+    #[test]
+    fn test_round_trip_lots_of_fractional_bits() {
+        let n = 1024.1;
+        assert_eq!(from_fixed::<f32>(to_fixed(n, 34, false), 34), n);
     }
 
     #[test]
