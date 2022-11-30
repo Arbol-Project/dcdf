@@ -3,16 +3,20 @@ Encode and retrieve CPC daily precipitation data.
 
 Usage:
     cpc_precip.py init
+    cpc_precip.py shell
     cpc_precip.py add <input_file>
     cpc_precip.py query <datetime> <latitude> <longitude>
+    cpc_precip.py window <startdate> <enddate> <lat1> <lat2> <lon1> <lon2>
 
 Options:
   -h --help     Show this screen.
 """
+import code
 import dataclasses
 import docopt
 import os
 import sys
+import typing
 
 from dateutil.parser import parse as parse_date
 import numpy
@@ -21,6 +25,7 @@ import xarray
 import dataset
 import dcdf
 
+Path = str
 HEAD = ".cpc_precip_head"
 CHUNK_SIZE = 37  # 10 superchunks/year
 
@@ -46,11 +51,34 @@ def cli_main():
         if args["add"]:
             return cli_add(data, args["<input_file>"])
 
-        if args["query"]:
+        elif args["query"]:
             date = parse_date(args["<datetime>"])
             lat = float(args["<latitude>"])
             lon = float(args["<longitude>"])
             return cli_query(data, date, lat, lon)
+
+        elif args["window"]:
+            start = parse_date(args["<startdate>"])
+            end = parse_date(args["<enddate>"])
+            lat1 = float(args["<lat1>"])
+            lat2 = float(args["<lat2>"])
+            lon1 = float(args["<lon1>"])
+            lon2 = float(args["<lon2>"])
+            return cli_window(data, start, end, lat1, lat2, lon1, lon2)
+
+        elif args["shell"]:
+            banner = (
+                "Welcome to the CPC Precipitation Dataset interactive shell.\n"
+                "The dataset lives in the 'dataset' variable.\n"
+                "Type 'help(dataset)' for more information."
+            )
+            local = {
+                "dataset": data,
+                "np": numpy,
+            }
+
+            code.interact(banner, local=local)
+            return cli_ok()
 
         return cli_error("not implemented")
 
@@ -121,6 +149,21 @@ def cli_query(data, date, lat, lon):
     return cli_ok(message)
 
 
+def cli_window(data, start, end, lat1, lat2, lon1, lon2):
+    start = numpy.datetime64(start)
+    end = numpy.datetime64(end)
+    (start, _, _), window = data.window(start, end, lat1, lat2, lon1, lon2)
+
+    for i, page in enumerate(window):
+        date = start + i * data.layout.step
+        print(date)
+        for row in page:
+            print(",".join(map(str, row)))
+        print("")
+
+    return cli_ok("Done")
+
+
 def cli_ok(message):
     print(message)
     return 0
@@ -188,6 +231,13 @@ class DailyLayout:
             raise DataError("Expecting even 1 day spacing between time instants.")
 
     def locate(self, instant: numpy.datetime64) -> tuple[str, int, numpy.datetime64]:
+        year, chunk, index, instant = self._locate(instant)
+        return self._path_for(year, chunk), index, instant
+
+    def _locate(
+        self, instant: numpy.datetime64
+    ) -> tuple[str, int, int, numpy.datetime64]:
+        """For given datetime, return year, chunk, index"""
         # It's confounding that you can't access date components directly in numpy
         # datetimes. Why?!
         year, month, day = str(instant.astype("datetime64[D]")).split("-")
@@ -201,29 +251,55 @@ class DailyLayout:
         first_day = chunk * self.chunk_size
         index = days - first_day
 
-        # Top folder is first two digits of year, then next level is the year, and the
-        # third level is the 0 indexed chunk within that year
-        path = f"{year[:2]}/{year}/{chunk}"
-
         # Instant is rounded down to day
         instant = numpy.datetime64(f"{year}-{month}-{day}")
 
-        return path, index, instant
+        return year, chunk, index, instant
+
+    def _path_for(self, year, chunk) -> str:
+        # Top folder is first two digits of year, then next level is the year, and the
+        # third level is the 0 indexed chunk within that year
+        return f"{year[:2]}/{year}/{chunk}"
+
+    def locate_span(
+        self, start: numpy.datetime64, end: numpy.datetime64
+    ) -> typing.Iterator[tuple[Path, slice]]:
+        year, chunk, index, _ = self._locate(start)
+        while True:
+            next_year, next_chunk, instant = self._locate_next(year, chunk)
+            if instant >= end:
+                # Last span
+                days = (end - numpy.datetime64(year)) // self.step
+                first_day = chunk * self.chunk_size
+                last_index = days - first_day
+
+                yield self._path_for(year, chunk), slice(index, last_index)
+                break
+
+            else:
+                yield self._path_for(year, chunk), slice(index, None)
+                index = None
+                year = next_year
+                chunk = next_chunk
+
+    def _locate_next(self, year, chunk) -> tuple[str, int, numpy.datetime64]:
+        # Increment chunk
+        chunk += 1
+
+        # See if incrementing chunk took us to the next year
+        instant = numpy.datetime64(year) + self.step * self.chunk_size * chunk
+        next_year = str(instant.astype("datetime64[Y]"))
+        if next_year != year:
+            # Roll over to the next year
+            return next_year, 0, numpy.datetime64(next_year)
+
+        return year, chunk, instant
 
     def time_at(self, path: str, index: int) -> numpy.datetime64:
-        # Get timestamp of beginning of year from path
-        _, year = path.split("/")
-        year, half = year.split(".")
+        _, year, chunk = path.split("/")
         instant = numpy.datetime64(year)
+        instant += (int(chunk) * self.chunk_size + index) * self.step
 
-        # If second half of year, add 183 more days
-        if half == "1":
-            index += 183
-
-        # Add index number of days
-        instant += index * self.step
-
-        # Done
         return instant
 
 

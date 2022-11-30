@@ -14,4 +14,4 @@ dependencies = ["numpy"]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov"]
-examples = ["docopt", "xarray", "netCDF4", "python-dateutil"]
+examples = ["docopt", "xarray", "netCDF4", "python-dateutil", "more-itertools"]
