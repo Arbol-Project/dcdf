@@ -46,12 +46,15 @@ from __future__ import annotations
 import abc
 import typing
 
+import more_itertools as itertools2
 import numpy
 
 import dcdf
 
 
 Shape = typing.Tuple[int, int]
+Path = str
+Index = int
 
 
 class Layout(abc.ABC):
@@ -69,7 +72,7 @@ class Layout(abc.ABC):
         """The time interval between time instants in a superchunk."""
 
     @abc.abstractmethod
-    def locate(self, instant: numpy.datetime64) -> tuple[str, int, numpy.datetime64]:
+    def locate(self, instant: numpy.datetime64) -> tuple[Path, Index, numpy.datetime64]:
         """Convert date and time to path and index.
 
         Finds the nearest representable time instant in the current layout and returns
@@ -80,6 +83,20 @@ class Layout(abc.ABC):
         The return value only says where that instant would be represented in the
         dataset if it existed. It doesn't say anything about whether that data exists in
         the dataset.
+        """
+
+    @abc.abstractmethod
+    def locate_span(
+        self, start: numpy.datetime64, end: numpy.datetime64
+    ) -> typing.Iterator[tuple[Path, slice]]:
+        """Locate superchunks that span a range of time.
+
+        Returns an iterator of tuples of path and slice representing the superchunks and
+        the spans within them that contain the time instants inside the bounds.
+
+        The return value only says where these instants would be represented in the
+        dataset if they existed. It doesn't say anything about whether that data exists
+        in the dataset.
         """
 
     @abc.abstractmethod
@@ -210,6 +227,37 @@ class Dataset:
             folder = self.resolver.get_folder(cid)
 
         return folder[path[-1]]
+
+    def window(
+        self,
+        start: numpy.datetime64,
+        end: numpy.datetime64,
+        lat1: float,
+        lat2: float,
+        lon1: float,
+        lon2: float,
+    ) -> tuple[tuple[numpy.datetime64, int, int], numpy.NDArray]:
+        def window_slice(path, slice_):
+            chunk = self.resolver.get_superchunk(self._lookup(path))
+            start = 0 if slice_.start is None else slice_.start
+            end = chunk.shape[0] if slice_.stop is None else slice_.stop
+            return chunk.window(start, end, top, bottom, left, right)
+
+        (top, left), _ = self.geo.locate(lat1, lon1)
+        (bottom, right), _ = self.geo.locate(lat2, lon2)
+        top, bottom = _reorder(top, bottom)
+        left, right = _reorder(left, right)
+
+        chunks = itertools2.peekable(self.layout.locate_span(start, end))
+        path, slice_ = chunks.peek()
+        corner = (self.layout.time_at(path, slice_.start), top, left)
+        slices = [window_slice(path, slice_) for path, slice_ in chunks]
+        return corner, numpy.concatenate(slices)
+
+
+def _reorder(a, b):
+    """Returns a and b in ascending order."""
+    return (a, b) if a < b else (b, a)
 
 
 def human(n: int) -> str:
