@@ -237,22 +237,49 @@ class Dataset:
         lon1: float,
         lon2: float,
     ) -> tuple[tuple[numpy.datetime64, int, int], numpy.NDArray]:
+        (top, left), _ = self.geo.locate(lat1, lon1)
+        (bottom, right), _ = self.geo.locate(lat2, lon2)
+        top, bottom = _reorder(top, bottom)
+        left, right = _reorder(left, right)
+
         def window_slice(path, slice_):
             chunk = self.resolver.get_superchunk(self._lookup(path))
             start = 0 if slice_.start is None else slice_.start
             end = chunk.shape[0] if slice_.stop is None else slice_.stop
             return chunk.window(start, end, top, bottom, left, right)
 
-        (top, left), _ = self.geo.locate(lat1, lon1)
-        (bottom, right), _ = self.geo.locate(lat2, lon2)
-        top, bottom = _reorder(top, bottom)
-        left, right = _reorder(left, right)
-
         chunks = itertools2.peekable(self.layout.locate_span(start, end))
         path, slice_ = chunks.peek()
         corner = (self.layout.time_at(path, slice_.start), top, left)
         slices = [window_slice(path, slice_) for path, slice_ in chunks]
         return corner, numpy.concatenate(slices)
+
+    def search(
+        self,
+        start: numpy.datetime64,
+        end: numpy.datetime64,
+        lat1: float,
+        lat2: float,
+        lon1: float,
+        lon2: float,
+        lower: float,
+        upper: float,
+    ) -> typing.Iterator[tuple[numpy.datetime64, float, float]]:
+        (top, left), _ = self.geo.locate(lat1, lon1)
+        (bottom, right), _ = self.geo.locate(lat2, lon2)
+        top, bottom = _reorder(top, bottom)
+        left, right = _reorder(left, right)
+
+        for path, slice_ in self.layout.locate_span(start, end):
+            chunk_start = self.layout.time_at(path, 0)
+            chunk = self.resolver.get_superchunk(self._lookup(path))
+            start = 0 if slice_.start is None else slice_.start
+            end = chunk.shape[0] if slice_.stop is None else slice_.stop
+            results = chunk.search(start, end, top, bottom, left, right, lower, upper)
+            for instant, row, col in results:
+                time = chunk_start + self.layout.step * instant
+                lat, lon = self.geo.coord_at(row, col)
+                yield time, lat, lon
 
 
 def _reorder(a, b):

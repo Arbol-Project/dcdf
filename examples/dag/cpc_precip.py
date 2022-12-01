@@ -7,6 +7,8 @@ Usage:
     cpc_precip.py add <input_file>
     cpc_precip.py query <datetime> <latitude> <longitude>
     cpc_precip.py window <startdate> <enddate> <lat1> <lat2> <lon1> <lon2>
+    cpc_precip.py search <startdate> <enddate> <lat1> <lat2> <lon1> <lon2> <lower_bound>
+        <upper_bound>
 
 Options:
   -h --help     Show this screen.
@@ -65,6 +67,18 @@ def cli_main():
             lon1 = float(args["<lon1>"])
             lon2 = float(args["<lon2>"])
             return cli_window(data, start, end, lat1, lat2, lon1, lon2)
+
+        elif args["search"]:
+            start = parse_date(args["<startdate>"])
+            end = parse_date(args["<enddate>"])
+            lat1 = float(args["<lat1>"])
+            lat2 = float(args["<lat2>"])
+            lon1 = float(args["<lon1>"])
+            lon2 = float(args["<lon2>"])
+            lower = float(args["<lower_bound>"])
+            upper = float(args["<upper_bound>"])
+
+            return cli_search(data, start, end, lat1, lat2, lon1, lon2, lower, upper)
 
         elif args["shell"]:
             banner = (
@@ -160,6 +174,15 @@ def cli_window(data, start, end, lat1, lat2, lon1, lon2):
         for row in page:
             print(",".join(map(str, row)))
         print("")
+
+    return cli_ok("Done")
+
+
+def cli_search(data, start, end, lat1, lat2, lon1, lon2, lower, upper):
+    start = numpy.datetime64(start)
+    end = numpy.datetime64(end)
+    for time, lat, lon in data.search(start, end, lat1, lat2, lon1, lon2, lower, upper):
+        print(f"{time} {lat} {lon}")
 
     return cli_ok("Done")
 
