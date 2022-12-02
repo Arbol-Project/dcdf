@@ -4,8 +4,10 @@ Encode and retrieve CPC daily precipitation data.
 Usage:
     cpc_precip.py init
     cpc_precip.py shell
+    cpc_precip.py serve
     cpc_precip.py add <input_file>
     cpc_precip.py query <datetime> <latitude> <longitude>
+    cpc_precip.py query <startdate> <enddate> <latitude> <longitude>
     cpc_precip.py window <startdate> <enddate> <lat1> <lat2> <lon1> <lon2>
     cpc_precip.py search <startdate> <enddate> <lat1> <lat2> <lon1> <lon2> <lower_bound>
         <upper_bound>
@@ -21,6 +23,7 @@ import sys
 import typing
 
 from dateutil.parser import parse as parse_date
+import flask
 import numpy
 import xarray
 
@@ -54,10 +57,17 @@ def cli_main():
             return cli_add(data, args["<input_file>"])
 
         elif args["query"]:
-            date = parse_date(args["<datetime>"])
             lat = float(args["<latitude>"])
             lon = float(args["<longitude>"])
-            return cli_query(data, date, lat, lon)
+
+            if args["<datetime>"]:
+                date = parse_date(args["<datetime>"])
+                return cli_get(data, date, lat, lon)
+
+            else:
+                start = parse_date(args["<startdate>"])
+                end = parse_date(args["<enddate>"])
+                return cli_cell(data, start, end, lat, lon)
 
         elif args["window"]:
             start = parse_date(args["<startdate>"])
@@ -93,6 +103,9 @@ def cli_main():
 
             code.interact(banner, local=local)
             return cli_ok()
+
+        elif args["serve"]:
+            cli_serve(data)
 
         return cli_error("not implemented")
 
@@ -155,12 +168,26 @@ def cli_new_head(cid):
         print(cid, file=f)
 
 
-def cli_query(data, date, lat, lon):
+def cli_get(data, date, lat, lon):
     (date, lat, lon), value = data.get(numpy.datetime64(date), lat, lon)
     message = (
         f"date: {date}\n" f"lat: {lat}\n" f"lon: {lon}\n" f"Precipitation: {value}\n"
     )
     return cli_ok(message)
+
+
+def cli_cell(data, start, end, lat, lon):
+    start = numpy.datetime64(start)
+    end = numpy.datetime64(end)
+    (start, lat, lon), values = data.cell(start, end, lat, lon)
+
+    print(f"lat: {lat}")
+    print(f"lon: {lon}")
+    for i, value in enumerate(values):
+        time = start + i * data.layout.step
+        print(f"{time}: {value}")
+
+    return cli_ok("")
 
 
 def cli_window(data, start, end, lat1, lat2, lon1, lon2):
@@ -185,6 +212,38 @@ def cli_search(data, start, end, lat1, lat2, lon1, lon2, lower, upper):
         print(f"{time} {lat} {lon}")
 
     return cli_ok("Done")
+
+
+def cli_serve(data):
+    """Mimic the current dClimate API for this one query."""
+    app = flask.Flask("CPC Precipitation")
+
+    @app.route("/", methods=["POST"])
+    def handle():
+        request = flask.request.get_json()
+        point = request["point_params"]
+        lat = float(point["lat"])
+        lon = float(point["lon"])
+        start, end = request["time_range"]
+        start = numpy.datetime64(parse_date(start))
+        end = numpy.datetime64(parse_date(end))
+        if start > end:
+            start, end = end, start
+
+        (start, _, _), values = data.cell(start, end, lat, lon)
+        times = [
+            numpy.datetime_as_string(start + i * data.layout.step, unit="s")
+            for i in range(len(values))
+        ]
+
+        return {
+            "data": list(map(float, values)),
+            "dimensions_order": ["time"],
+            "times": times,
+            "unit of measurement": "mm",
+        }
+
+    app.run(host="0.0.0.0", port=8000)
 
 
 def cli_ok(message):
@@ -296,7 +355,7 @@ class DailyLayout:
                 first_day = chunk * self.chunk_size
                 last_index = days - first_day
 
-                yield self._path_for(year, chunk), slice(index, last_index)
+                yield self._path_for(year, chunk), slice(index, last_index + 1)
                 break
 
             else:
