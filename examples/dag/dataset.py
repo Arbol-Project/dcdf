@@ -228,6 +228,28 @@ class Dataset:
 
         return folder[path[-1]]
 
+    def cell(
+        self,
+        start: numpy.datetime64,
+        end: numpy.datetime64,
+        lat: float,
+        lon: float,
+    ) -> tuple[tuple[numpy.datetime64, int, int], numpy.NDArray]:
+        start, end = _reorder(start, end)
+        (row, col), (lat, lon) = self.geo.locate(lat, lon)
+
+        def cell_slice(path, slice_):
+            chunk = self.resolver.get_superchunk(self._lookup(path))
+            start = 0 if slice_.start is None else slice_.start
+            end = chunk.shape[0] if slice_.stop is None else slice_.stop
+            return chunk.cell(start, end, row, col)
+
+        chunks = itertools2.peekable(self.layout.locate_span(start, end))
+        path, slice_ = chunks.peek()
+        start = self.layout.time_at(path, slice_.start)
+        slices = [cell_slice(path, slice_) for path, slice_ in chunks]
+        return (start, lat, lon), numpy.concatenate(slices)
+
     def window(
         self,
         start: numpy.datetime64,
@@ -237,6 +259,7 @@ class Dataset:
         lon1: float,
         lon2: float,
     ) -> tuple[tuple[numpy.datetime64, int, int], numpy.NDArray]:
+        start, end = _reorder(start, end)
         (top, left), _ = self.geo.locate(lat1, lon1)
         (bottom, right), _ = self.geo.locate(lat2, lon2)
         top, bottom = _reorder(top, bottom)
