@@ -38,6 +38,7 @@ where
     N: Float + Debug + 'static, // # SMELL N is not used
 {
     const NODE_TYPE: u8 = NODE_LINKS;
+    const NODE_TYPE_STR: &'static str = "Links";
 }
 
 impl Serialize for Links {

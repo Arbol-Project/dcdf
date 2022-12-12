@@ -392,6 +392,7 @@ where
     N: Float + Debug + 'static,
 {
     const NODE_TYPE: u8 = NODE_SUPERCHUNK;
+    const NODE_TYPE_STR: &'static str = "Superchunk";
 
     /// Load superchunk from a stream
     fn load_from(resolver: &Arc<Resolver<N>>, stream: &mut impl io::Read) -> Result<Self> {

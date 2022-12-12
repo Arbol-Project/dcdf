@@ -31,6 +31,7 @@ where
     N: Float + Debug + 'static,
 {
     const NODE_TYPE: u8;
+    const NODE_TYPE_STR: &'static str;
 
     /// Store a node object in the DAG and return its CID
     ///
@@ -98,6 +99,18 @@ where
             panic!("Unsupported type: {:?}", TypeId::of::<N>())
         }
     }
+
+    /// List other nodes contained by this node
+    fn ls(&self, _resolver: &Arc<Resolver<N>>) -> Vec<NodeListEntry> {
+        unimplemented!();
+    }
+}
+
+pub struct NodeListEntry {
+    pub cid: Cid,
+    pub name: String,
+    pub node_type: &'static str,
+    pub size: u64,
 }
 
 impl<N> Node<N> for FChunk<N>
@@ -105,4 +118,5 @@ where
     N: Float + Debug + 'static,
 {
     const NODE_TYPE: u8 = NODE_SUBCHUNK;
+    const NODE_TYPE_STR: &'static str = "Subchunk";
 }

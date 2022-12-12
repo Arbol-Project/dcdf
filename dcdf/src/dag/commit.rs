@@ -64,6 +64,7 @@ where
     N: Float + Debug + 'static,
 {
     const NODE_TYPE: u8 = NODE_COMMIT;
+    const NODE_TYPE_STR: &'static str = "Commit";
 
     fn load_from(resolver: &Arc<Resolver<N>>, stream: &mut impl io::Read) -> Result<Self> {
         Self::read_header(stream)?;

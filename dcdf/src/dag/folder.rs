@@ -74,6 +74,7 @@ where
     N: Float + Debug + 'static,
 {
     const NODE_TYPE: u8 = NODE_FOLDER;
+    const NODE_TYPE_STR: &'static str = "Folder";
 
     fn load_from(resolver: &Arc<Resolver<N>>, stream: &mut impl Read) -> Result<Self> {
         Self::read_header(stream)?;

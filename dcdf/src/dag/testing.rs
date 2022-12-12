@@ -167,6 +167,16 @@ where
     }
 }
 
+pub fn cid_for(data: &str) -> Cid {
+    let mut hash = Sha2_256::default();
+    hash.update(&data.as_bytes());
+
+    let digest = hash.finalize();
+    let hash = MultihashGeneric::wrap(SHA2_256, &digest).expect("Not really sure.");
+
+    Cid::new_v1(SHA2_256, hash)
+}
+
 pub fn resolver<N>() -> Arc<Resolver<N>>
 where
     N: Float + Debug,
