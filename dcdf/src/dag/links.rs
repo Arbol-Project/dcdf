@@ -60,10 +60,58 @@ where
 
         Ok(Self(links))
     }
+
+    /// List other nodes contained by this node
+    fn ls(&self) -> Vec<(String, Cid)> {
+        let mut ls = Vec::new();
+        for (i, cid) in self.iter().enumerate() {
+            ls.push((i.to_string(), cid.clone()));
+        }
+
+        ls
+    }
 }
 
 impl Cacheable for Links {
     fn size(&self) -> u64 {
         4 + self.0.iter().map(|l| l.to_bytes().len()).sum::<usize>() as u64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use super::super::testing;
+
+    fn make_one() -> Links {
+        let mut links = Links::new();
+        links.push(testing::cid_for("zero"));
+        links.push(testing::cid_for("one"));
+        links.push(testing::cid_for("two"));
+
+        links
+    }
+
+    #[test]
+    fn serialize_deserialize() -> Result<()> {
+        let resolver: Arc<Resolver<f32>> = testing::resolver();
+        let links = make_one();
+        let expected = links.0.clone();
+
+        let cid = resolver.save(links)?;
+        let links = resolver.get_links(&cid)?;
+        assert_eq!(expected, links.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn ls() {
+        let links = make_one();
+        let ls = <Links as Node<f32>>::ls(&links);
+        assert_eq!(ls[0], (String::from("0"), testing::cid_for("zero")));
+        assert_eq!(ls[1], (String::from("1"), testing::cid_for("one")));
+        assert_eq!(ls[2], (String::from("2"), testing::cid_for("two")));
     }
 }

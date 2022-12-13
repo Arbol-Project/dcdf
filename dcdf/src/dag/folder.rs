@@ -104,6 +104,15 @@ where
 
         Ok(())
     }
+
+    fn ls(&self) -> Vec<(String, Cid)> {
+        let mut ls = Vec::new();
+        for (name, cid) in &self.items {
+            ls.push((name.clone(), cid.clone()));
+        }
+
+        ls
+    }
 }
 
 impl<N> Cacheable for Folder<N>
@@ -208,6 +217,28 @@ mod tests {
         let superchunk = resolver.get_superchunk(&superchunk)?;
 
         assert_eq!(superchunk.shape(), [100, 15, 15]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_ls() -> Result<()> {
+        let resolver = testing::resolver();
+        let cid = folders(&resolver)?;
+        let c = resolver.get_folder(&cid)?;
+
+        let ls = c.ls();
+        assert_eq!(ls.len(), 2);
+        assert_eq!(ls[0], (String::from("a"), c.get("a").unwrap()));
+        let a = resolver.get_folder(&ls[0].1)?;
+        assert_eq!(ls[1], (String::from("b"), c.get("b").unwrap()));
+        let b = resolver.get_folder(&ls[1].1)?;
+
+        let ls = a.ls();
+        assert_eq!(ls, vec![(String::from("data"), a.get("data").unwrap())]);
+
+        let ls = b.ls();
+        assert_eq!(ls, vec![(String::from("data"), b.get("data").unwrap())]);
 
         Ok(())
     }

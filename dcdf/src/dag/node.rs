@@ -34,16 +34,9 @@ where
     fn load_from(resolver: &Arc<Resolver<N>>, stream: &mut impl io::Read) -> Result<Self>;
 
     /// List other nodes contained by this node
-    fn ls(&self, _resolver: &Arc<Resolver<N>>) -> Vec<NodeListEntry> {
+    fn ls(&self) -> Vec<(String, Cid)> {
         unimplemented!();
     }
-}
-
-pub struct NodeListEntry {
-    pub cid: Cid,
-    pub name: String,
-    pub node_type: &'static str,
-    pub size: u64,
 }
 
 impl<N> Node<N> for FChunk<N>

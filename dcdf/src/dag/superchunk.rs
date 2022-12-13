@@ -472,6 +472,10 @@ where
 
         Ok(())
     }
+
+    fn ls(&self) -> Vec<(String, Cid)> {
+        vec![(String::from("subchunks"), self.external_cid)]
+    }
 }
 
 /// Represents the part of a window that has some overlap with a subchunk of a superchunk.
@@ -1644,6 +1648,16 @@ mod tests {
                             }
                         }
                     }
+
+                    Ok(())
+                }
+
+                #[test]
+                fn [<$name _test_ls>]() -> Result<()> {
+                    let (_, chunk) = $name()?;
+                    let ls = chunk.ls();
+                    assert_eq!(ls.len(), 1);
+                    assert_eq!(ls[0], (String::from("subchunks"), chunk.external_cid));
 
                     Ok(())
                 }

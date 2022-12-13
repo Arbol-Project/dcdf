@@ -99,6 +99,15 @@ where
 
         Ok(())
     }
+
+    fn ls(&self) -> Vec<(String, Cid)> {
+        let mut ls = vec![(String::from("root"), self.root)];
+        if let Some(prev) = self.prev {
+            ls.push((String::from("prev"), prev));
+        }
+
+        ls
+    }
 }
 
 #[cfg(test)]
@@ -142,6 +151,15 @@ mod tests {
         let commit = resolver.get_commit(&cid)?;
         assert_eq!(commit.message(), "Second commit");
 
+        let ls = commit.ls();
+        assert_eq!(
+            ls,
+            vec![
+                (String::from("root"), commit.root),
+                (String::from("prev"), commit.prev.unwrap()),
+            ]
+        );
+
         let c = commit.root();
         let a = c.get("a").expect("no value for a");
         let a = resolver.get_folder(&a)?;
@@ -156,6 +174,9 @@ mod tests {
 
         let commit = commit.prev()?.expect("Expected previous commit");
         assert_eq!(commit.message(), "First commit");
+
+        let ls = commit.ls();
+        assert_eq!(ls, vec![(String::from("root"), commit.root)]);
 
         let c = commit.root();
         let a = c.get("a").expect("no value for a");
