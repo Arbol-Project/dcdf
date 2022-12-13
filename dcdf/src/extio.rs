@@ -6,16 +6,10 @@ use super::errors::Result;
 
 pub trait Serialize: Sized {
     /// Write self to a stream
-    fn write_to(&self, _stream: &mut impl io::Write) -> Result<()> {
-        // SMELL
-        unimplemented!("This object cannot be deserialized.");
-    }
+    fn write_to(&self, _stream: &mut impl io::Write) -> Result<()>;
 
     /// Read Self from a stream
-    fn read_from(_stream: &mut impl io::Read) -> Result<Self> {
-        // SMELL
-        unimplemented!("This object cannot be deserialized.");
-    }
+    fn read_from(_stream: &mut impl io::Read) -> Result<Self>;
 }
 
 pub trait ExtendedRead: io::Read {

@@ -6,7 +6,7 @@ use cid::Cid;
 use num_traits::Float;
 
 use crate::errors::Result;
-use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
+use crate::extio::{ExtendedRead, ExtendedWrite};
 
 use super::folder::Folder;
 use super::node::{Node, NODE_COMMIT};
@@ -67,7 +67,6 @@ where
     const NODE_TYPE_STR: &'static str = "Commit";
 
     fn load_from(resolver: &Arc<Resolver<N>>, stream: &mut impl io::Read) -> Result<Self> {
-        Self::read_header(stream)?;
         let root = Cid::read_bytes(&mut *stream)?;
         let prev = match stream.read_byte()? {
             0 => None,
@@ -84,13 +83,8 @@ where
             resolver: Arc::clone(resolver),
         })
     }
-}
 
-impl<N> Serialize for Commit<N>
-where
-    N: Float + Debug + 'static,
-{
-    fn write_to(&self, stream: &mut impl io::Write) -> Result<()> {
+    fn save_to(self, _resolver: &Arc<Resolver<N>>, stream: &mut impl io::Write) -> Result<()> {
         self.root.write_bytes(&mut *stream)?;
         match self.prev {
             Some(cid) => {

@@ -8,7 +8,7 @@ use num_traits::Float;
 
 use crate::cache::Cacheable;
 use crate::errors::Result;
-use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
+use crate::extio::{ExtendedRead, ExtendedWrite};
 
 use super::node::{Node, NODE_FOLDER};
 use super::resolver::Resolver;
@@ -77,7 +77,6 @@ where
     const NODE_TYPE_STR: &'static str = "Folder";
 
     fn load_from(resolver: &Arc<Resolver<N>>, stream: &mut impl Read) -> Result<Self> {
-        Self::read_header(stream)?;
         let mut items = BTreeMap::new();
         let n_items = stream.read_u32()? as usize;
         for _ in 0..n_items {
@@ -94,13 +93,8 @@ where
             resolver: Arc::clone(resolver),
         })
     }
-}
 
-impl<N> Serialize for Folder<N>
-where
-    N: Float + Debug + 'static,
-{
-    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
+    fn save_to(self, _resolver: &Arc<Resolver<N>>, stream: &mut impl Write) -> Result<()> {
         stream.write_u32(self.items.len() as u32)?;
         for (key, value) in &self.items {
             stream.write_byte(key.len() as u8)?;

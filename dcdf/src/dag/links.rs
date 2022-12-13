@@ -1,15 +1,17 @@
 use std::fmt::Debug;
 use std::io;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use cid::Cid;
 use num_traits::Float;
 
 use crate::cache::Cacheable;
 use crate::errors::Result;
-use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
+use crate::extio::{ExtendedRead, ExtendedWrite};
 
 use super::node::{Node, NODE_LINKS};
+use super::resolver::Resolver;
 
 pub(crate) struct Links(Vec<Cid>);
 
@@ -39,10 +41,8 @@ where
 {
     const NODE_TYPE: u8 = NODE_LINKS;
     const NODE_TYPE_STR: &'static str = "Links";
-}
 
-impl Serialize for Links {
-    fn write_to(&self, stream: &mut impl io::Write) -> Result<()> {
+    fn save_to(self, _resolver: &Arc<Resolver<N>>, stream: &mut impl io::Write) -> Result<()> {
         stream.write_u32(self.0.len() as u32)?;
         for link in &self.0 {
             link.write_bytes(&mut *stream)?;
@@ -51,7 +51,7 @@ impl Serialize for Links {
         Ok(())
     }
 
-    fn read_from(stream: &mut impl io::Read) -> Result<Self> {
+    fn load_from(_resolver: &Arc<Resolver<N>>, stream: &mut impl io::Read) -> Result<Self> {
         let n = stream.read_u32()? as usize;
         let mut links = Vec::with_capacity(n);
         for _ in 0..n {

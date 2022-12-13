@@ -396,8 +396,6 @@ where
 
     /// Load superchunk from a stream
     fn load_from(resolver: &Arc<Resolver<N>>, stream: &mut impl io::Read) -> Result<Self> {
-        Self::read_header(stream)?;
-
         let instants = stream.read_u32()? as usize;
         let rows = stream.read_u32()? as usize;
         let cols = stream.read_u32()? as usize;
@@ -444,14 +442,9 @@ where
             resolver: Arc::clone(resolver),
         })
     }
-}
 
-impl<N> Serialize for Superchunk<N>
-where
-    N: Float + Debug + 'static,
-{
     /// Save superchunk to a stream
-    fn write_to(&self, stream: &mut impl io::Write) -> Result<()> {
+    fn save_to(self, _resolver: &Arc<Resolver<N>>, stream: &mut impl io::Write) -> Result<()> {
         stream.write_u32(self.shape[0] as u32)?;
         stream.write_u32(self.shape[1] as u32)?;
         stream.write_u32(self.shape[2] as u32)?;
@@ -1129,7 +1122,7 @@ where
                 references.push(Reference::Local(index))
             } else {
                 sizes.push(build.data.size());
-                let cid = self.resolver.save_leaf(build.data)?;
+                let cid = self.resolver.save(build.data)?;
                 let index = match external_references.get(&cid) {
                     Some(index) => *index,
                     None => {
@@ -1636,7 +1629,7 @@ mod tests {
                 fn [<$name _test_save_load>]() -> Result<()> {
                     let (data, chunk) = $name()?;
                     let resolver = Arc::clone(&chunk.resolver);
-                    let cid = chunk.store(&resolver)?;
+                    let cid = resolver.save(chunk)?;
                     let chunk = resolver.get_superchunk(&cid)?;
 
                     let [instants, rows, cols] = chunk.shape;
