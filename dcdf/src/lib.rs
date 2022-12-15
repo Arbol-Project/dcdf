@@ -8,6 +8,8 @@ mod geom;
 mod helpers;
 mod simple;
 
+pub use cache::Cacheable;
+
 pub use codec::CellIter;
 pub use codec::Chunk;
 pub use codec::FChunk;

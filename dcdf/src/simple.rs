@@ -147,7 +147,7 @@ where
 
 impl<F> FBuilder<F>
 where
-    F: Float + Debug,
+    F: Float + Debug + 'static,
 {
     pub fn new(first: Array2<F>, k: i32, fraction: Fraction) -> Self {
         let shape = first.shape();
@@ -227,7 +227,7 @@ where
 
 pub fn buildf<F, T>(mut instants: T, k: i32, fraction: Fraction) -> FBuild<F>
 where
-    F: Float + Debug,
+    F: Float + Debug + 'static,
     T: Iterator<Item = Array2<F>>,
 {
     let first = instants.next().expect("No time instants to encode");
@@ -280,7 +280,7 @@ where
 
 impl<F> FBuild<F>
 where
-    F: Float + Debug,
+    F: Float + Debug + 'static,
 {
     pub fn save(&self, stream: &mut impl Write) -> Result<()> {
         let type_code = size_of::<F>() as i32 * 8;
@@ -541,7 +541,7 @@ mod tests {
         );
         assert_eq!(built.snapshots, 1);
         assert_eq!(built.logs, 99);
-        assert_eq!(built.compression, 0.351875);
+        assert_eq!(built.compression, 0.3521875);
     }
 
     #[test]

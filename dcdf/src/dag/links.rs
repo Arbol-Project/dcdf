@@ -40,7 +40,6 @@ where
     N: Float + Debug + 'static, // # SMELL N is not used
 {
     const NODE_TYPE: u8 = NODE_LINKS;
-    const NODE_TYPE_STR: &'static str = "Links";
 
     fn save_to(self, _resolver: &Arc<Resolver<N>>, stream: &mut impl io::Write) -> Result<()> {
         stream.write_u32(self.0.len() as u32)?;
@@ -74,7 +73,9 @@ where
 
 impl Cacheable for Links {
     fn size(&self) -> u64 {
-        4 + self.0.iter().map(|l| l.to_bytes().len()).sum::<usize>() as u64
+        Resolver::<f32>::HEADER_SIZE
+            + 4
+            + self.0.iter().map(|l| l.to_bytes().len()).sum::<usize>() as u64
     }
 }
 

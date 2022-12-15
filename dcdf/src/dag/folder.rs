@@ -74,7 +74,6 @@ where
     N: Float + Debug + 'static,
 {
     const NODE_TYPE: u8 = NODE_FOLDER;
-    const NODE_TYPE_STR: &'static str = "Folder";
 
     fn load_from(resolver: &Arc<Resolver<N>>, stream: &mut impl Read) -> Result<Self> {
         let mut items = BTreeMap::new();
@@ -120,11 +119,13 @@ where
     N: Float + Debug + 'static,
 {
     fn size(&self) -> u64 {
-        4 + self
-            .items
-            .iter()
-            .map(|(key, value)| 1 + key.len() + value.to_bytes().len())
-            .sum::<usize>() as u64
+        Resolver::<N>::HEADER_SIZE
+            + 4
+            + self
+                .items
+                .iter()
+                .map(|(key, value)| 1 + key.len() + value.to_bytes().len())
+                .sum::<usize>() as u64
     }
 }
 

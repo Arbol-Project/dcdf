@@ -1,6 +1,6 @@
 use std::any::TypeId;
 use std::fmt::Debug;
-use std::io::Read;
+use std::io::{self, Read};
 use std::sync::Arc;
 
 use cid::Cid;
@@ -49,13 +49,28 @@ where
     Superchunk(Arc<Superchunk<N>>),
 }
 
+impl<N> CacheItem<N>
+where
+    N: Float + Debug + 'static,
+{
+    fn ls(&self) -> Vec<(String, Cid)> {
+        match self {
+            CacheItem::Commit(commit) => commit.ls(),
+            CacheItem::Folder(folder) => folder.ls(),
+            CacheItem::Links(links) => <Links as Node<N>>::ls(links),
+            CacheItem::Subchunk(chunk) => chunk.ls(),
+            CacheItem::Superchunk(chunk) => chunk.ls(),
+        }
+    }
+}
+
 impl<N> Cacheable for CacheItem<N>
 where
     N: Float + Debug + 'static,
 {
     fn size(&self) -> u64 {
         match self {
-            CacheItem::Commit(_) => 1, // not important
+            CacheItem::Commit(commit) => commit.size(),
             CacheItem::Folder(folder) => folder.size(),
             CacheItem::Links(links) => links.size(),
             CacheItem::Subchunk(chunk) => chunk.size(),
@@ -68,6 +83,8 @@ impl<N> Resolver<N>
 where
     N: Float + Debug + 'static,
 {
+    pub(crate) const HEADER_SIZE: u64 = 2 + 4 + 1 + 1;
+
     /// Create a new `Resolver`
     ///
     /// # Arguments
@@ -191,21 +208,7 @@ where
         match self.mapper.load(cid) {
             None => Ok(None),
             Some(mut stream) => {
-                let magic_number = stream.read_u16()?;
-                if magic_number != MAGIC_NUMBER {
-                    panic!("File is not a DCDF graph node file.");
-                }
-
-                let version = stream.read_u32()?;
-                if version != FORMAT_VERSION {
-                    panic!("Unrecognized file format.");
-                }
-
-                if Self::type_code() != stream.read_byte()? {
-                    panic!("Numeric type doesn't match.");
-                }
-
-                let node_type = stream.read_byte()?;
+                let node_type = self.read_header(&mut stream)?;
                 let item = match node_type {
                     node::NODE_COMMIT => {
                         CacheItem::Commit(Arc::new(Commit::load_from(self, &mut stream)?))
@@ -230,6 +233,24 @@ where
         }
     }
 
+    fn read_header(&self, stream: &mut impl Read) -> io::Result<u8> {
+        let magic_number = stream.read_u16()?;
+        if magic_number != MAGIC_NUMBER {
+            panic!("File is not a DCDF graph node file.");
+        }
+
+        let version = stream.read_u32()?;
+        if version != FORMAT_VERSION {
+            panic!("Unrecognized file format.");
+        }
+
+        if Self::type_code() != stream.read_byte()? {
+            panic!("Numeric type doesn't match.");
+        }
+
+        stream.read_byte()
+    }
+
     /// Obtain an input stream for reading an object from the store.
     ///
     /// Returns `Option::None` if given `cid` isn't in the store.
@@ -247,6 +268,47 @@ where
         self.mapper.store()
     }
 
+    pub fn ls(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Option<Vec<LsEntry>>> {
+        match self.retrieve(cid)? {
+            None => Ok(None),
+            Some(object) => {
+                let mut ls = Vec::new();
+                for (name, cid) in object.ls() {
+                    let node_type = self.node_type_of(&cid)?;
+                    let size = self.mapper.size_of(&cid)?;
+                    let entry = LsEntry {
+                        cid,
+                        name,
+                        node_type,
+                        size,
+                    };
+                    ls.push(entry)
+                }
+
+                Ok(Some(ls))
+            }
+        }
+    }
+
+    fn node_type_of(&self, cid: &Cid) -> Result<Option<&'static str>> {
+        match self.mapper.load(cid) {
+            None => Ok(None),
+            Some(mut stream) => {
+                let code = self.read_header(&mut stream)?;
+                let node_type = match code {
+                    node::NODE_COMMIT => "Commit",
+                    node::NODE_LINKS => "Links",
+                    node::NODE_FOLDER => "Folder",
+                    node::NODE_SUBCHUNK => "Subchunk",
+                    node::NODE_SUPERCHUNK => "Superchunk",
+                    _ => panic!("Unrecognized node type: {code}"),
+                };
+
+                Ok(Some(node_type))
+            }
+        }
+    }
+
     fn type_code() -> u8 {
         if TypeId::of::<N>() == TypeId::of::<f32>() {
             TYPE_F32
@@ -256,4 +318,11 @@ where
             panic!("Unsupported type: {:?}", TypeId::of::<N>())
         }
     }
+}
+
+pub struct LsEntry {
+    pub cid: Cid,
+    pub name: String,
+    pub node_type: Option<&'static str>,
+    pub size: Option<u64>,
 }

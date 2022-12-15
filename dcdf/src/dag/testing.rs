@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::io;
-use std::io::{Cursor, Read, Write};
+use std::io::{self, Cursor, Read, Write};
 use std::mem;
 use std::sync::Arc;
 
@@ -75,6 +74,13 @@ impl Mapper for MemoryMapper {
         let objects = self.objects.lock();
         let object = objects.get(cid)?;
         Some(Box::new(Cursor::new(object.clone())))
+    }
+
+    fn size_of(&self, cid: &Cid) -> io::Result<Option<u64>> {
+        let objects = self.objects.lock();
+        Ok(objects
+            .get(cid)
+            .and_then(|object| Some(object.len() as u64)))
     }
 }
 

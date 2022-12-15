@@ -1,10 +1,10 @@
-use std::fmt::Debug;
+use std::fmt;
 use std::io;
 use std::result;
 
 use cid;
 
-#[derive(Debug)]
+#[derive(fmt::Debug)]
 pub enum Error {
     IO(io::Error),
     CID(cid::Error),

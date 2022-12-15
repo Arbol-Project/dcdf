@@ -24,7 +24,6 @@ where
     N: Float + Debug + 'static,
 {
     const NODE_TYPE: u8;
-    const NODE_TYPE_STR: &'static str;
 
     /// Save an object into the DAG
     ///
@@ -34,9 +33,7 @@ where
     fn load_from(resolver: &Arc<Resolver<N>>, stream: &mut impl io::Read) -> Result<Self>;
 
     /// List other nodes contained by this node
-    fn ls(&self) -> Vec<(String, Cid)> {
-        unimplemented!();
-    }
+    fn ls(&self) -> Vec<(String, Cid)>;
 }
 
 impl<N> Node<N> for FChunk<N>
@@ -44,7 +41,6 @@ where
     N: Float + Debug + 'static,
 {
     const NODE_TYPE: u8 = NODE_SUBCHUNK;
-    const NODE_TYPE_STR: &'static str = "Subchunk";
 
     fn save_to(self, _resolver: &Arc<Resolver<N>>, stream: &mut impl io::Write) -> Result<()> {
         self.write_to(stream)
@@ -52,5 +48,9 @@ where
 
     fn load_from(_resolver: &Arc<Resolver<N>>, stream: &mut impl io::Read) -> Result<Self> {
         FChunk::read_from(stream)
+    }
+
+    fn ls(&self) -> Vec<(String, Cid)> {
+        vec![]
     }
 }
