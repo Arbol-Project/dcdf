@@ -3,6 +3,7 @@ import functools
 import os
 import sys
 
+import cid as cid_module
 from dateutil.parser import parse as parse_date
 import docopt
 import flask
@@ -19,6 +20,7 @@ class Cli:
 
     Usage:
         {script} init
+        {script} ls [<path_or_cid>]
         {script} shell
         {script} serve
         {script} add <input_file>
@@ -101,6 +103,9 @@ class Cli:
             elif args["serve"]:
                 self.serve()
 
+            elif args["ls"]:
+                return self.ls(args["<path_or_cid>"])
+
             return self.error("not implemented")
 
         except DataError as error:
@@ -117,7 +122,7 @@ class Cli:
 
     @property
     @functools.cache
-    def data(self):
+    def head_cid(self):
         if not os.path.exists(self.head):
             return self.error(
                 f"Dataset must be initialized. Use `{sys.script} init` to create  a new "
@@ -125,8 +130,12 @@ class Cli:
                 f"dataset was initialized elsewhere."
             )
 
-        cid = open(self.head).read().strip()
-        return self.Dataset(cid, self.resolver)
+        return open(self.head).read().strip()
+
+    @property
+    @functools.cache
+    def data(self):
+        return self.Dataset(self.head_cid, self.resolver)
 
     def add(self, input_file):
         print("Loading...")
@@ -246,6 +255,28 @@ class Cli:
             }
 
         app.run(host="0.0.0.0", port=8000)
+
+    def ls(self, path_or_cid):
+        if path_or_cid is None:
+            entries = self.resolver.ls(self.head_cid)
+        elif cid_module.is_cid(path_or_cid):
+            entries = self.resolver.ls(path_or_cid)
+        else:
+            path = path_or_cid.split("/")
+            entries = self.resolver.ls(self.head_cid)
+            while path:
+                name = path.pop(0)
+                for entry in entries:
+                    if entry.name == name:
+                        entries = self.resolver.ls(entry.cid)
+                        break
+                else:
+                    return self.error(f"Not found: {path_or_cid}")
+
+        for entry in entries:
+            print(f"{entry.cid} {entry.node_type:10} {entry.size:10} {entry.name}")
+
+        return self.ok()
 
     def ok(self, message=None):
         if message:
