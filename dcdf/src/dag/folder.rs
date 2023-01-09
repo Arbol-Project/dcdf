@@ -8,7 +8,7 @@ use num_traits::Float;
 
 use crate::cache::Cacheable;
 use crate::errors::Result;
-use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
+use crate::extio::{ExtendedRead, ExtendedWrite};
 
 use super::node::{Node, NODE_FOLDER};
 use super::resolver::Resolver;
@@ -76,7 +76,6 @@ where
     const NODE_TYPE: u8 = NODE_FOLDER;
 
     fn load_from(resolver: &Arc<Resolver<N>>, stream: &mut impl Read) -> Result<Self> {
-        Self::read_header(stream)?;
         let mut items = BTreeMap::new();
         let n_items = stream.read_u32()? as usize;
         for _ in 0..n_items {
@@ -93,13 +92,8 @@ where
             resolver: Arc::clone(resolver),
         })
     }
-}
 
-impl<N> Serialize for Folder<N>
-where
-    N: Float + Debug + 'static,
-{
-    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
+    fn save_to(self, _resolver: &Arc<Resolver<N>>, stream: &mut impl Write) -> Result<()> {
         stream.write_u32(self.items.len() as u32)?;
         for (key, value) in &self.items {
             stream.write_byte(key.len() as u8)?;
@@ -109,6 +103,15 @@ where
 
         Ok(())
     }
+
+    fn ls(&self) -> Vec<(String, Cid)> {
+        let mut ls = Vec::new();
+        for (name, cid) in &self.items {
+            ls.push((name.clone(), cid.clone()));
+        }
+
+        ls
+    }
 }
 
 impl<N> Cacheable for Folder<N>
@@ -116,11 +119,13 @@ where
     N: Float + Debug + 'static,
 {
     fn size(&self) -> u64 {
-        4 + self
-            .items
-            .iter()
-            .map(|(key, value)| 1 + key.len() + value.to_bytes().len())
-            .sum::<usize>() as u64
+        Resolver::<N>::HEADER_SIZE
+            + 4
+            + self
+                .items
+                .iter()
+                .map(|(key, value)| 1 + key.len() + value.to_bytes().len())
+                .sum::<usize>() as u64
     }
 }
 
@@ -213,6 +218,28 @@ mod tests {
         let superchunk = resolver.get_superchunk(&superchunk)?;
 
         assert_eq!(superchunk.shape(), [100, 15, 15]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_ls() -> Result<()> {
+        let resolver = testing::resolver();
+        let cid = folders(&resolver)?;
+        let c = resolver.get_folder(&cid)?;
+
+        let ls = c.ls();
+        assert_eq!(ls.len(), 2);
+        assert_eq!(ls[0], (String::from("a"), c.get("a").unwrap()));
+        let a = resolver.get_folder(&ls[0].1)?;
+        assert_eq!(ls[1], (String::from("b"), c.get("b").unwrap()));
+        let b = resolver.get_folder(&ls[1].1)?;
+
+        let ls = a.ls();
+        assert_eq!(ls, vec![(String::from("data"), a.get("data").unwrap())]);
+
+        let ls = b.ls();
+        assert_eq!(ls, vec![(String::from("data"), b.get("data").unwrap())]);
 
         Ok(())
     }

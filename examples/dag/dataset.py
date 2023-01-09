@@ -33,7 +33,7 @@ contain data collected on January 1st of that year.
 
 The object that for particular dataset performs the mapping of a real-world time
 coordinate to a path to a superchunk plus index in that superchunk, is called a
-`Layout`. `Layout` is an abstact base class that defines the contract a concrete
+`Layout`. `Layout` is an abstract base class that defines the contract a concrete
 `Layout` must implement in order to be used in a dataset.
 
 Within each superchunk, mapping from the real world geographic space (latitude,
@@ -111,6 +111,14 @@ class Layout(abc.ABC):
         location.
         """
 
+    @abc.abstractmethod
+    def chunk(self, data) -> typing.Iterator[tuple[numpy.datetime64, numpy.NDArray]]:
+        """Split data up into chunks."""
+
+    @abc.abstractmethod
+    def verify(self, data):
+        """Verify that times loaded data actually match our assumptions."""
+
 
 class GeoSpace(abc.ABC):
     """Interface definition for `GeoSpace` implementors.
@@ -135,6 +143,10 @@ class GeoSpace(abc.ABC):
     def coord_at(self, row: int, col: int) -> tuple[float, float]:
         """Convert logical array coordinate to geographic coordinate."""
 
+    @abc.abstractmethod
+    def verify(self, data):
+        """Verify that lat/lon data in the source data matches our assumptions."""
+
 
 class Dataset:
     """A dataset stored in a DAG."""
@@ -158,7 +170,7 @@ class Dataset:
     def add_chunk(
         self,
         time: numpy.datetime64,
-        data: typing.Iterable[numpy.ndarray],
+        data: numpy.ndarray,
         levels: int,
         k: int = 2,
         fraction: int = 24,
@@ -171,7 +183,10 @@ class Dataset:
                 "time passed to add_chunk must be at a superchunk boundary"
             )
 
-        # TODO: Make sure shape for each instant matches shape of datastream
+        shape = data.shape[1:]
+        if shape != self.shape:
+            raise DataError(f"Expected shape: {self.shape}, got: {shape}")
+
         build = dcdf.build_superchunk(
             data,
             levels,
@@ -328,3 +343,7 @@ def human(n: int) -> str:
         return f"{n / m:0.2f}m"
 
     return f"{n / g:0.2f}g"
+
+
+class DataError(Exception):
+    """Data does not have expected structure."""

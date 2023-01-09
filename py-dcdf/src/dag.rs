@@ -108,6 +108,17 @@ impl PyResolverF32 {
 
         Ok(cid.to_string())
     }
+
+    pub fn ls(&self, cid: &str) -> PyResult<Option<Vec<PyLsEntry>>> {
+        let cid = Cid::from_str(cid).expect("Invalid cid");
+        let ls = self.inner.ls(&cid).map_err(convert_error)?;
+        let ls = ls.and_then(|entries| {
+            Some(Vec::from_iter(
+                entries.iter().map(|entry| PyLsEntry::new(entry)),
+            ))
+        });
+        Ok(ls)
+    }
 }
 
 impl PyResolverF32 {
@@ -129,6 +140,32 @@ impl PyResolverF32 {
         };
 
         self.inner.save(folder)
+    }
+}
+
+#[pyclass]
+pub struct PyLsEntry {
+    #[pyo3(get)]
+    pub cid: String,
+
+    #[pyo3(get)]
+    pub name: String,
+
+    #[pyo3(get)]
+    pub node_type: Option<&'static str>,
+
+    #[pyo3(get)]
+    pub size: Option<u64>,
+}
+
+impl PyLsEntry {
+    fn new(entry: &dcdf::LsEntry) -> Self {
+        Self {
+            cid: entry.cid.to_string(),
+            name: entry.name.clone(),
+            node_type: entry.node_type,
+            size: entry.size,
+        }
     }
 }
 
@@ -190,6 +227,11 @@ impl PyCommitF32 {
         };
 
         Ok(prev)
+    }
+
+    #[getter]
+    fn prev_cid(&self) -> Option<String> {
+        self.inner.prev.and_then(|cid| Some(cid.to_string()))
     }
 
     #[getter]

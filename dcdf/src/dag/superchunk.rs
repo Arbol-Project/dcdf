@@ -372,6 +372,7 @@ where
 {
     /// Return size of serialized superchunk in bytes
     fn size(&self) -> u64 {
+        Resolver::<N>::HEADER_SIZE +
         4 * 3  // shape
         + 4    // sidelen
         + 1    // levels
@@ -380,6 +381,7 @@ where
         + 1    // fractional_bits
         + 4    // n_references
         + self.references.iter().map(|r| r.size()).sum::<u64>()
+        + self.external_cid.to_bytes().len() as u64
         + 4    // n_local
         + self.local.iter().map(|l| l.size()).sum::<u64>()
         + self.max.size()
@@ -395,8 +397,6 @@ where
 
     /// Load superchunk from a stream
     fn load_from(resolver: &Arc<Resolver<N>>, stream: &mut impl io::Read) -> Result<Self> {
-        Self::read_header(stream)?;
-
         let instants = stream.read_u32()? as usize;
         let rows = stream.read_u32()? as usize;
         let cols = stream.read_u32()? as usize;
@@ -443,14 +443,9 @@ where
             resolver: Arc::clone(resolver),
         })
     }
-}
 
-impl<N> Serialize for Superchunk<N>
-where
-    N: Float + Debug + 'static,
-{
     /// Save superchunk to a stream
-    fn write_to(&self, stream: &mut impl io::Write) -> Result<()> {
+    fn save_to(self, _resolver: &Arc<Resolver<N>>, stream: &mut impl io::Write) -> Result<()> {
         stream.write_u32(self.shape[0] as u32)?;
         stream.write_u32(self.shape[1] as u32)?;
         stream.write_u32(self.shape[2] as u32)?;
@@ -477,6 +472,10 @@ where
         self.min.write_to(stream)?;
 
         Ok(())
+    }
+
+    fn ls(&self) -> Vec<(String, Cid)> {
+        vec![(String::from("subchunks"), self.external_cid)]
     }
 }
 
@@ -1128,7 +1127,7 @@ where
                 references.push(Reference::Local(index))
             } else {
                 sizes.push(build.data.size());
-                let cid = self.resolver.save_leaf(build.data)?;
+                let cid = self.resolver.save(build.data)?;
                 let index = match external_references.get(&cid) {
                     Some(index) => *index,
                     None => {
@@ -1292,8 +1291,10 @@ mod tests {
 
     use super::super::testing;
 
-    use paste::paste;
     use std::collections::HashSet;
+    use std::iter::zip;
+
+    use paste::paste;
 
     macro_rules! test_all_the_things {
         ($name:ident) => {
@@ -1635,7 +1636,7 @@ mod tests {
                 fn [<$name _test_save_load>]() -> Result<()> {
                     let (data, chunk) = $name()?;
                     let resolver = Arc::clone(&chunk.resolver);
-                    let cid = chunk.store(&resolver)?;
+                    let cid = resolver.save(chunk)?;
                     let chunk = resolver.get_superchunk(&cid)?;
 
                     let [instants, rows, cols] = chunk.shape;
@@ -1649,6 +1650,44 @@ mod tests {
                                 assert_eq!(values[i], data[i + start][[row, col]]);
                             }
                         }
+                    }
+
+                    Ok(())
+                }
+
+                #[test]
+                fn [<$name _test_ls>]() -> Result<()> {
+                    let (_, chunk) = $name()?;
+                    let ls = chunk.ls();
+                    assert_eq!(ls.len(), 1);
+                    assert_eq!(ls[0], (String::from("subchunks"), chunk.external_cid));
+
+                    Ok(())
+                }
+
+                #[test]
+                fn [<$name _test_high_level_ls>]() -> Result<()> {
+                    let (_, chunk) = $name()?;
+                    let resolver = Arc::clone(&chunk.resolver);
+                    let chunk_cid = resolver.save(chunk)?;
+                    let chunk = resolver.get_superchunk(&chunk_cid)?;
+                    let external = chunk.external()?;
+                    let ls = resolver.ls(&chunk_cid)?.expect("Can't ls superchunk");
+                    assert_eq!(ls.len(), 1);
+                    assert_eq!(ls[0].name, String::from("subchunks"));
+                    assert_eq!(ls[0].cid, chunk.external_cid);
+                    assert_eq!(ls[0].node_type.unwrap(), "Links");
+                    assert_eq!(ls[0].size.unwrap(), external.size());
+
+                    let ls = resolver.ls(&ls[0].cid)?.expect("Can't ls links");
+                    assert_eq!(ls.len(), external.len());
+                    for (expected, entry) in zip(external.iter().enumerate(), ls) {
+                        let (i, cid) = expected;
+                        let subchunk = resolver.get_subchunk(&cid)?;
+                        assert_eq!(entry.name, i.to_string());
+                        assert_eq!(entry.cid, cid.clone());
+                        assert_eq!(entry.node_type.unwrap(), "Subchunk");
+                        assert_eq!(entry.size.unwrap(), subchunk.size());
                     }
 
                     Ok(())

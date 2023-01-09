@@ -1,5 +1,6 @@
+use std::io::{self, Read, Write};
+
 use cid::Cid;
-use std::io::{Read, Write};
 
 /// A trait for storing and loading data from an arbitrary IPLD store.
 ///
@@ -20,6 +21,10 @@ pub trait Mapper: Send + Sync {
     /// Should return `Option::None` if given `cid` isn't in the store.
     ///
     fn load(&self, cid: &Cid) -> Option<Box<dyn Read + '_>>;
+
+    /// Get the size, in bytes, of object identified by `cid`
+    ///
+    fn size_of(&self, cid: &Cid) -> io::Result<Option<u64>>;
 }
 
 /// An extension to Write that computes a hash for the written data.

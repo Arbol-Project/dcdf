@@ -5,8 +5,9 @@ use std::sync::Arc;
 use cid::Cid;
 use num_traits::Float;
 
+use crate::cache::Cacheable;
 use crate::errors::Result;
-use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
+use crate::extio::{ExtendedRead, ExtendedWrite};
 
 use super::folder::Folder;
 use super::node::{Node, NODE_COMMIT};
@@ -66,7 +67,6 @@ where
     const NODE_TYPE: u8 = NODE_COMMIT;
 
     fn load_from(resolver: &Arc<Resolver<N>>, stream: &mut impl io::Read) -> Result<Self> {
-        Self::read_header(stream)?;
         let root = Cid::read_bytes(&mut *stream)?;
         let prev = match stream.read_byte()? {
             0 => None,
@@ -83,13 +83,8 @@ where
             resolver: Arc::clone(resolver),
         })
     }
-}
 
-impl<N> Serialize for Commit<N>
-where
-    N: Float + Debug + 'static,
-{
-    fn write_to(&self, stream: &mut impl io::Write) -> Result<()> {
+    fn save_to(self, _resolver: &Arc<Resolver<N>>, stream: &mut impl io::Write) -> Result<()> {
         self.root.write_bytes(&mut *stream)?;
         match self.prev {
             Some(cid) => {
@@ -103,6 +98,31 @@ where
         stream.write_all(self.message.as_bytes())?;
 
         Ok(())
+    }
+
+    fn ls(&self) -> Vec<(String, Cid)> {
+        let mut ls = vec![(String::from("root"), self.root)];
+        if let Some(prev) = self.prev {
+            ls.push((String::from("prev"), prev));
+        }
+
+        ls
+    }
+}
+
+impl<N> Cacheable for Commit<N>
+where
+    N: Float + Debug + 'static,
+{
+    fn size(&self) -> u64 {
+        Resolver::<N>::HEADER_SIZE
+            + (self.root.to_bytes().len()
+                + 1
+                + match self.prev {
+                    Some(cid) => cid.to_bytes().len(),
+                    None => 0,
+                }
+                + self.message.len()) as u64
     }
 }
 
@@ -147,20 +167,59 @@ mod tests {
         let commit = resolver.get_commit(&cid)?;
         assert_eq!(commit.message(), "Second commit");
 
-        let c = commit.root();
-        let a = c.get("a").expect("no value for a");
-        let a = resolver.get_folder(&a)?;
-        let b = c.get("b").expect("no value for b");
-        let b = resolver.get_folder(&b)?;
+        let ls = resolver.ls(&cid)?.expect("Couldn't find commit");
+        assert_eq!(ls.len(), 2);
+        assert_eq!(ls[0].name, String::from("root"));
+        assert_eq!(ls[0].cid, commit.root);
+        assert_eq!(ls[0].node_type.unwrap(), "Folder");
+        assert_eq!(ls[0].size.unwrap(), commit.root().size());
+        assert_eq!(ls[1].name, String::from("prev"));
+        assert_eq!(ls[1].cid, commit.prev.unwrap());
+        assert_eq!(ls[1].node_type.unwrap(), "Commit");
+        assert_eq!(ls[1].size.unwrap(), commit.prev().unwrap().unwrap().size());
 
-        let superchunk = resolver.get_superchunk(&a.get("data").expect("no value for data"))?;
+        let ls = resolver.ls(&commit.root)?.expect("Couldn't find folder");
+        assert_eq!(ls.len(), 2);
+
+        let c = commit.root();
+        let a_cid = c.get("a").expect("no value for a");
+        let a = resolver.get_folder(&a_cid)?;
+        assert_eq!(ls[0].name, String::from("a"));
+        assert_eq!(ls[0].cid, a_cid);
+        assert_eq!(ls[0].node_type.unwrap(), "Folder");
+        assert_eq!(ls[0].size.unwrap(), a.size());
+
+        let b_cid = c.get("b").expect("no value for b");
+        let b = resolver.get_folder(&b_cid)?;
+        assert_eq!(ls[1].name, String::from("b"));
+        assert_eq!(ls[1].cid, b_cid);
+        assert_eq!(ls[1].node_type.unwrap(), "Folder");
+        assert_eq!(ls[1].size.unwrap(), b.size());
+
+        let ls = resolver.ls(&a_cid)?.expect("Couldn't find folder");
+        assert_eq!(ls.len(), 1);
+
+        let data_cid = a.get("data").expect("no value for data");
+        let superchunk = resolver.get_superchunk(&data_cid)?;
         assert_eq!(superchunk.shape(), [100, 16, 16]);
+        assert_eq!(ls[0].name, String::from("data"));
+        assert_eq!(ls[0].cid, data_cid);
+        assert_eq!(ls[0].node_type.unwrap(), "Superchunk");
+        assert_eq!(ls[0].size.unwrap(), superchunk.size());
 
         let superchunk = resolver.get_superchunk(&b.get("data").expect("no value for data"))?;
         assert_eq!(superchunk.shape(), [100, 15, 15]);
 
+        let cid = commit.prev.unwrap();
         let commit = commit.prev()?.expect("Expected previous commit");
         assert_eq!(commit.message(), "First commit");
+
+        let ls = resolver.ls(&cid)?.expect("Couldn't find commit");
+        assert_eq!(ls.len(), 1);
+        assert_eq!(ls[0].name, String::from("root"));
+        assert_eq!(ls[0].cid, commit.root);
+        assert_eq!(ls[0].node_type.unwrap(), "Folder");
+        assert_eq!(ls[0].size.unwrap(), commit.root().size());
 
         let c = commit.root();
         let a = c.get("a").expect("no value for a");

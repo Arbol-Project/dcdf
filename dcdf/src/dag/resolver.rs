@@ -1,20 +1,28 @@
+use std::any::TypeId;
+use std::fmt::Debug;
+use std::io::{self, Read};
+use std::sync::Arc;
+
 use cid::Cid;
 use num_traits::Float;
-use std::fmt::Debug;
-use std::io::Read;
-use std::sync::Arc;
 
 use crate::cache::{Cache, Cacheable};
 use crate::codec::FChunk;
 use crate::errors::Result;
-use crate::extio::Serialize;
+use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
 
 use super::commit::Commit;
 use super::folder::Folder;
 use super::links::Links;
 use super::mapper::{Mapper, StoreWrite};
-use super::node::Node;
+use super::node::{self, Node};
 use super::superchunk::Superchunk;
+
+const MAGIC_NUMBER: u16 = 0xDCDF + 1;
+const FORMAT_VERSION: u32 = 0;
+
+const TYPE_F32: u8 = 32;
+const TYPE_F64: u8 = 64;
 
 /// The `Resolver` manages storage and retrieval of objects from an IPLD datastore
 ///
@@ -41,13 +49,28 @@ where
     Superchunk(Arc<Superchunk<N>>),
 }
 
+impl<N> CacheItem<N>
+where
+    N: Float + Debug + 'static,
+{
+    fn ls(&self) -> Vec<(String, Cid)> {
+        match self {
+            CacheItem::Commit(commit) => commit.ls(),
+            CacheItem::Folder(folder) => folder.ls(),
+            CacheItem::Links(links) => <Links as Node<N>>::ls(links),
+            CacheItem::Subchunk(chunk) => chunk.ls(),
+            CacheItem::Superchunk(chunk) => chunk.ls(),
+        }
+    }
+}
+
 impl<N> Cacheable for CacheItem<N>
 where
     N: Float + Debug + 'static,
 {
     fn size(&self) -> u64 {
         match self {
-            CacheItem::Commit(_) => 1, // not important
+            CacheItem::Commit(commit) => commit.size(),
             CacheItem::Folder(folder) => folder.size(),
             CacheItem::Links(links) => links.size(),
             CacheItem::Subchunk(chunk) => chunk.size(),
@@ -60,6 +83,8 @@ impl<N> Resolver<N>
 where
     N: Float + Debug + 'static,
 {
+    pub(crate) const HEADER_SIZE: u64 = 2 + 4 + 1 + 1;
+
     /// Create a new `Resolver`
     ///
     /// # Arguments
@@ -83,13 +108,7 @@ where
     /// * `cid` - The CID of the folder to retreive.
     ///
     pub fn get_folder(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<Folder<N>>> {
-        let item = self.cache.get(cid, |cid| {
-            let folder = Folder::retrieve(self, &cid)?;
-            match folder {
-                Some(folder) => Ok(Some(CacheItem::Folder(Arc::new(folder)))),
-                None => Ok(None),
-            }
-        })?;
+        let item = self.cache.get(cid, |cid| self.retrieve(&cid))?;
 
         match &*item {
             CacheItem::Folder(folder) => Ok(Arc::clone(&folder)),
@@ -104,13 +123,7 @@ where
     /// * `cid` - The CID of the commit to retreive.
     ///
     pub fn get_commit(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<Commit<N>>> {
-        let item = self.cache.get(cid, |cid| {
-            let commit = Commit::retrieve(self, &cid)?;
-            match commit {
-                Some(commit) => Ok(Some(CacheItem::Commit(Arc::new(commit)))),
-                None => Ok(None),
-            }
-        })?;
+        let item = self.cache.get(cid, |cid| self.retrieve(&cid))?;
 
         match &*item {
             CacheItem::Commit(commit) => Ok(Arc::clone(&commit)),
@@ -125,13 +138,7 @@ where
     /// * `cid` - The CID of the superchunk to retreive.
     ///
     pub fn get_superchunk(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<Superchunk<N>>> {
-        let item = self.cache.get(cid, |cid| {
-            let chunk = Superchunk::retrieve(self, &cid)?;
-            match chunk {
-                Some(chunk) => Ok(Some(CacheItem::Superchunk(Arc::new(chunk)))),
-                None => Ok(None),
-            }
-        })?;
+        let item = self.cache.get(cid, |cid| self.retrieve(&cid))?;
 
         match &*item {
             CacheItem::Superchunk(chunk) => Ok(Arc::clone(&chunk)),
@@ -146,13 +153,7 @@ where
     /// * `cid` - The CID of the chunk to retreive.
     ///
     pub(crate) fn get_subchunk(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<FChunk<N>>> {
-        let item = self.cache.get(cid, |cid| {
-            let chunk = FChunk::retrieve(self, &cid)?;
-            match chunk {
-                Some(chunk) => Ok(Some(CacheItem::Subchunk(Arc::new(chunk)))),
-                None => Ok(None),
-            }
-        })?;
+        let item = self.cache.get(cid, |cid| self.retrieve(&cid))?;
 
         match &*item {
             CacheItem::Subchunk(chunk) => Ok(Arc::clone(&chunk)),
@@ -167,13 +168,7 @@ where
     /// * `cid` - The CID of the links to retreive.
     ///
     pub(crate) fn get_links(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<Links>> {
-        let item = self.cache.get(cid, |cid| {
-            let links = Links::retrieve(self, &cid)?;
-            match links {
-                Some(links) => Ok(Some(CacheItem::Links(Arc::new(links)))),
-                None => Ok(None),
-            }
-        })?;
+        let item = self.cache.get(cid, |cid| self.retrieve(&cid))?;
 
         match &*item {
             CacheItem::Links(links) => Ok(Arc::clone(&links)),
@@ -190,25 +185,70 @@ where
         Ok(hasher.finish())
     }
 
-    /// Save a node, possibly as a folder
+    /// Store a node
     ///
     pub fn save<O>(self: &Arc<Resolver<N>>, node: O) -> Result<Cid>
     where
         O: Node<N>,
     {
-        Ok(node.store(self)?)
+        let mut stream = self.mapper.store();
+        stream.write_u16(MAGIC_NUMBER)?;
+        stream.write_u32(FORMAT_VERSION)?;
+        stream.write_byte(Self::type_code())?;
+        stream.write_byte(O::NODE_TYPE)?;
+
+        node.save_to(&self, &mut stream)?;
+
+        Ok(stream.finish())
     }
 
-    /// Save a leaf node in the underlying data store.
+    /// Retrieve a node
     ///
-    pub(crate) fn save_leaf<O>(self: &Arc<Resolver<N>>, node: O) -> Result<Cid>
-    where
-        O: Node<N>,
-    {
-        let mut writer = self.mapper.store();
-        node.save_to(&mut writer)?;
+    fn retrieve(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Option<CacheItem<N>>> {
+        match self.mapper.load(cid) {
+            None => Ok(None),
+            Some(mut stream) => {
+                let node_type = self.read_header(&mut stream)?;
+                let item = match node_type {
+                    node::NODE_COMMIT => {
+                        CacheItem::Commit(Arc::new(Commit::load_from(self, &mut stream)?))
+                    }
+                    node::NODE_LINKS => {
+                        CacheItem::Links(Arc::new(Links::load_from(self, &mut stream)?))
+                    }
+                    node::NODE_FOLDER => {
+                        CacheItem::Folder(Arc::new(Folder::load_from(self, &mut stream)?))
+                    }
+                    node::NODE_SUBCHUNK => {
+                        CacheItem::Subchunk(Arc::new(FChunk::load_from(self, &mut stream)?))
+                    }
+                    node::NODE_SUPERCHUNK => {
+                        CacheItem::Superchunk(Arc::new(Superchunk::load_from(self, &mut stream)?))
+                    }
+                    _ => panic!("Unrecognized node type: {node_type}"),
+                };
 
-        Ok(writer.finish())
+                Ok(Some(item))
+            }
+        }
+    }
+
+    fn read_header(&self, stream: &mut impl Read) -> io::Result<u8> {
+        let magic_number = stream.read_u16()?;
+        if magic_number != MAGIC_NUMBER {
+            panic!("File is not a DCDF graph node file.");
+        }
+
+        let version = stream.read_u32()?;
+        if version != FORMAT_VERSION {
+            panic!("Unrecognized file format.");
+        }
+
+        if Self::type_code() != stream.read_byte()? {
+            panic!("Numeric type doesn't match.");
+        }
+
+        stream.read_byte()
     }
 
     /// Obtain an input stream for reading an object from the store.
@@ -227,4 +267,62 @@ where
     pub fn store(&self) -> Box<dyn StoreWrite + '_> {
         self.mapper.store()
     }
+
+    pub fn ls(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Option<Vec<LsEntry>>> {
+        match self.retrieve(cid)? {
+            None => Ok(None),
+            Some(object) => {
+                let mut ls = Vec::new();
+                for (name, cid) in object.ls() {
+                    let node_type = self.node_type_of(&cid)?;
+                    let size = self.mapper.size_of(&cid)?;
+                    let entry = LsEntry {
+                        cid,
+                        name,
+                        node_type,
+                        size,
+                    };
+                    ls.push(entry)
+                }
+
+                Ok(Some(ls))
+            }
+        }
+    }
+
+    fn node_type_of(&self, cid: &Cid) -> Result<Option<&'static str>> {
+        match self.mapper.load(cid) {
+            None => Ok(None),
+            Some(mut stream) => {
+                let code = self.read_header(&mut stream)?;
+                let node_type = match code {
+                    node::NODE_COMMIT => "Commit",
+                    node::NODE_LINKS => "Links",
+                    node::NODE_FOLDER => "Folder",
+                    node::NODE_SUBCHUNK => "Subchunk",
+                    node::NODE_SUPERCHUNK => "Superchunk",
+                    _ => panic!("Unrecognized node type: {code}"),
+                };
+
+                Ok(Some(node_type))
+            }
+        }
+    }
+
+    fn type_code() -> u8 {
+        if TypeId::of::<N>() == TypeId::of::<f32>() {
+            TYPE_F32
+        } else if TypeId::of::<N>() == TypeId::of::<f64>() {
+            TYPE_F64
+        } else {
+            panic!("Unsupported type: {:?}", TypeId::of::<N>())
+        }
+    }
+}
+
+pub struct LsEntry {
+    pub cid: Cid,
+    pub name: String,
+    pub node_type: Option<&'static str>,
+    pub size: Option<u64>,
 }

@@ -1,4 +1,5 @@
 import functools
+import math
 import time
 
 import requests
@@ -47,7 +48,14 @@ if __name__ == "__main__":
 
     production = functools.partial(query_dclimate, *sys.argv[1:5])
     experimental = functools.partial(query_dcdf, *sys.argv[1:5])
-    assert production() == experimental()
+
+    # Verify the two sources are giving the same results. Also allow them prime their
+    # respective caches before performing the benchmark
+    expected = production()
+    got = experimental()
+    got["data"] = [None if math.isnan(x) else x for x in got["data"]]
+
+    assert expected == got
 
     print(f"production: {timeit(production)}")
     print(f"experimental: {timeit(experimental, 100)}")

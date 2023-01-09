@@ -59,6 +59,21 @@ impl dcdf::Mapper for IpfsMapper {
 
         Some(Box::new(reader))
     }
+
+    /// Get the size, in bytes, of object identified by `cid`
+    ///
+    fn size_of(&self, cid: &Cid) -> io::Result<Option<u64>> {
+        let path = format!("/ipfs/{}", cid.to_string());
+        let response = self
+            .runtime
+            .block_on(self.client.files_stat(&path))
+            .expect("Unable to stat file");
+
+        if response.blocks > 0 {
+            println!("ipfs /files/stat {path} {response:?}");
+        }
+        Ok(Some(response.size))
+    }
 }
 
 /// A writer for writing an object to IPFS
@@ -175,6 +190,7 @@ mod tests {
 
     use ndarray::{arr2, Array2};
 
+    use dcdf::Cacheable;
     use dcdf::Folder;
 
     fn resolver() -> Arc<dcdf::Resolver<f32>> {
@@ -277,6 +293,17 @@ mod tests {
         // Read DAG structure
         let commit = resolver.get_commit(&cid)?;
         assert_eq!(commit.message(), "Second commit");
+
+        let ls = resolver.ls(&cid)?.expect("Couldn't find commit");
+        assert_eq!(ls.len(), 2);
+        assert_eq!(ls[0].name, String::from("root"));
+        assert_eq!(ls[0].cid, commit.root);
+        assert_eq!(ls[0].node_type.unwrap(), "Folder");
+        assert_eq!(ls[0].size.unwrap(), commit.root().size());
+        assert_eq!(ls[1].name, String::from("prev"));
+        assert_eq!(ls[1].cid, commit.prev.unwrap());
+        assert_eq!(ls[1].node_type.unwrap(), "Commit");
+        assert_eq!(ls[1].size.unwrap(), commit.prev().unwrap().unwrap().size());
 
         let c = commit.root();
         let a = c.get("a").expect("no value for a");

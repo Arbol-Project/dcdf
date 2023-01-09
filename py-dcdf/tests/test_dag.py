@@ -214,3 +214,41 @@ def test_search(superchunk, dtype):
 
             assert len(results) == len(expected)
             assert results == expected
+
+
+def test_ls(datastream, resolver):
+    # Read DAG structure
+    commit = resolver.get_commit(datastream)
+    ls = resolver.ls(datastream)
+    assert len(ls) == 2
+    assert ls[0].name == "root"
+    assert ls[0].cid == commit.root_cid
+    assert ls[0].node_type == "Folder"
+    assert ls[1].name == "prev"
+    assert ls[1].cid == commit.prev_cid
+    assert ls[1].node_type == "Commit"
+
+    c = commit.root
+    bob = resolver.load_object(c["README.txt"])
+    assert bob == b"Hi mom!\n"
+
+    a = resolver.get_folder(c["a"])
+    b = resolver.get_folder(c["b"])
+
+    superchunk = resolver.get_superchunk(a["data"])
+    assert superchunk.shape == (100, 16, 16)
+
+    superchunk = resolver.get_superchunk(b["data"])
+    assert superchunk.shape == (100, 15, 15)
+
+    commit = commit.prev
+    assert commit.message == "First commit"
+
+    c = commit.root
+    a = resolver.get_folder(c["a"])
+
+    superchunk = resolver.get_superchunk(a["data"])
+    assert superchunk.shape == (100, 16, 16)
+
+    assert "b" not in c
+    assert commit.prev is None

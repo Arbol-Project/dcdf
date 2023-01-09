@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::vec::IntoIter as VecIntoIter;
 
 use crate::cache::Cacheable;
+use crate::dag::resolver::Resolver;
 use crate::errors::Result;
 use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
 use crate::fixed;
@@ -151,12 +152,13 @@ where
 
 impl<F> Cacheable for FChunk<F>
 where
-    F: Float + Debug,
+    F: Float + Debug + 'static,
 {
     /// Return the number of bytes in the serialized representation
     ///
     fn size(&self) -> u64 {
-        1 // fractional bits
+        Resolver::<F>::HEADER_SIZE
+        + 1 // fractional bits
         + self.chunk.size()
     }
 }
@@ -938,7 +940,7 @@ mod tests {
             file.sync_all()?;
 
             let metadata = file.metadata()?;
-            assert_eq!(metadata.len(), chunk.size());
+            assert_eq!(metadata.len(), chunk.size() - Resolver::<f32>::HEADER_SIZE);
 
             file.rewind()?;
             let chunk: Arc<FChunk<f32>> = Arc::new(FChunk::read_from(&mut file)?);
