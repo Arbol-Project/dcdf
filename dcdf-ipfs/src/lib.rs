@@ -69,9 +69,6 @@ impl dcdf::Mapper for IpfsMapper {
             .block_on(self.client.files_stat(&path))
             .expect("Unable to stat file");
 
-        if response.blocks > 0 {
-            println!("ipfs /files/stat {path} {response:?}");
-        }
         Ok(Some(response.size))
     }
 }

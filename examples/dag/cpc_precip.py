@@ -9,6 +9,7 @@ import dataset
 
 Path = str
 CHUNK_SIZE = 37  # 10 superchunks/year
+DATASET = "cpc_precip_global-daily"
 
 
 class CpcPrecipDataset(dataset.Dataset):
@@ -57,10 +58,6 @@ class DailyLayout:
         """Verify that times in xarray loaded data actually match our assumptions."""
         # Get just the time data
         data = data.time.data
-
-        # Verify shape of time data
-        if data.shape not in ((365,), (366,)):
-            raise dataset.DataError("Expecting 365 or 366 days")
 
         # Verify that the delta between each point is 1 day
         deltas = set(data[1:] - data[:-1])
@@ -159,10 +156,18 @@ class CpcGeoSpace:
 
     def verify(self, data):
         """Verify that lat/lon data in the source data matches our assumptions."""
-        if not numpy.array_equal(data.lat.data, self.lat):
+        if hasattr(data, "latitude"):
+            latitude = getattr(data, "latitude")
+        else:
+            latitude = getattr(data, "lat")
+        if not numpy.array_equal(latitude.data, self.lat):
             raise dataset.DataError("Unexpected latitude data.")
 
-        if not numpy.array_equal(data.lon.data, self.lon):
+        if hasattr(data, "longitude"):
+            longitude = getattr(data, "longitude")
+        else:
+            longitude = getattr(data, "lon")
+        if not numpy.array_equal(longitude.data, self.lon):
             raise dataset.DataError("Unexpected longitude data.")
 
     def locate(
@@ -178,5 +183,5 @@ class CpcGeoSpace:
 
 
 if __name__ == "__main__":
-    cli = cli.Cli(CpcPrecipDataset, "cpc_precip", "CPC Daily Global Precipitation")
+    cli = cli.Cli(CpcPrecipDataset, DATASET, "CPC Daily Global Precipitation")
     sys.exit(cli.main())

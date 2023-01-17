@@ -8,7 +8,7 @@ pub use simple::{
 mod dag;
 
 pub use dag::{
-    new_ipfs_resolver_f32, PyCommitF32, PyFolderF32, PyResolverF32, PySuperchunkBuild,
+    new_ipfs_resolver_f32, PyCommitF32, PyFolderF32, PyLsEntry, PyResolverF32, PySuperchunkBuild,
     PySuperchunkBuilderF32, PySuperchunkF32,
 };
 
@@ -39,6 +39,7 @@ fn _dcdf(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(new_ipfs_resolver_f32, m)?)?;
 
     m.add_class::<PySuperchunkBuild>()?;
+    m.add_class::<PyLsEntry>()?;
 
     Ok(())
 }
