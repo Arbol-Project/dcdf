@@ -5,8 +5,11 @@ import typing
 
 from numpy import typing as npt
 
+from dcdf import _dcdf
+
 Cid = str
 Path = str
+Link = _dcdf.PyLsEntry
 
 
 class Resolver(abc.ABC):
@@ -37,6 +40,10 @@ class Resolver(abc.ABC):
     @abc.abstractmethod
     def store_object(self, object: bytes) -> typing.Optional[Cid]:
         """Store object in the DAG."""
+
+    @abc.abstractmethod
+    def ls(self, cid: Cid) -> typing.List[Link]:
+        """Get other objects linked to from an object."""
 
 
 class Folder(abc.ABC):

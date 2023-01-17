@@ -167,6 +167,20 @@ class Dataset:
         self.shape = shape
         self.dtype = numpy.dtype(dtype)
 
+    def has_chunk(self, time: numpy.datetime64, data: numpy.ndarray) -> bool:
+        path, index, actual = self.layout.locate(time)
+        if index != 0 or actual != time:
+            raise ValueError(
+                "time passed to has_chunk must be at a superchunk boundary"
+            )
+
+        prev = self._find_superchunk(path)
+        if prev is not None:
+            if prev.shape[0] >= data.shape[0]:
+                return True
+
+        return False
+
     def add_chunk(
         self,
         time: numpy.datetime64,
@@ -182,6 +196,14 @@ class Dataset:
             raise ValueError(
                 "time passed to add_chunk must be at a superchunk boundary"
             )
+
+        end_time = time + self.layout.step * data.shape[0]
+        prev = self._find_superchunk(path)
+        if prev is not None:
+            what_happened = f"Extended data for superchunk at {time} to {end_time}"
+
+        else:
+            what_happened = f"Added superchunk from {time} to {end_time}"
 
         shape = data.shape[1:]
         if shape != self.shape:
@@ -201,7 +223,7 @@ class Dataset:
 
         sizes = numpy.array(build.sizes)
         message = (
-            f"Added data at {time}\n\n"
+            f"{what_happened}\n\n"
             f"Superchunk size: {human(build.size)}\n"
             f"External links size: {human(build.size_external)}\n"
             f"Maximum subchunk size: {human(sizes.max())}\n"
@@ -216,6 +238,11 @@ class Dataset:
         print(message)
 
         return self._update(commit)
+
+    def _find_superchunk(self, path):
+        cid = self._lookup(path)
+        if cid:
+            return self.resolver.get_superchunk(cid)
 
     def _update(self, cid: dcdf.Cid):
         new_self = object.__new__(type(self))
@@ -234,14 +261,17 @@ class Dataset:
         return (time, lat, lon), chunk.get(index, row, col)
 
     def _lookup(self, path: str) -> dcdf.Cid:
-        commit = self.resolver.get_commit(self.cid)
-        folder = commit.root
-        path = path.lstrip("/").split("/")
-        for name in path[:-1]:
-            cid = folder[name]
-            folder = self.resolver.get_folder(cid)
+        try:
+            commit = self.resolver.get_commit(self.cid)
+            folder = commit.root
+            path = path.lstrip("/").split("/")
+            for name in path[:-1]:
+                cid = folder[name]
+                folder = self.resolver.get_folder(cid)
 
-        return folder[path[-1]]
+            return folder[path[-1]]
+        except KeyError:
+            return None
 
     def cell(
         self,

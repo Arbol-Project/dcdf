@@ -1,4 +1,6 @@
 import code
+import collections
+import datetime
 import functools
 import os
 import sys
@@ -10,8 +12,11 @@ import flask
 import numpy
 import xarray
 
-from dataset import DataError
 import dcdf
+from dclimate_zarr_client import geo_utils
+
+from dataset import DataError
+import dclimate
 
 
 class Cli:
@@ -21,9 +26,12 @@ class Cli:
     Usage:
         {script} init
         {script} ls [<path_or_cid>]
+        {script} du [<path_or_cid>]
+        {script} log
         {script} shell
         {script} serve
-        {script} add <input_file>
+        {script} add <input_file>...
+        {script} clone zarr
         {script} query <datetime> <latitude> <longitude>
         {script} query <startdate> <enddate> <latitude> <longitude>
         {script} window <startdate> <enddate> <lat1> <lat2> <lon1> <lon2>
@@ -51,6 +59,9 @@ class Cli:
 
             if args["add"]:
                 return self.add(args["<input_file>"])
+
+            elif args["clone"] and args["zarr"]:
+                return self.clone_zarr()
 
             elif args["query"]:
                 lat = float(args["<latitude>"])
@@ -106,6 +117,12 @@ class Cli:
             elif args["ls"]:
                 return self.ls(args["<path_or_cid>"])
 
+            elif args["log"]:
+                return self.log()
+
+            elif args["du"]:
+                return self.du(args["<path_or_cid>"])
+
             return self.error("not implemented")
 
         except DataError as error:
@@ -137,42 +154,74 @@ class Cli:
     def data(self):
         return self.Dataset(self.head_cid, self.resolver)
 
-    def add(self, input_file):
-        print("Loading...")
-        dataset = self.data
-        xdata = xarray.open_dataset(input_file)
-        dataset.geo.verify(xdata)
-        dataset.layout.verify(xdata)
-        shape = xdata.precip.data.shape[1:]
-        if shape != dataset.shape:
-            raise DataError(f"Expected shape: {dataset.shape}, got: {shape}")
+    def clone_zarr(self):
+        xdata = dclimate.get_dataset(dclimate.get_head(self.name))
+        date, endend = xdata.time[0].values, xdata.time[-1].values
+        date = datetime.datetime(*map(int, str(date.astype("datetime64[D]")).split("-")))
+        endend = datetime.datetime(*map(int, str(endend.astype("datetime64[D]")).split("-")))
+        while date < endend:
+            end = datetime.datetime(date.year + 1, 1, 1)
+            end = min(end, endend)
 
-        for time, data in dataset.layout.chunk(xdata):
-            print("Computing encoding requirements...")
-            max_value = numpy.nanmax(data)
-            suggestion = dcdf.suggest_fraction(data, max_value)
-
-            if suggestion.round:
-                print(
-                    f"Data must be rounded to use {suggestion.fractional_bits} bit fractions "
-                    "in order to be able to be encoded."
-                )
-
-            else:
-                print(
-                    "Data can be encoded without loss of precision using "
-                    f"{suggestion.fractional_bits} bit fractions."
-                )
-
-            # Immutable data means "modifying" the dataset creates a new one
-            print("Building...")
-            dataset = dataset.add_chunk(
-                time, data, suggestion.fractional_bits, suggestion.round
+            xdata = geo_utils.get_data_in_time_range(
+                xdata, date, end - datetime.timedelta(seconds=1)
             )
 
-        self.new_head(dataset.cid)
+            self.add([xdata])
+            date = end
 
-        return self.ok(f"New head written to {self.head}")
+    def add(self, input_files):
+        dataset = self.data
+        beginning_head = dataset.cid
+        for input_file in input_files:
+            if isinstance(input_file, str):
+                print("Loading...")
+                xdata = xarray.open_dataset(input_file)
+
+            else:
+                xdata = input_file
+
+            dataset.geo.verify(xdata)
+            dataset.layout.verify(xdata)
+            shape = xdata.precip.data.shape[1:]
+            if shape != dataset.shape:
+                raise DataError(f"Expected shape: {dataset.shape}, got: {shape}")
+
+            for time, data in dataset.layout.chunk(xdata):
+                if dataset.has_chunk(time, data):
+                    print(f"Skipping superchunk at {time}, already encoded")
+                    continue
+
+                print("Computing encoding requirements...")
+                max_value = numpy.nanmax(data)
+                suggestion = dcdf.suggest_fraction(data, max_value)
+
+                if suggestion.round:
+                    print(
+                        f"Data must be rounded to use {suggestion.fractional_bits} bit "
+                        "fractions in order to be able to be encoded."
+                    )
+
+                else:
+                    print(
+                        "Data can be encoded without loss of precision using "
+                        f"{suggestion.fractional_bits} bit fractions."
+                    )
+
+                # Immutable data means "modifying" the dataset creates a new one
+                print("Building...")
+                dataset = dataset.add_chunk(
+                    time, data, suggestion.fractional_bits, suggestion.round
+                )
+
+                self.new_head(dataset.cid)
+
+        if dataset.cid == beginning_head:
+            message = "Dataset was not updated."
+        else:
+            message = f"New head written to {self.head}"
+
+        return self.ok(message)
 
     def new_head(self, cid):
         with open(self.head, "w") as f:
@@ -257,6 +306,34 @@ class Cli:
         app.run(host="0.0.0.0", port=8000)
 
     def ls(self, path_or_cid):
+        for entry in self._ls(path_or_cid):
+            print(f"{entry.cid} {entry.node_type:10} {entry.size:10} {entry.name}")
+
+        return self.ok()
+
+    def log(self):
+        cid = self.head_cid
+        while cid:
+            commit = self.resolver.get_commit(cid)
+            message = "\n\t".join(commit.message.split("\n"))
+            print(f"{cid}\n\n")
+            print(f"\t{message}\n\n")
+            cid = commit.prev_cid
+
+    def du(self, path_or_cid):
+        usage = 0   # TODO stat starting object for its size
+        objects = 1
+        entries = collections.deque()
+        entries.extend(self._ls(path_or_cid))
+        while entries:
+            entry = entries.popleft()
+            entries.extend(self._ls(entry.cid))
+            usage += entry.size
+            objects += 1
+
+        return self.ok(str(usage))
+
+    def _ls(self, path_or_cid):
         if path_or_cid is None:
             entries = self.resolver.ls(self.head_cid)
         elif cid_module.is_cid(path_or_cid):
@@ -271,12 +348,9 @@ class Cli:
                         entries = self.resolver.ls(entry.cid)
                         break
                 else:
-                    return self.error(f"Not found: {path_or_cid}")
+                    raise DataError(f"Not found: {path_or_cid}")
 
-        for entry in entries:
-            print(f"{entry.cid} {entry.node_type:10} {entry.size:10} {entry.name}")
-
-        return self.ok()
+        return entries
 
     def ok(self, message=None):
         if message:
