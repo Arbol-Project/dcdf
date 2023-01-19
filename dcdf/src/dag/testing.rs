@@ -185,7 +185,7 @@ pub fn cid_for(data: &str) -> Cid {
 
 pub fn resolver<N>() -> Arc<Resolver<N>>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     Arc::new(Resolver::new(Box::new(MemoryMapper::new()), 0))
 }

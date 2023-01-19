@@ -37,7 +37,7 @@ impl DerefMut for Links {
 
 impl<N> Node<N> for Links
 where
-    N: Float + Debug + 'static, // # SMELL N is not used
+    N: Float + Debug + Send + Sync + 'static, // # SMELL N is not used
 {
     const NODE_TYPE: u8 = NODE_LINKS;
 

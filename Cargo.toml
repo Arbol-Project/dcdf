@@ -2,6 +2,6 @@
 
 members = [
     "dcdf",
-    "dcdf-ipfs",
-    "py-dcdf",
+#    "dcdf-ipfs",
+#    "py-dcdf",
 ]

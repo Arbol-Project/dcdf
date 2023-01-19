@@ -33,7 +33,7 @@ use super::resolver::Resolver;
 ///
 pub struct Superchunk<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     /// Shape of the encoded raster. Since K² matrix is grown to a square with sides whose length
     /// are a power of K, we need to keep track of the dimensions of the original raster so we can
@@ -80,7 +80,7 @@ where
 
 impl<N> Superchunk<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     /// Get the shape of the overall time series raster
     ///
@@ -91,6 +91,14 @@ where
     /// Get a cell's value at a particular time instant.
     ///
     pub fn get(self: &Arc<Self>, instant: usize, row: usize, col: usize) -> Result<N> {
+        let mut iter = self.iter_cell(instant, instant + 1, row, col)?;
+
+        Ok(iter.next().unwrap())
+    }
+
+    /// Get a cell's value at a particular time instant.
+    ///
+    pub async fn get_async(self: &Arc<Self>, instant: usize, row: usize, col: usize) -> Result<N> {
         let mut iter = self.iter_cell(instant, instant + 1, row, col)?;
 
         Ok(iter.next().unwrap())
@@ -368,7 +376,7 @@ where
 
 impl<N> Cacheable for Superchunk<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     /// Return size of serialized superchunk in bytes
     fn size(&self) -> u64 {
@@ -391,7 +399,7 @@ where
 
 impl<N> Node<N> for Superchunk<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     const NODE_TYPE: u8 = NODE_SUPERCHUNK;
 
@@ -498,14 +506,14 @@ struct WindowSubchunk {
 
 pub struct CellIter<N>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     inner: Rc<RefCell<dyn Iterator<Item = N>>>,
 }
 
 impl<N> Iterator for CellIter<N>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     type Item = N;
 
@@ -516,7 +524,7 @@ where
 
 struct SuperCellIter<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     superchunk: Arc<Superchunk<N>>,
     index: usize,
@@ -526,7 +534,7 @@ where
 
 impl<N> SuperCellIter<N>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     fn new(superchunk: &Arc<Superchunk<N>>, start: usize, end: usize, chunk_index: usize) -> Self {
         let stride = superchunk.subsidelen * superchunk.subsidelen;
@@ -544,7 +552,7 @@ where
 
 impl<N> Iterator for SuperCellIter<N>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     type Item = N;
 
@@ -564,7 +572,7 @@ where
 
 pub struct WindowIter<N>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     subiters: Vec<SubwindowIter<N>>,
     rows: usize,
@@ -574,7 +582,7 @@ where
 
 struct SubwindowIter<N>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     subiter: Rc<RefCell<dyn Iterator<Item = Array2<N>>>>,
     top: usize,
@@ -583,7 +591,7 @@ where
 
 impl<N> Iterator for WindowIter<N>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     type Item = Array2<N>;
 
@@ -616,7 +624,7 @@ where
 
 struct SuperWindowIter<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     superchunk: Arc<Superchunk<N>>,
     index: usize,
@@ -628,7 +636,7 @@ where
 
 impl<N> SuperWindowIter<N>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     fn new(
         superchunk: &Arc<Superchunk<N>>,
@@ -655,7 +663,7 @@ where
 
 impl<N> Iterator for SuperWindowIter<N>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     type Item = Array2<N>;
 
@@ -676,7 +684,7 @@ where
 
 pub struct SearchIter<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     chunk: Arc<Superchunk<N>>,
     start: usize,
@@ -692,7 +700,7 @@ where
 
 impl<N> SearchIter<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     fn new(chunk: &Arc<Superchunk<N>>, bounds: &geom::Cube, lower: N, upper: N) -> Result<Self> {
         let has_cells = |subchunk: &WindowSubchunk| {
@@ -788,7 +796,7 @@ where
 
 impl<N> Iterator for SearchIter<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     type Item = Result<(usize, usize, usize)>;
 
@@ -813,7 +821,7 @@ where
 
 struct SuperSearchIter<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     chunk: Arc<Superchunk<N>>,
     index: usize,
@@ -830,7 +838,7 @@ where
 
 impl<N> SuperSearchIter<N>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     fn new(
         chunk: &Arc<Superchunk<N>>,
@@ -890,7 +898,7 @@ where
 
 impl<N> Iterator for SuperSearchIter<N>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     type Item = (usize, usize, usize);
 
@@ -963,7 +971,7 @@ impl Cacheable for Reference {
 
 pub struct SuperchunkBuild<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     pub data: Superchunk<N>,
     pub size: u64,
@@ -985,7 +993,7 @@ pub fn build_superchunk<I, N>(
 ) -> Result<SuperchunkBuild<N>>
 where
     I: Iterator<Item = Array2<N>>,
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     let first = instants.next().expect("No time instants to encode");
     let mut builder = SuperchunkBuilder::new(first, k, fraction, levels, resolver, local_threshold);
@@ -997,7 +1005,7 @@ where
 
 pub struct SuperchunkBuilder<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     builders: Vec<FBuilder<N>>,
     min: Vec<N>,
@@ -1015,7 +1023,7 @@ where
 
 impl<N> SuperchunkBuilder<N>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     pub fn new(
         first: Array2<N>,
@@ -1204,7 +1212,7 @@ where
 ///
 fn iter_subarrays<N>(a: Array2<N>, subsidelen: usize, chunks_sidelen: usize) -> SubarrayIterator<N>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     SubarrayIterator {
         a,
@@ -1217,7 +1225,7 @@ where
 
 struct SubarrayIterator<N>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     a: Array2<N>,
     subsidelen: usize,
@@ -1228,7 +1236,7 @@ where
 
 impl<N> Iterator for SubarrayIterator<N>
 where
-    N: Float + Debug,
+    N: Float + Debug + Send + Sync,
 {
     type Item = (Array2<N>, N, N);
 
@@ -1308,6 +1316,23 @@ mod tests {
                         for row in 0..rows {
                             for col in 0..cols {
                                 assert_eq!(chunk.get(instant, row, col)?, data[instant][[row, col]]);
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                #[tokio::test]
+                async fn [<$name _test_get_async>]() -> Result<()> {
+                    let (data, chunk) = $name()?;
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    for instant in 0..instants {
+                        for row in 0..rows {
+                            for col in 0..cols {
+                                let value = chunk.get_async(instant, row, col).await?;
+                                assert_eq!(value, data[instant][[row, col]]);
                             }
                         }
                     }

@@ -1,20 +1,29 @@
+use std::{
+    cell::RefCell,
+    fmt::Debug,
+    io::{Read, Write},
+    marker::PhantomData,
+    rc::Rc,
+    sync::Arc,
+    vec::IntoIter as VecIntoIter,
+};
+
+use async_trait::async_trait;
+use futures::io::{AsyncRead, AsyncWrite};
 use ndarray::{s, Array2, Array3, ArrayBase, DataMut, Ix3};
 use num_traits::{Float, PrimInt};
-use std::cell::RefCell;
-use std::fmt::Debug;
-use std::io::{Read, Write};
-use std::marker::PhantomData;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::vec::IntoIter as VecIntoIter;
 
-use crate::cache::Cacheable;
-use crate::dag::resolver::Resolver;
-use crate::errors::Result;
-use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
-use crate::fixed;
-use crate::geom;
-use crate::helpers::rearrange;
+use crate::{
+    cache::Cacheable,
+    dag::resolver::Resolver,
+    errors::Result,
+    extio::{
+        ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite, Serialize,
+        SerializeAsync,
+    },
+    fixed, geom,
+    helpers::rearrange,
+};
 
 use super::block::Block;
 
@@ -26,7 +35,7 @@ use super::block::Block;
 ///
 pub struct FChunk<F>
 where
-    F: Float + Debug,
+    F: Float + Debug + Send + Sync,
 {
     _marker: PhantomData<F>,
 
@@ -39,7 +48,7 @@ where
 
 impl<F> FChunk<F>
 where
-    F: Float + Debug,
+    F: Float + Debug + Send + Sync,
 {
     /// Create an FChunk that wraps `chunk` using `fractional_bits` for fixed point to floating
     /// point conversion.
@@ -132,7 +141,7 @@ where
 
 impl<F> Serialize for FChunk<F>
 where
-    F: Float + Debug,
+    F: Float + Debug + Send + Sync,
 {
     /// Write a chunk to a stream
     ///
@@ -150,9 +159,33 @@ where
     }
 }
 
+#[async_trait]
+impl<F> SerializeAsync for FChunk<F>
+where
+    F: Float + Debug + Send + Sync,
+{
+    /// Write a chunk to a stream
+    ///
+    async fn write_to_async(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+        stream.write_byte_async(self.fractional_bits as u8).await?;
+        self.chunk.write_to_async(stream).await?;
+        Ok(())
+    }
+
+    /// Read a chunk from a stream
+    ///
+    async fn read_from_async(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+        let fractional_bits = stream.read_byte_async().await? as usize;
+        Ok(FChunk::new(
+            Chunk::read_from_async(stream).await?,
+            fractional_bits,
+        ))
+    }
+}
+
 impl<F> Cacheable for FChunk<F>
 where
-    F: Float + Debug + 'static,
+    F: Float + Debug + Send + Sync + 'static,
 {
     /// Return the number of bytes in the serialized representation
     ///
@@ -165,7 +198,7 @@ where
 
 pub struct FCellIter<F>
 where
-    F: Float + Debug,
+    F: Float + Debug + Send + Sync,
 {
     chunk: Arc<FChunk<F>>,
     iter: Rc<RefCell<CellIter<i64>>>,
@@ -173,7 +206,7 @@ where
 
 impl<F> Iterator for FCellIter<F>
 where
-    F: Float + Debug,
+    F: Float + Debug + Send + Sync,
 {
     type Item = F;
 
@@ -187,7 +220,7 @@ where
 
 pub struct FWindowIter<F>
 where
-    F: Float + Debug,
+    F: Float + Debug + Send + Sync,
 {
     _marker: PhantomData<F>,
     iter: Rc<RefCell<WindowIter<i64>>>,
@@ -196,7 +229,7 @@ where
 
 impl<F> Iterator for FWindowIter<F>
 where
-    F: Float + Debug,
+    F: Float + Debug + Send + Sync,
 {
     type Item = Array2<F>;
 
@@ -214,7 +247,7 @@ where
 ///
 pub struct Chunk<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     /// Stored data
     blocks: Vec<Block<I>>,
@@ -225,7 +258,7 @@ where
 
 impl<I> From<Vec<Block<I>>> for Chunk<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     /// Make a new Chunk from a vector of Blocks
     ///
@@ -243,7 +276,7 @@ where
 
 impl<I> Chunk<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     /// Return the dimensions of the 3 dimensional array represented by this chunk.
     ///
@@ -380,7 +413,7 @@ where
 
 impl<I> Serialize for Chunk<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     /// Write a chunk to a stream
     ///
@@ -409,9 +442,41 @@ where
     }
 }
 
+#[async_trait]
+impl<I> SerializeAsync for Chunk<I>
+where
+    I: PrimInt + Debug + Send + Sync,
+{
+    /// Write a chunk to a stream
+    ///
+    async fn write_to_async(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+        stream.write_u32_async(self.blocks.len() as u32).await?;
+        for block in &self.blocks {
+            block.write_to_async(stream).await?;
+        }
+        Ok(())
+    }
+
+    /// Read a chunk from a stream
+    ///
+    async fn read_from_async(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+        let n_blocks = stream.read_u32_async().await? as usize;
+        let mut blocks = Vec::with_capacity(n_blocks);
+        let mut index = Vec::with_capacity(n_blocks);
+        let mut count = 0;
+        for _ in 0..n_blocks {
+            let block = Block::read_from_async(stream).await?;
+            count += block.logs.len() + 1;
+            blocks.push(block);
+            index.push(count);
+        }
+        Ok(Self { blocks, index })
+    }
+}
+
 impl<I> Cacheable for Chunk<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     /// Return the number of bytes in the serialized representation
     ///
@@ -427,7 +492,7 @@ where
 ///
 struct ChunkIter<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     chunk: Arc<Chunk<I>>,
     block: usize,
@@ -437,7 +502,7 @@ where
 
 impl<I> Iterator for ChunkIter<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     type Item = (usize, usize);
 
@@ -464,7 +529,7 @@ where
 
 pub struct CellIter<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     iter: Rc<RefCell<ChunkIter<I>>>,
     row: usize,
@@ -473,7 +538,7 @@ where
 
 impl<I> Iterator for CellIter<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     type Item = I;
 
@@ -491,7 +556,7 @@ where
 
 pub struct WindowIter<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     iter: Rc<RefCell<ChunkIter<I>>>,
     bounds: geom::Rect,
@@ -499,7 +564,7 @@ where
 
 impl<I> Iterator for WindowIter<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     type Item = Array2<I>;
 
@@ -517,7 +582,7 @@ where
 
 pub struct SearchIter<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     iter: Rc<RefCell<ChunkIter<I>>>,
     bounds: geom::Rect,
@@ -530,7 +595,7 @@ where
 
 impl<I> SearchIter<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     fn next_results(&mut self) {
         let mut iter = self.iter.borrow_mut();
@@ -548,7 +613,7 @@ where
 
 impl<I> Iterator for SearchIter<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     type Item = (usize, usize, usize);
 
@@ -579,9 +644,10 @@ mod tests {
     use super::super::snapshot::Snapshot;
     use super::super::testing::array_search_window;
     use super::*;
+    use futures::io::Cursor as AsyncCursor;
     use ndarray::arr2;
     use std::collections::HashSet;
-    use std::io::Seek;
+    use std::io::{Cursor, Seek};
     use tempfile::tempfile;
 
     mod fchunk {
@@ -935,15 +1001,44 @@ mod tests {
         fn serialize_deserialize() -> Result<()> {
             let data = array();
             let chunk = chunk(data.clone());
-            let mut file = tempfile()?;
+            let mut file: Vec<u8> = Vec::with_capacity(chunk.size() as usize);
             chunk.write_to(&mut file)?;
-            file.sync_all()?;
+            assert_eq!(
+                file.len(),
+                (chunk.size() - Resolver::<f32>::HEADER_SIZE) as usize
+            );
 
-            let metadata = file.metadata()?;
-            assert_eq!(metadata.len(), chunk.size() - Resolver::<f32>::HEADER_SIZE);
-
-            file.rewind()?;
+            let mut file = Cursor::new(file);
             let chunk: Arc<FChunk<f32>> = Arc::new(FChunk::read_from(&mut file)?);
+
+            for row in 0..8 {
+                for col in 0..8 {
+                    let start = row * col;
+                    let end = 100 - col;
+                    let values: Vec<f32> = chunk.iter_cell(start, end, row, col).collect();
+                    assert_eq!(values.len(), end - start);
+                    for i in 0..values.len() {
+                        assert_eq!(values[i], data[i + start][[row, col]]);
+                    }
+                }
+            }
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn serialize_deserialize_async() -> Result<()> {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let mut file: Vec<u8> = Vec::with_capacity(chunk.size() as usize);
+            chunk.write_to_async(&mut file).await?;
+            assert_eq!(
+                file.len(),
+                (chunk.size() - Resolver::<f32>::HEADER_SIZE) as usize
+            );
+
+            let mut file = AsyncCursor::new(file);
+            let chunk: Arc<FChunk<f32>> = Arc::new(FChunk::read_from_async(&mut file).await?);
 
             for row in 0..8 {
                 for col in 0..8 {
@@ -1305,6 +1400,60 @@ mod tests {
             let _results: Vec<(usize, usize, usize)> = chunk
                 .iter_search(&geom::Cube::new(0, 100, 0, 9, 0, 9), 0, 1)
                 .collect();
+        }
+
+        #[test]
+        fn serialize_deserialize() -> Result<()> {
+            let data = array();
+            let chunk = chunk(data.clone());
+
+            let mut buffer: Vec<u8> = Vec::with_capacity(chunk.size() as usize);
+            chunk.write_to(&mut buffer)?;
+            assert_eq!(buffer.len(), chunk.size() as usize);
+
+            let mut buffer = Cursor::new(buffer);
+            let chunk: Arc<Chunk<i32>> = Arc::new(Chunk::read_from(&mut buffer)?);
+
+            for row in 0..8 {
+                for col in 0..8 {
+                    let start = row * col;
+                    let end = 100 - col;
+                    let values: Vec<i32> = chunk.iter_cell(start, end, row, col).collect();
+                    assert_eq!(values.len(), end - start);
+                    for i in 0..values.len() {
+                        assert_eq!(values[i], data[i + start][[row, col]]);
+                    }
+                }
+            }
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn serialize_deserialize_async() -> Result<()> {
+            let data = array();
+            let chunk = chunk(data.clone());
+
+            let mut buffer: Vec<u8> = Vec::with_capacity(chunk.size() as usize);
+            chunk.write_to_async(&mut buffer).await?;
+            assert_eq!(buffer.len(), chunk.size() as usize);
+
+            let mut buffer = AsyncCursor::new(buffer);
+            let chunk: Arc<Chunk<i32>> = Arc::new(Chunk::read_from_async(&mut buffer).await?);
+
+            for row in 0..8 {
+                for col in 0..8 {
+                    let start = row * col;
+                    let end = 100 - col;
+                    let values: Vec<i32> = chunk.iter_cell(start, end, row, col).collect();
+                    assert_eq!(values.len(), end - start);
+                    for i in 0..values.len() {
+                        assert_eq!(values[i], data[i + start][[row, col]]);
+                    }
+                }
+            }
+
+            Ok(())
         }
     }
 }

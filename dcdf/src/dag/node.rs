@@ -21,7 +21,7 @@ pub(crate) const NODE_SUPERCHUNK: u8 = 2;
 ///
 pub trait Node<N>: Sized
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     const NODE_TYPE: u8;
 
@@ -38,7 +38,7 @@ where
 
 impl<N> Node<N> for FChunk<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     const NODE_TYPE: u8 = NODE_SUBCHUNK;
 

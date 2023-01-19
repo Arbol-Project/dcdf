@@ -1,22 +1,31 @@
+use std::{
+    fmt::Debug,
+    io::{Read, Write},
+};
+
+use async_trait::async_trait;
+use futures::io::{AsyncRead, AsyncWrite};
 use ndarray::Array2;
 use num_traits::PrimInt;
-use std::fmt::Debug;
-use std::io::{Read, Write};
 
-use crate::cache::Cacheable;
-use crate::errors::Result;
-use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
-use crate::geom;
+use crate::{
+    cache::Cacheable,
+    errors::Result,
+    extio::{
+        ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite, Serialize,
+        SerializeAsync,
+    },
+    geom,
+};
 
-use super::log::Log;
-use super::snapshot::Snapshot;
+use super::{log::Log, snapshot::Snapshot};
 
 /// A short series of time instants made up of one Snapshot encoding the first time instant and
 /// Logs encoding subsequent time instants.
 ///
 pub struct Block<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     /// Snapshot of first time instant
     pub snapshot: Snapshot<I>,
@@ -27,7 +36,7 @@ where
 
 impl<I> Block<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     /// Construct a Block from a Snapshot and a series of Logs based on the Snapshot
     ///
@@ -49,7 +58,7 @@ where
     ///
     pub fn get(&self, instant: usize, row: usize, col: usize) -> I
     where
-        I: PrimInt + Debug,
+        I: PrimInt + Debug + Send + Sync,
     {
         match instant {
             0 => self.snapshot.get(row, col),
@@ -67,7 +76,7 @@ where
     ///
     pub fn get_window(&self, instant: usize, bounds: &geom::Rect) -> Array2<I>
     where
-        I: PrimInt + Debug,
+        I: PrimInt + Debug + Send + Sync,
     {
         let mut window = Array2::zeros([bounds.rows(), bounds.cols()]);
         let set = |row, col, value| window[[row, col]] = I::from(value).unwrap();
@@ -106,7 +115,7 @@ where
         upper: I,
     ) -> Vec<(usize, usize)>
     where
-        I: PrimInt + Debug,
+        I: PrimInt + Debug + Send + Sync,
     {
         match instant {
             0 => self.snapshot.search_window(bounds, lower, upper),
@@ -117,7 +126,7 @@ where
 
 impl<I> Serialize for Block<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     /// Write a block to a stream
     ///
@@ -145,9 +154,40 @@ where
     }
 }
 
+#[async_trait]
+impl<I> SerializeAsync for Block<I>
+where
+    I: PrimInt + Debug + Send + Sync,
+{
+    /// Write a block to a stream
+    ///
+    async fn write_to_async(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+        stream.write_byte_async((self.logs.len() + 1) as u8).await?;
+        self.snapshot.write_to_async(stream).await?;
+        for log in &self.logs {
+            log.write_to_async(stream).await?;
+        }
+        Ok(())
+    }
+
+    /// Read a block from a stream
+    ///
+    async fn read_from_async(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+        let n_instants = stream.read_byte_async().await? as usize;
+        let snapshot = Snapshot::read_from_async(stream).await?;
+        let mut logs: Vec<Log<I>> = Vec::with_capacity(n_instants - 1);
+        for _ in 0..n_instants - 1 {
+            let log = Log::read_from_async(stream).await?;
+            logs.push(log);
+        }
+
+        Ok(Self { snapshot, logs })
+    }
+}
+
 impl<I> Cacheable for Block<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     /// Return the number of bytes in the serialized representation of the block
     fn size(&self) -> u64 {
@@ -161,9 +201,10 @@ where
 mod tests {
     use super::super::testing::array_search_window;
     use super::*;
+    use futures::io::Cursor as AsyncCursor;
     use ndarray::{arr3, s, Array3};
     use std::collections::HashSet;
-    use std::io::Seek;
+    use std::io::{Cursor, Seek};
     use tempfile::tempfile;
 
     fn array8() -> Array3<i32> {
@@ -337,5 +378,75 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn serialize_deserialize() -> Result<()> {
+        let data = array8();
+        let data = vec![
+            data.slice(s![0, .., ..]),
+            data.slice(s![1, .., ..]),
+            data.slice(s![2, .., ..]),
+        ];
+
+        let block: Block<i32> = Block::new(
+            Snapshot::from_array(data[0], 2),
+            vec![
+                Log::from_arrays(data[0], data[1], 2),
+                Log::from_arrays(data[0], data[2], 2),
+            ],
+        );
+
+        let mut buffer: Vec<u8> = Vec::with_capacity(block.size() as usize);
+        block.write_to(&mut buffer)?;
+        assert_eq!(buffer.len(), block.size() as usize);
+
+        let mut buffer = Cursor::new(buffer);
+        let block: Block<i32> = Block::read_from(&mut buffer)?;
+
+        for t in 0..3 {
+            for r in 0..8 {
+                for c in 0..8 {
+                    assert_eq!(block.get(t, r, c), data[t][[r, c]]);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn serialize_deserialize_async() -> Result<()> {
+        let data = array8();
+        let data = vec![
+            data.slice(s![0, .., ..]),
+            data.slice(s![1, .., ..]),
+            data.slice(s![2, .., ..]),
+        ];
+
+        let block: Block<i32> = Block::new(
+            Snapshot::from_array(data[0], 2),
+            vec![
+                Log::from_arrays(data[0], data[1], 2),
+                Log::from_arrays(data[0], data[2], 2),
+            ],
+        );
+
+        let mut buffer: Vec<u8> = Vec::with_capacity(block.size() as usize);
+        block.write_to_async(&mut buffer).await?;
+        assert_eq!(buffer.len(), block.size() as usize);
+
+        let mut buffer = AsyncCursor::new(buffer);
+        let block: Block<i32> = Block::read_from_async(&mut buffer).await?;
+
+        for t in 0..3 {
+            for r in 0..8 {
+                for c in 0..8 {
+                    assert_eq!(block.get(t, r, c), data[t][[r, c]]);
+                }
+            }
+        }
+
+        Ok(())
     }
 }

@@ -16,7 +16,7 @@ const FORMAT_VERSION: u32 = 0;
 
 pub struct Build<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     pub data: Chunk<I>,
     pub logs: usize,
@@ -26,7 +26,7 @@ where
 
 pub struct Builder<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     count_snapshots: usize,
     count_logs: usize,
@@ -41,7 +41,7 @@ where
 
 impl<I> Builder<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     pub fn new(first: Array2<I>, k: i32) -> Self {
         let shape = first.shape();
@@ -108,7 +108,7 @@ where
 
 pub fn build<I, T>(mut instants: T, k: i32) -> Build<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
     T: Iterator<Item = Array2<I>>,
 {
     let first = instants.next().expect("No time instants to encode");
@@ -121,7 +121,7 @@ where
 
 pub struct FBuild<F>
 where
-    F: Float + Debug,
+    F: Float + Debug + Send + Sync,
 {
     pub data: FChunk<F>,
     pub logs: usize,
@@ -131,7 +131,7 @@ where
 
 pub struct FBuilder<F>
 where
-    F: Float + Debug,
+    F: Float + Debug + Send + Sync,
 {
     count_snapshots: usize,
     count_logs: usize,
@@ -147,7 +147,7 @@ where
 
 impl<F> FBuilder<F>
 where
-    F: Float + Debug + 'static,
+    F: Float + Debug + Send + Sync + 'static,
 {
     pub fn new(first: Array2<F>, k: i32, fraction: Fraction) -> Self {
         let shape = first.shape();
@@ -227,7 +227,7 @@ where
 
 pub fn buildf<F, T>(mut instants: T, k: i32, fraction: Fraction) -> FBuild<F>
 where
-    F: Float + Debug + 'static,
+    F: Float + Debug + Send + Sync + 'static,
     T: Iterator<Item = Array2<F>>,
 {
     let first = instants.next().expect("No time instants to encode");
@@ -247,7 +247,7 @@ const TYPE_F64: i32 = 64;
 
 impl<I: 'static> Build<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     pub fn save(&self, stream: &mut impl Write) -> Result<()> {
         stream.write_u16(MAGIC_NUMBER)?;
@@ -261,7 +261,7 @@ where
 
 impl<I: 'static> Build<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     fn type_code(&self) -> i32 {
         if TypeId::of::<I>() == TypeId::of::<i32>() {
@@ -280,7 +280,7 @@ where
 
 impl<F> FBuild<F>
 where
-    F: Float + Debug + 'static,
+    F: Float + Debug + Send + Sync + 'static,
 {
     pub fn save(&self, stream: &mut impl Write) -> Result<()> {
         let type_code = size_of::<F>() as i32 * 8;

@@ -1,18 +1,30 @@
+use std::{
+    cmp::min,
+    collections::VecDeque,
+    fmt::Debug,
+    io::{Read, Write},
+    marker::PhantomData,
+};
+
+use async_trait::async_trait;
+use futures::io::{AsyncRead, AsyncWrite};
 use num_traits::PrimInt;
-use std::cmp::min;
-use std::collections::VecDeque;
-use std::fmt::Debug;
-use std::io::{Read, Write};
-use std::marker::PhantomData;
 
-use crate::cache::Cacheable;
-use crate::errors::Result;
-use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
-use crate::geom;
+use crate::{
+    cache::Cacheable,
+    errors::Result,
+    extio::{
+        ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite, Serialize,
+        SerializeAsync,
+    },
+    geom,
+};
 
-use super::bitmap::{BitMap, BitMapBuilder};
-use super::dac::Dac;
-use super::snapshot::Snapshot;
+use super::{
+    bitmap::{BitMap, BitMapBuilder},
+    dac::Dac,
+    snapshot::Snapshot,
+};
 
 /// K²-Raster encoded Log
 ///
@@ -21,7 +33,7 @@ use super::snapshot::Snapshot;
 ///
 pub struct Log<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     _marker: PhantomData<I>,
 
@@ -54,7 +66,7 @@ where
 
 impl<I> Serialize for Log<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     /// Write a log to a stream
     ///
@@ -95,9 +107,56 @@ where
     }
 }
 
+#[async_trait]
+impl<I> SerializeAsync for Log<I>
+where
+    I: PrimInt + Debug + Send + Sync,
+{
+    /// Write a log to a stream
+    ///
+    async fn write_to_async(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+        stream.write_byte_async(self.k as u8).await?;
+        stream.write_u32_async(self.shape[0] as u32).await?;
+        stream.write_u32_async(self.shape[1] as u32).await?;
+        stream.write_u32_async(self.sidelen as u32).await?;
+        self.nodemap.write_to_async(stream).await?;
+        self.equal.write_to_async(stream).await?;
+        self.max.write_to_async(stream).await?;
+        self.min.write_to_async(stream).await?;
+
+        Ok(())
+    }
+
+    /// Read a log from a stream
+    ///
+    async fn read_from_async(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+        let k = stream.read_byte_async().await? as i32;
+        let shape = [
+            stream.read_u32_async().await? as usize,
+            stream.read_u32_async().await? as usize,
+        ];
+        let sidelen = stream.read_u32_async().await? as usize;
+        let nodemap = BitMap::read_from_async(stream).await?;
+        let equal = BitMap::read_from_async(stream).await?;
+        let max = Dac::read_from_async(stream).await?;
+        let min = Dac::read_from_async(stream).await?;
+
+        Ok(Self {
+            _marker: PhantomData,
+            nodemap,
+            equal,
+            max,
+            min,
+            k,
+            shape,
+            sidelen,
+        })
+    }
+}
+
 impl<I> Cacheable for Log<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     /// Return number of bytes in serialized representation
     ///
@@ -108,7 +167,7 @@ where
 
 impl<I> Log<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     /// Build a log from a pair of two-dimensional arrays.
     ///
@@ -836,8 +895,10 @@ impl K2PTreeNode {
 mod tests {
     use super::super::testing::array_search_window;
     use super::*;
+    use futures::io::Cursor as AsyncCursor;
     use ndarray::{arr3, s, Array2, Array3};
     use std::collections::HashSet;
+    use std::io::Cursor;
 
     fn array8() -> Array3<i32> {
         arr3(&[
@@ -1780,5 +1841,49 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn serialize_deserialize() -> Result<()> {
+        let data = array8();
+        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
+
+        let mut buffer: Vec<u8> = Vec::with_capacity(log.size() as usize);
+        log.write_to(&mut buffer)?;
+        assert_eq!(buffer.len(), log.size() as usize);
+
+        let mut buffer = Cursor::new(buffer);
+        let log = Log::read_from(&mut buffer)?;
+
+        for row in 0..8 {
+            for col in 0..8 {
+                assert_eq!(log.get(&snapshot, row, col), data[[1, row, col]]);
+            }
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn serialize_deserialize_async() -> Result<()> {
+        let data = array8();
+        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
+        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
+
+        let mut buffer: Vec<u8> = Vec::with_capacity(log.size() as usize);
+        log.write_to_async(&mut buffer).await?;
+        assert_eq!(buffer.len(), log.size() as usize);
+
+        let mut buffer = AsyncCursor::new(buffer);
+        let log = Log::read_from_async(&mut buffer).await?;
+
+        for row in 0..8 {
+            for col in 0..8 {
+                assert_eq!(log.get(&snapshot, row, col), data[[1, row, col]]);
+            }
+        }
+
+        Ok(())
     }
 }
