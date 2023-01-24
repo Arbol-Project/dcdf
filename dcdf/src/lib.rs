@@ -1,4 +1,5 @@
 mod cache;
+mod cache_async;
 mod codec;
 mod dag;
 mod errors;

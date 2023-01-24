@@ -647,8 +647,7 @@ mod tests {
     use futures::io::Cursor as AsyncCursor;
     use ndarray::arr2;
     use std::collections::HashSet;
-    use std::io::{Cursor, Seek};
-    use tempfile::tempfile;
+    use std::io::Cursor;
 
     mod fchunk {
         use super::*;

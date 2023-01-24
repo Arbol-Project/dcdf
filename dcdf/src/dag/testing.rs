@@ -1,21 +1,33 @@
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::io::{self, Cursor, Read, Write};
-use std::mem;
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    fmt::Debug,
+    io::{self, Cursor, Read, Write},
+    mem,
+    pin::Pin,
+    result,
+    sync::Arc,
+};
 
+use async_trait::async_trait;
 use cid::Cid;
+use futures::{
+    io::{AsyncRead, AsyncWrite, Cursor as AsyncCursor, Error as AioError},
+    task::{Context, Poll},
+};
 use multihash::{Hasher, MultihashGeneric, Sha2_256};
 use ndarray::{arr2, Array2, ArrayView2};
 use num_traits::{Float, Num};
 use parking_lot::Mutex;
 
-use crate::errors::Result;
-use crate::fixed::Precise;
+use crate::{errors::Result, fixed::Precise};
 
-use super::mapper::{Mapper, StoreWrite};
-use super::resolver::Resolver;
-use super::superchunk::{build_superchunk, Superchunk};
+use super::{
+    mapper::{AsyncMapper, Mapper, StoreAsyncWrite, StoreWrite},
+    resolver::Resolver,
+    superchunk::{build_superchunk, Superchunk},
+};
+
+pub type AioResult<T> = result::Result<T, AioError>;
 
 /// The SHA_256 multicodec code
 const SHA2_256: u64 = 0x12;
@@ -84,6 +96,30 @@ impl Mapper for MemoryMapper {
     }
 }
 
+#[async_trait]
+impl AsyncMapper for MemoryMapper {
+    async fn store_async(&self) -> Box<dyn StoreAsyncWrite + '_> {
+        Box::new(MemoryMapperStoreAsyncWrite::new(self, false))
+    }
+
+    async fn hash_async(&self) -> Box<dyn StoreAsyncWrite + '_> {
+        Box::new(MemoryMapperStoreAsyncWrite::new(self, true))
+    }
+
+    async fn load_async(&self, cid: &Cid) -> Option<Box<dyn AsyncRead + '_>> {
+        let objects = self.objects.lock();
+        let object = objects.get(cid)?;
+        Some(Box::new(AsyncCursor::new(object.clone())))
+    }
+
+    async fn size_of_async(&self, cid: &Cid) -> io::Result<Option<u64>> {
+        let objects = self.objects.lock();
+        Ok(objects
+            .get(cid)
+            .and_then(|object| Some(object.len() as u64)))
+    }
+}
+
 struct MemoryMapperStoreWrite<'a> {
     mapper: &'a MemoryMapper,
     writer: Box<Sha2_256Write<Vec<u8>>>,
@@ -115,6 +151,65 @@ impl<'a> StoreWrite for MemoryMapperStoreWrite<'a> {
     fn finish(mut self: Box<Self>) -> Cid {
         let object = mem::replace(&mut self.writer.inner, vec![]);
         let cid = self.writer.finish();
+        if !self.hash_only {
+            self.mapper.objects.lock().insert(cid, object);
+        }
+
+        cid
+    }
+}
+
+struct MemoryMapperStoreAsyncWrite<'a> {
+    mapper: &'a MemoryMapper,
+    buffer: Vec<u8>,
+    hash: Sha2_256,
+    hash_only: bool,
+}
+
+impl<'a> MemoryMapperStoreAsyncWrite<'a> {
+    fn new(mapper: &'a MemoryMapper, hash_only: bool) -> Self {
+        Self {
+            mapper,
+            buffer: Vec::new(),
+            hash: Sha2_256::default(),
+            hash_only,
+        }
+    }
+}
+
+impl<'a> AsyncWrite for MemoryMapperStoreAsyncWrite<'a> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<AioResult<usize>> {
+        let result = self.buffer.write(buf);
+        if let Ok(len) = result {
+            self.hash.update(&buf[..len]);
+        }
+
+        Poll::Ready(result)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<AioResult<()>> {
+        self.buffer.flush().expect("This should be a noop, anyway.");
+
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<AioResult<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[async_trait]
+impl<'a> StoreAsyncWrite for MemoryMapperStoreAsyncWrite<'a> {
+    async fn finish_async(mut self: Box<Self>) -> Cid {
+        let object = mem::replace(&mut self.buffer, vec![]);
+        let digest = self.hash.finalize();
+        let hash = MultihashGeneric::wrap(SHA2_256, &digest).expect("Not really sure.");
+        let cid = Cid::new_v1(SHA2_256, hash);
+
         if !self.hash_only {
             self.mapper.objects.lock().insert(cid, object);
         }

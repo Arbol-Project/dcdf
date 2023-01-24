@@ -8,6 +8,7 @@ use cid;
 pub enum Error {
     IO(io::Error),
     CID(cid::Error),
+    Load,
 }
 
 impl From<io::Error> for Error {
