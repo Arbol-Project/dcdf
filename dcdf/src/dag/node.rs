@@ -1,13 +1,15 @@
-use std::fmt::Debug;
-use std::io;
-use std::sync::Arc;
+use std::{fmt::Debug, io, sync::Arc};
 
+use async_trait::async_trait;
 use cid::Cid;
+use futures::io::AsyncRead;
 use num_traits::Float;
 
-use crate::codec::FChunk;
-use crate::errors::Result;
-use crate::extio::Serialize;
+use crate::{
+    codec::FChunk,
+    errors::Result,
+    extio::{Serialize, SerializeAsync},
+};
 
 use super::resolver::Resolver;
 
@@ -36,6 +38,20 @@ where
     fn ls(&self) -> Vec<(String, Cid)>;
 }
 
+/// A DAG node.
+///
+#[async_trait]
+pub trait AsyncNode<N>: Node<N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
+    /// Load an object from a stream
+    async fn load_from_async(
+        resolver: &Arc<Resolver<N>>,
+        stream: &mut (impl AsyncRead + Unpin + Send),
+    ) -> Result<Self>;
+}
+
 impl<N> Node<N> for FChunk<N>
 where
     N: Float + Debug + Send + Sync + 'static,
@@ -52,5 +68,18 @@ where
 
     fn ls(&self) -> Vec<(String, Cid)> {
         vec![]
+    }
+}
+
+#[async_trait]
+impl<N> AsyncNode<N> for FChunk<N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
+    async fn load_from_async(
+        _resolver: &Arc<Resolver<N>>,
+        stream: &mut (impl AsyncRead + Unpin + Send),
+    ) -> Result<Self> {
+        FChunk::read_from_async(stream).await
     }
 }

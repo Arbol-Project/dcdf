@@ -8,6 +8,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Weak};
 
 use cid::Cid;
+use futures::future::join_all;
 use ndarray::{s, Array2, Array3, ArrayBase, DataMut, Ix3};
 use num_traits::Float;
 use parking_lot::Mutex;
@@ -15,7 +16,7 @@ use parking_lot::Mutex;
 use crate::cache::Cacheable;
 use crate::codec::Dac;
 use crate::codec::FChunk;
-use crate::errors::Result;
+use crate::errors::{Error, Result};
 use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
 use crate::fixed::{from_fixed, to_fixed, Fraction, Precise, Round};
 use crate::geom;
@@ -99,7 +100,7 @@ where
     /// Get a cell's value at a particular time instant.
     ///
     pub async fn get_async(self: &Arc<Self>, instant: usize, row: usize, col: usize) -> Result<N> {
-        let mut iter = self.iter_cell(instant, instant + 1, row, col)?;
+        let mut iter = self.iter_cell_async(instant, instant + 1, row, col).await?;
 
         Ok(iter.next().unwrap())
     }
@@ -141,6 +142,53 @@ where
                 let external = &self.external()?;
                 let cid = &external[index];
                 let chunk = self.resolver.get_subchunk(cid)?;
+
+                Ok(CellIter {
+                    inner: Rc::new(RefCell::new(
+                        chunk.iter_cell(start, end, local_row, local_col),
+                    )),
+                })
+            }
+        }
+    }
+
+    /// Iterate over a cell's value across time instants.
+    ///
+    pub async fn iter_cell_async(
+        self: &Arc<Self>,
+        start: usize,
+        end: usize,
+        row: usize,
+        col: usize,
+    ) -> Result<CellIter<N>> {
+        let (start, end) = rearrange(start, end);
+        self.check_bounds(end - 1, row, col);
+
+        // Theoretically compiler will optimize to single DIVREM instructions
+        // https://stackoverflow.com/questions/69051429
+        //      /what-is-the-function-to-get-the-quotient-and-remainder-divmod-for-rust
+        let chunk_row = row / self.chunks_sidelen;
+        let local_row = row % self.chunks_sidelen;
+        let chunk_col = col / self.chunks_sidelen;
+        let local_col = col % self.chunks_sidelen;
+
+        let chunk = chunk_row * self.subsidelen + chunk_col;
+        match self.references[chunk] {
+            Reference::Elided => Ok(CellIter {
+                inner: Rc::new(RefCell::new(SuperCellIter::new(self, start, end, chunk))),
+            }),
+            Reference::Local(index) => {
+                let chunk = &self.local[index];
+                Ok(CellIter {
+                    inner: Rc::new(RefCell::new(
+                        chunk.iter_cell(start, end, local_row, local_col),
+                    )),
+                })
+            }
+            Reference::External(index) => {
+                let external = &self.external_async().await?;
+                let cid = &external[index];
+                let chunk = self.resolver.get_subchunk_async(cid).await?;
 
                 Ok(CellIter {
                     inner: Rc::new(RefCell::new(
@@ -278,6 +326,86 @@ where
         })
     }
 
+    /// Get a subarray of this Chunk.
+    ///
+    pub async fn get_window_async(self: &Arc<Self>, bounds: &geom::Cube) -> Result<Array3<N>> {
+        self.check_bounds(bounds.end - 1, bounds.bottom - 1, bounds.right - 1);
+
+        let mut window = Array3::zeros([bounds.instants(), bounds.rows(), bounds.cols()]);
+        self.fill_window_async(bounds, &mut window).await?;
+
+        Ok(window)
+    }
+
+    /// Fill in a preallocated array with subarray from this chunk
+    ///
+    async fn fill_window_async<S>(
+        self: &Arc<Self>,
+        bounds: &geom::Cube,
+        window: &mut ArrayBase<S, Ix3>,
+    ) -> Result<()>
+    where
+        S: DataMut<Elem = N>,
+    {
+        let mut futures = vec![];
+
+        let subchunks = self.subchunks_for(&bounds.rect());
+        for subchunk in subchunks {
+            let mut subwindow = unsafe {
+                window
+                    .slice_mut(s![
+                        ..,
+                        subchunk.slice.top..subchunk.slice.bottom,
+                        subchunk.slice.left..subchunk.slice.right
+                    ])
+                    .raw_view_mut()
+                    .deref_into_view_mut()
+            };
+
+            let future = async move {
+                let bounds = geom::Cube::new(
+                    bounds.start,
+                    bounds.end,
+                    subchunk.local.top,
+                    subchunk.local.bottom,
+                    subchunk.local.left,
+                    subchunk.local.right,
+                );
+                match self.references[subchunk.index] {
+                    Reference::Elided => {
+                        let stride = self.subsidelen * self.subsidelen;
+                        let mut index = subchunk.index + bounds.start * stride;
+                        for i in 0..bounds.instants() {
+                            let value = self.max.get(index);
+                            let value = from_fixed(value, self.fractional_bits);
+                            let mut slice = subwindow.slice_mut(s![i, .., ..]);
+                            slice.fill(value);
+                            index += stride;
+                        }
+                    }
+                    Reference::Local(index) => {
+                        let chunk = &self.local[index];
+                        chunk.fill_window(&bounds, &mut subwindow);
+                    }
+                    Reference::External(index) => {
+                        let external = &self.external_async().await?;
+                        let cid = &external[index];
+                        let chunk = self.resolver.get_subchunk_async(cid).await?;
+                        chunk.fill_window(&bounds, &mut subwindow);
+                    }
+                }
+
+                Ok::<(), Error>(())
+            };
+
+            futures.push(future);
+        }
+
+        join_all(futures).await;
+
+        Ok(())
+    }
+
     /// Search a subarray for cells that fall in a given range.
     ///
     /// Returns an iterator that produces coordinate triplets [instant, row, col] of matching
@@ -368,6 +496,22 @@ where
         }
 
         let links = self.resolver.get_links(&self.external_cid)?;
+        *external = Some(Arc::downgrade(&links));
+
+        Ok(links)
+    }
+
+    async fn external_async(&self) -> Result<Arc<Links>> {
+        // Try to use cached version. Because we only store a weak reference locally, the LRU cache
+        // is still in charge of whether an object is still available.
+        let mut external = self.external.lock();
+        if let Some(links) = &*external {
+            if let Some(links) = links.upgrade() {
+                return Ok(links);
+            }
+        }
+
+        let links = self.resolver.get_links_async(&self.external_cid).await?;
         *external = Some(Arc::downgrade(&links));
 
         Ok(links)
@@ -1445,6 +1589,35 @@ mod tests {
                     Ok(())
                 }
 
+                #[tokio::test]
+                async fn [<$name _test_get_window_async>]() -> Result<()> {
+                    let (data, chunk) = $name()?;
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    for top in 0..rows / 2 {
+                        let bottom = top + rows / 2;
+                        for left in 0..cols / 2 {
+                            let right = left + cols / 2;
+                            let start = top + bottom;
+                            let end = instants - start;
+                            let bounds = geom::Cube::new(start, end, top, bottom, left, right);
+                            let window = chunk.get_window_async(&bounds).await?;
+
+                            assert_eq!(window.shape(),
+                                       [end - start, bottom - top, right - left]);
+
+                            for i in 0..end - start {
+                                assert_eq!(
+                                    window.slice(s![i, .., ..]),
+                                    data[start + i].slice(s![top..bottom, left..right])
+                                );
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+
                 #[test]
                 #[should_panic]
                 fn [<$name _test_get_window_time_out_of_bounds>]() {
@@ -1851,4 +2024,48 @@ mod tests {
     }
 
     test_all_the_things!(mixed_subchunks);
+
+    fn elide_everything() -> DataChunk {
+        let length = 100;
+        let shape = (16, 16);
+        let mut data = vec![];
+
+        for i in 0..length {
+            let slice = Array2::from_elem(shape, i as f32);
+            data.push(slice);
+        }
+
+        let build = build_superchunk(
+            data.clone().into_iter(),
+            testing::resolver(),
+            2,
+            2,
+            Precise(3),
+            0,
+        )?;
+
+        let mut local_count = 0;
+        let mut external_count = 0;
+        let mut elided_count = 0;
+        for r in build.data.references.iter() {
+            match r {
+                Reference::External(_) => {
+                    external_count += 1;
+                }
+                Reference::Local(_) => {
+                    local_count += 1;
+                }
+                Reference::Elided => {
+                    elided_count += 1;
+                }
+            }
+        }
+        assert_eq!(external_count, 0);
+        assert_eq!(local_count, 0);
+        assert_eq!(elided_count, 16);
+
+        Ok((data, build.data))
+    }
+
+    test_all_the_things!(elide_everything);
 }

@@ -106,7 +106,7 @@ impl AsyncMapper for MemoryMapper {
         Box::new(MemoryMapperStoreAsyncWrite::new(self, true))
     }
 
-    async fn load_async(&self, cid: &Cid) -> Option<Box<dyn AsyncRead + '_>> {
+    async fn load_async(&self, cid: &Cid) -> Option<Box<dyn AsyncRead + Unpin + Send + '_>> {
         let objects = self.objects.lock();
         let object = objects.get(cid)?;
         Some(Box::new(AsyncCursor::new(object.clone())))

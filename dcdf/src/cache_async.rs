@@ -10,7 +10,10 @@ use futures::{
 
 use parking_lot::Mutex;
 
-use super::errors::{Error, Result};
+use super::{
+    cache::Cacheable,
+    errors::{Error, Result},
+};
 
 /// An LRU (least recently used) cache.
 ///
@@ -46,15 +49,6 @@ where
     /// Synchronization objects for objects that are currently being loaded from the underlying
     /// data store.
     loaders: Mutex<HashMap<K, Arc<Loader<V>>>>,
-}
-
-/// A trait for objects that can be cached
-///
-/// Cacheable objects must be able to self report their size via the ``size`` method.
-///
-pub trait Cacheable: Sized {
-    /// Return the number of bytes in the serialized representation
-    fn size(&self) -> u64;
 }
 
 /// A structure used to synchronize an object's load operation among all the threads waiting for

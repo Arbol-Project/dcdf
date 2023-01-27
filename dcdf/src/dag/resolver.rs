@@ -1,22 +1,30 @@
-use std::any::TypeId;
-use std::fmt::Debug;
-use std::io::{self, Read};
-use std::sync::Arc;
+use std::{
+    any::TypeId,
+    fmt::Debug,
+    io::{self, Read},
+    sync::Arc,
+};
 
 use cid::Cid;
+use futures::{io::AsyncRead, FutureExt};
 use num_traits::Float;
 
-use crate::cache::{Cache, Cacheable};
-use crate::codec::FChunk;
-use crate::errors::Result;
-use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
+use crate::{
+    cache::{Cache, Cacheable},
+    cache_async::Cache as AsyncCache,
+    codec::FChunk,
+    errors::Result,
+    extio::{ExtendedAsyncRead, ExtendedRead, ExtendedWrite, Serialize},
+};
 
-//use super::commit::Commit;
-//use super::folder::Folder;
-use super::links::Links;
-use super::mapper::{Mapper, StoreWrite};
-use super::node::{self, Node};
-use super::superchunk::Superchunk;
+use super::{
+    //    commit::Commit,
+    //    folder::Folder,
+    links::Links,
+    mapper::{Mapper, StoreWrite},
+    node::{self, AsyncNode, Node},
+    superchunk::Superchunk,
+};
 
 const MAGIC_NUMBER: u16 = 0xDCDF + 1;
 const FORMAT_VERSION: u32 = 0;
@@ -36,6 +44,7 @@ where
 {
     mapper: Box<dyn Mapper>,
     cache: Cache<Cid, CacheItem<N>>,
+    async_cache: AsyncCache<Cid, CacheItem<N>>,
 }
 
 enum CacheItem<N>
@@ -98,7 +107,12 @@ where
     ///
     pub fn new(mapper: Box<dyn Mapper>, cache_bytes: u64) -> Self {
         let cache = Cache::new(cache_bytes);
-        Self { mapper, cache }
+        let async_cache = AsyncCache::new(cache_bytes);
+        Self {
+            mapper,
+            cache,
+            async_cache,
+        }
     }
 
     /*
@@ -156,8 +170,26 @@ where
     /// * `cid` - The CID of the chunk to retreive.
     ///
     pub(crate) fn get_subchunk(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<FChunk<N>>> {
-        let item = self.cache.get(cid, |cid| self.retrieve(&cid))?;
+        let load = |cid| self.retrieve(&cid);
+        let item = self.cache.get(cid, load)?;
 
+        match &*item {
+            CacheItem::Subchunk(chunk) => Ok(Arc::clone(&chunk)),
+            _ => panic!("Expecting subchunk."),
+        }
+    }
+
+    /// Get an `Fchunk` from the data store.
+    ///
+    /// # Arguments
+    ///
+    /// * `cid` - The CID of the chunk to retreive.
+    ///
+    pub(crate) async fn get_subchunk_async(
+        self: &Arc<Resolver<N>>,
+        cid: &Cid,
+    ) -> Result<Arc<FChunk<N>>> {
+        let item = self.check_cache(cid).await?;
         match &*item {
             CacheItem::Subchunk(chunk) => Ok(Arc::clone(&chunk)),
             _ => panic!("Expecting subchunk."),
@@ -177,6 +209,26 @@ where
             CacheItem::Links(links) => Ok(Arc::clone(&links)),
             _ => panic!("Expecting links."),
         }
+    }
+
+    /// Get a `Links` from the data store.
+    ///
+    /// # Arguments
+    ///
+    /// * `cid` - The CID of the links to retreive.
+    ///
+    pub(crate) async fn get_links_async(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<Links>> {
+        let item = self.check_cache(cid).await?;
+        match &*item {
+            CacheItem::Links(links) => Ok(Arc::clone(&links)),
+            _ => panic!("Expecting links."),
+        }
+    }
+
+    async fn check_cache(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<CacheItem<N>>> {
+        let resolver = Arc::clone(self);
+        let load = |cid: Cid| async move { resolver.retrieve_async(cid.clone()).await }.boxed();
+        self.async_cache.get(cid, load).await
     }
 
     /// Compute the hash for a subchunk.
@@ -240,6 +292,43 @@ where
         }
     }
 
+    /// Retrieve a node
+    ///
+    async fn retrieve_async(self: &Arc<Resolver<N>>, cid: Cid) -> Result<Option<CacheItem<N>>> {
+        match self.mapper.load_async(&cid).await {
+            None => Ok(None),
+            Some(mut stream) => {
+                let node_type = self.read_header_async(&mut stream).await?;
+                let item = match node_type {
+                    /*
+                    node::NODE_COMMIT => {
+                        CacheItem::Commit(Arc::new(Commit::load_from(self, &mut stream)?))
+                    }
+                    */
+                    node::NODE_LINKS => {
+                        CacheItem::Links(Arc::new(Links::load_from_async(self, &mut stream).await?))
+                    }
+                    /*
+                    node::NODE_FOLDER => {
+                        CacheItem::Folder(Arc::new(Folder::load_from(self, &mut stream)?))
+                    }
+                    */
+                    node::NODE_SUBCHUNK => CacheItem::Subchunk(Arc::new(
+                        FChunk::load_from_async(self, &mut stream).await?,
+                    )),
+                    /*
+                    node::NODE_SUPERCHUNK => {
+                        CacheItem::Superchunk(Arc::new(Superchunk::load_from_async(self, &mut stream).await?))
+                    }
+                    */
+                    _ => panic!("Unrecognized node type: {node_type}"),
+                };
+
+                Ok(Some(item))
+            }
+        }
+    }
+
     fn read_header(&self, stream: &mut impl Read) -> io::Result<u8> {
         let magic_number = stream.read_u16()?;
         if magic_number != MAGIC_NUMBER {
@@ -256,6 +345,27 @@ where
         }
 
         stream.read_byte()
+    }
+
+    async fn read_header_async(
+        &self,
+        stream: &mut (impl AsyncRead + Unpin + Send),
+    ) -> io::Result<u8> {
+        let magic_number = stream.read_u16_async().await?;
+        if magic_number != MAGIC_NUMBER {
+            panic!("File is not a DCDF graph node file.");
+        }
+
+        let version = stream.read_u32_async().await?;
+        if version != FORMAT_VERSION {
+            panic!("Unrecognized file format.");
+        }
+
+        if Self::type_code() != stream.read_byte_async().await? {
+            panic!("Numeric type doesn't match.");
+        }
+
+        stream.read_byte_async().await
     }
 
     /// Obtain an input stream for reading an object from the store.

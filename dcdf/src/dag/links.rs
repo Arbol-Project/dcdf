@@ -1,17 +1,25 @@
-use std::fmt::Debug;
-use std::io;
-use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
+use std::{
+    fmt::Debug,
+    io,
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
+use async_trait::async_trait;
 use cid::Cid;
+use futures::{AsyncRead, AsyncReadExt};
 use num_traits::Float;
 
-use crate::cache::Cacheable;
-use crate::errors::Result;
-use crate::extio::{ExtendedRead, ExtendedWrite};
+use crate::{
+    cache::Cacheable,
+    errors::Result,
+    extio::{ExtendedAsyncRead, ExtendedRead, ExtendedWrite},
+};
 
-use super::node::{Node, NODE_LINKS};
-use super::resolver::Resolver;
+use super::{
+    node::{AsyncNode, Node, NODE_LINKS},
+    resolver::Resolver,
+};
 
 pub(crate) struct Links(Vec<Cid>);
 
@@ -68,6 +76,33 @@ where
         }
 
         ls
+    }
+}
+
+#[async_trait]
+impl<N> AsyncNode<N> for Links
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
+    /// Load an object from a stream
+    async fn load_from_async(
+        resolver: &Arc<Resolver<N>>,
+        stream: &mut (impl AsyncRead + Unpin + Send),
+    ) -> Result<Self> {
+        let n = stream.read_u32_async().await? as usize;
+
+        // Cid doesn't have async read, so read into a buffer and use that
+        let mut buffer = vec![];
+        stream.read_to_end(&mut buffer).await?;
+        let mut stream = io::Cursor::new(buffer);
+
+        let mut links = Vec::with_capacity(n);
+        for _ in 0..n {
+            // Oh no! No async for this.
+            links.push(Cid::read_bytes(&mut stream)?);
+        }
+
+        Ok(Self(links))
     }
 }
 
