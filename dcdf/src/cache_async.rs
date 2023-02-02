@@ -5,7 +5,6 @@ use std::{collections::HashMap, fmt::Debug, hash::Hash, sync::Arc};
 use futures::{
     channel::oneshot::{channel, Sender},
     future::BoxFuture,
-    FutureExt,
 };
 
 use parking_lot::Mutex;
@@ -403,7 +402,7 @@ where
 mod tests {
     use super::*;
 
-    use futures::future::join_all;
+    use futures::future::{join_all, FutureExt};
     use std::time::Duration;
     use tokio::time;
 

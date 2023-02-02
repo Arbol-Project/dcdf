@@ -1,31 +1,43 @@
-use std::cell::RefCell;
-use std::cmp;
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::io;
-use std::mem;
-use std::rc::Rc;
-use std::sync::{Arc, Weak};
+use std::{
+    cell::RefCell,
+    cmp,
+    collections::HashMap,
+    fmt::Debug,
+    io, mem,
+    rc::Rc,
+    sync::{Arc, Weak},
+};
 
+use async_trait::async_trait;
 use cid::Cid;
-use futures::future::join_all;
+use futures::{
+    future::join_all,
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
+};
 use ndarray::{s, Array2, Array3, ArrayBase, DataMut, Ix3};
 use num_traits::Float;
 use parking_lot::Mutex;
 
-use crate::cache::Cacheable;
-use crate::codec::Dac;
-use crate::codec::FChunk;
-use crate::errors::{Error, Result};
-use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
-use crate::fixed::{from_fixed, to_fixed, Fraction, Precise, Round};
-use crate::geom;
-use crate::helpers::rearrange;
-use crate::simple::{FBuild, FBuilder};
+use crate::{
+    cache::Cacheable,
+    codec::Dac,
+    codec::FChunk,
+    errors::{Error, Result},
+    extio::{
+        ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite, Serialize,
+        SerializeAsync,
+    },
+    fixed::{from_fixed, to_fixed, Fraction, Precise, Round},
+    geom,
+    helpers::rearrange,
+    simple::{FBuild, FBuilder},
+};
 
-use super::links::Links;
-use super::node::{Node, NODE_SUPERCHUNK};
-use super::resolver::Resolver;
+use super::{
+    links::Links,
+    node::{AsyncNode, Node, NODE_SUPERCHUNK},
+    resolver::Resolver,
+};
 
 /// A time series raster subdivided into a number of K²-Raster encoded chunks.
 ///
@@ -83,6 +95,38 @@ impl<N> Superchunk<N>
 where
     N: Float + Debug + Send + Sync + 'static,
 {
+    pub(crate) fn new(
+        shape: [usize; 3],
+        sidelen: usize,
+        levels: usize,
+        references: Vec<Reference>,
+        max: Dac,
+        min: Dac,
+        local: Vec<Arc<FChunk<N>>>,
+        external_cid: Cid,
+        external: Mutex<Option<Weak<Links>>>,
+        resolver: Arc<Resolver<N>>,
+        fractional_bits: usize,
+        chunks_sidelen: usize,
+        subsidelen: usize,
+    ) -> Self {
+        Self {
+            shape,
+            sidelen,
+            levels,
+            references,
+            max,
+            min,
+            local,
+            external_cid,
+            external,
+            resolver,
+            fractional_bits,
+            chunks_sidelen,
+            subsidelen,
+        }
+    }
+
     /// Get the shape of the overall time series raster
     ///
     pub fn shape(&self) -> [usize; 3] {
@@ -533,7 +577,7 @@ where
         + 1    // fractional_bits
         + 4    // n_references
         + self.references.iter().map(|r| r.size()).sum::<u64>()
-        + self.external_cid.to_bytes().len() as u64
+        + self.external_cid.encoded_len() as u64
         + 4    // n_local
         + self.local.iter().map(|l| l.size()).sum::<u64>()
         + self.max.size()
@@ -628,6 +672,99 @@ where
 
     fn ls(&self) -> Vec<(String, Cid)> {
         vec![(String::from("subchunks"), self.external_cid)]
+    }
+}
+
+#[async_trait]
+impl<N> AsyncNode<N> for Superchunk<N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
+    /// Save an object into the DAG
+    ///
+    async fn save_to_async(
+        self,
+        _resolver: &Arc<Resolver<N>>,
+        stream: &mut (impl AsyncWrite + Unpin + Send),
+    ) -> Result<()> {
+        stream.write_u32_async(self.shape[0] as u32).await?;
+        stream.write_u32_async(self.shape[1] as u32).await?;
+        stream.write_u32_async(self.shape[2] as u32).await?;
+
+        stream.write_u32_async(self.sidelen as u32).await?;
+        stream.write_byte_async(self.levels as u8).await?;
+        stream.write_u32_async(self.chunks_sidelen as u32).await?;
+        stream.write_u32_async(self.subsidelen as u32).await?;
+        stream.write_byte_async(self.fractional_bits as u8).await?;
+
+        stream.write_u32_async(self.references.len() as u32).await?;
+        for reference in &self.references {
+            reference.write_to_async(stream).await?;
+        }
+
+        stream.write_cid(&self.external_cid).await?;
+
+        stream.write_u32_async(self.local.len() as u32).await?;
+        for chunk in &self.local {
+            chunk.write_to_async(stream).await?;
+        }
+
+        self.max.write_to_async(stream).await?;
+        self.min.write_to_async(stream).await?;
+
+        Ok(())
+    }
+
+    /// Load an object from a stream
+    async fn load_from_async(
+        resolver: &Arc<Resolver<N>>,
+        stream: &mut (impl AsyncRead + Unpin + Send),
+    ) -> Result<Self> {
+        let instants = stream.read_u32_async().await? as usize;
+        let rows = stream.read_u32_async().await? as usize;
+        let cols = stream.read_u32_async().await? as usize;
+        let shape = [instants, rows, cols];
+
+        let sidelen = stream.read_u32_async().await? as usize;
+        let levels = stream.read_byte_async().await? as usize;
+        let chunks_sidelen = stream.read_u32_async().await? as usize;
+        let subsidelen = stream.read_u32_async().await? as usize;
+        let fractional_bits = stream.read_byte_async().await? as usize;
+
+        let n_references = stream.read_u32_async().await? as usize;
+        let mut references = Vec::with_capacity(n_references);
+        for _ in 0..n_references {
+            let reference = Reference::read_from_async(stream).await?;
+            references.push(reference);
+        }
+
+        let external_cid = stream.read_cid().await?;
+
+        let n_local = stream.read_u32_async().await? as usize;
+        let mut local = Vec::with_capacity(n_local);
+        for _ in 0..n_local {
+            let chunk = FChunk::read_from_async(stream).await?;
+            local.push(Arc::new(chunk));
+        }
+
+        let max = Dac::read_from_async(stream).await?;
+        let min = Dac::read_from_async(stream).await?;
+
+        Ok(Self {
+            shape,
+            sidelen,
+            levels,
+            chunks_sidelen,
+            subsidelen,
+            fractional_bits,
+            references,
+            local,
+            external_cid,
+            external: Mutex::new(None),
+            max,
+            min,
+            resolver: Arc::clone(resolver),
+        })
     }
 }
 
@@ -1059,7 +1196,7 @@ where
     }
 }
 
-enum Reference {
+pub(crate) enum Reference {
     Elided,
     Local(usize),
     External(usize),
@@ -1095,6 +1232,40 @@ impl Serialize for Reference {
             REFERENCE_ELIDED => Reference::Elided,
             REFERENCE_LOCAL => Reference::Local(stream.read_u32()? as usize),
             REFERENCE_EXTERNAL => Reference::External(stream.read_u32()? as usize),
+            _ => panic!("Unrecognized reference type"),
+        };
+
+        Ok(node)
+    }
+}
+
+#[async_trait]
+impl SerializeAsync for Reference {
+    /// Write self to a stream
+    async fn write_to_async(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+        match self {
+            Reference::Elided => {
+                stream.write_byte_async(REFERENCE_ELIDED).await?;
+            }
+            Reference::Local(index) => {
+                stream.write_byte_async(REFERENCE_LOCAL).await?;
+                stream.write_u32_async(*index as u32).await?;
+            }
+            Reference::External(index) => {
+                stream.write_byte_async(REFERENCE_EXTERNAL).await?;
+                stream.write_u32_async(*index as u32).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Read Self from a stream
+    async fn read_from_async(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+        let node = match stream.read_byte_async().await? {
+            REFERENCE_ELIDED => Reference::Elided,
+            REFERENCE_LOCAL => Reference::Local(stream.read_u32_async().await? as usize),
+            REFERENCE_EXTERNAL => Reference::External(stream.read_u32_async().await? as usize),
             _ => panic!("Unrecognized reference type"),
         };
 
@@ -1442,6 +1613,7 @@ mod tests {
     use super::*;
 
     use super::super::testing;
+    use crate::build::build_superchunk as build_superchunk_async;
 
     use std::collections::HashSet;
     use std::iter::zip;
@@ -1469,7 +1641,7 @@ mod tests {
 
                 #[tokio::test]
                 async fn [<$name _test_get_async>]() -> Result<()> {
-                    let (data, chunk) = $name()?;
+                    let (data, chunk) = [<$name _async>]().await?;
                     let chunk = Arc::new(chunk);
                     let [instants, rows, cols] = chunk.shape;
                     for instant in 0..instants {
@@ -1853,6 +2025,29 @@ mod tests {
                     Ok(())
                 }
 
+                #[tokio::test]
+                async fn [<$name _test_save_load_async>]() -> Result<()> {
+                    let (data, chunk) = $name()?;
+                    let resolver = Arc::clone(&chunk.resolver);
+                    let cid = resolver.save_async(chunk).await?;
+                    let chunk = resolver.get_superchunk_async(&cid).await?;
+
+                    let [instants, rows, cols] = chunk.shape;
+                    for row in 0..rows {
+                        for col in 0..cols {
+                            let start = row + col;
+                            let end = instants - start;
+                            let values: Vec<f32> = chunk.iter_cell(start, end, row, col)?.collect();
+                            assert_eq!(values.len(), end - start);
+                            for i in 0..values.len() {
+                                assert_eq!(values[i], data[i + start][[row, col]]);
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+
                 #[test]
                 fn [<$name _test_ls>]() -> Result<()> {
                     let (_, chunk) = $name()?;
@@ -1890,7 +2085,6 @@ mod tests {
 
                     Ok(())
                 }
-
             }
         };
     }
@@ -1912,9 +2106,51 @@ mod tests {
         Ok((data, build.data))
     }
 
+    async fn no_subchunks_async() -> DataChunk {
+        let data = testing::array8();
+        let build = build_superchunk_async(
+            data.clone().into_iter(),
+            testing::resolver(),
+            3,
+            2,
+            Precise(3),
+            0,
+        )
+        .await?;
+        assert_eq!(build.data.references.len(), 64);
+
+        Ok((data, build.data))
+    }
+
     test_all_the_things!(no_subchunks);
 
     fn no_subchunks_coarse() -> DataChunk {
+        let data = testing::array8();
+        let data: Vec<Array2<f32>> = data
+            .into_iter()
+            .map(|a| Array2::from_shape_fn((16, 16), |(row, col)| a[[row / 2, col / 2]]))
+            .collect();
+
+        let build = build_superchunk(
+            data.clone().into_iter(),
+            testing::resolver(),
+            3,
+            2,
+            Precise(3),
+            0,
+        )?;
+        assert_eq!(build.data.references.len(), 64);
+        for reference in &build.data.references {
+            match reference {
+                Reference::Elided => continue,
+                _ => panic!("not elided"),
+            }
+        }
+
+        Ok((data, build.data))
+    }
+
+    async fn no_subchunks_coarse_async() -> DataChunk {
         let data = testing::array8();
         let data: Vec<Array2<f32>> = data
             .into_iter()
@@ -1958,6 +2194,22 @@ mod tests {
         Ok((data, build.data))
     }
 
+    async fn local_subchunks_async() -> DataChunk {
+        let data = testing::array(16);
+        let build = build_superchunk(
+            data.clone().into_iter(),
+            testing::resolver(),
+            2,
+            2,
+            Precise(3),
+            1 << 14,
+        )?;
+        assert_eq!(build.data.references.len(), 16);
+        assert_eq!(build.data.local.len(), 4);
+
+        Ok((data, build.data))
+    }
+
     test_all_the_things!(local_subchunks);
 
     fn external_subchunks() -> DataChunk {
@@ -1970,6 +2222,33 @@ mod tests {
             Precise(3),
             0,
         )?;
+        assert_eq!(build.data.references.len(), 16);
+
+        for reference in &build.data.references {
+            match reference {
+                Reference::External(_) => {}
+                _ => {
+                    panic!("Expecting external references only");
+                }
+            }
+        }
+
+        assert_eq!(build.data.external()?.len(), 4);
+
+        Ok((data, build.data))
+    }
+
+    async fn external_subchunks_async() -> DataChunk {
+        let data = testing::array(16);
+        let build = build_superchunk_async(
+            data.clone().into_iter(),
+            testing::resolver(),
+            2,
+            2,
+            Precise(3),
+            0,
+        )
+        .await?;
         assert_eq!(build.data.references.len(), 16);
 
         for reference in &build.data.references {
@@ -2023,6 +2302,42 @@ mod tests {
         Ok((data, build.data))
     }
 
+    async fn mixed_subchunks_async() -> DataChunk {
+        let data = testing::array(17);
+        let build = build_superchunk_async(
+            data.clone().into_iter(),
+            testing::resolver(),
+            2,
+            2,
+            Precise(3),
+            8000,
+        )
+        .await?;
+        assert_eq!(build.data.references.len(), 16);
+
+        let mut local_count = 0;
+        let mut external_count = 0;
+        let mut elided_count = 0;
+        for r in build.data.references.iter() {
+            match r {
+                Reference::External(_) => {
+                    external_count += 1;
+                }
+                Reference::Local(_) => {
+                    local_count += 1;
+                }
+                Reference::Elided => {
+                    elided_count += 1;
+                }
+            }
+        }
+        assert_eq!(external_count, 4);
+        assert_eq!(local_count, 4);
+        assert_eq!(elided_count, 8);
+
+        Ok((data, build.data))
+    }
+
     test_all_the_things!(mixed_subchunks);
 
     fn elide_everything() -> DataChunk {
@@ -2043,6 +2358,49 @@ mod tests {
             Precise(3),
             0,
         )?;
+
+        let mut local_count = 0;
+        let mut external_count = 0;
+        let mut elided_count = 0;
+        for r in build.data.references.iter() {
+            match r {
+                Reference::External(_) => {
+                    external_count += 1;
+                }
+                Reference::Local(_) => {
+                    local_count += 1;
+                }
+                Reference::Elided => {
+                    elided_count += 1;
+                }
+            }
+        }
+        assert_eq!(external_count, 0);
+        assert_eq!(local_count, 0);
+        assert_eq!(elided_count, 16);
+
+        Ok((data, build.data))
+    }
+
+    async fn elide_everything_async() -> DataChunk {
+        let length = 100;
+        let shape = (16, 16);
+        let mut data = vec![];
+
+        for i in 0..length {
+            let slice = Array2::from_elem(shape, i as f32);
+            data.push(slice);
+        }
+
+        let build = build_superchunk_async(
+            data.clone().into_iter(),
+            testing::resolver(),
+            2,
+            2,
+            Precise(3),
+            0,
+        )
+        .await?;
 
         let mut local_count = 0;
         let mut external_count = 0;

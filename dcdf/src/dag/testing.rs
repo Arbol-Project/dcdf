@@ -9,12 +9,12 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cid::Cid;
+use cid::{multihash::MultihashGeneric, Cid};
 use futures::{
     io::{AsyncRead, AsyncWrite, Cursor as AsyncCursor, Error as AioError},
     task::{Context, Poll},
 };
-use multihash::{Hasher, MultihashGeneric, Sha2_256};
+use multihash::{Hasher, Sha2_256};
 use ndarray::{arr2, Array2, ArrayView2};
 use num_traits::{Float, Num};
 use parking_lot::Mutex;

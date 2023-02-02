@@ -124,7 +124,7 @@ where
             + self
                 .items
                 .iter()
-                .map(|(key, value)| 1 + key.len() + value.to_bytes().len())
+                .map(|(key, value)| 1 + key.len() + value.encoded_len())
                 .sum::<usize>() as u64
     }
 }

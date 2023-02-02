@@ -7,13 +7,13 @@ use std::{
 
 use async_trait::async_trait;
 use cid::Cid;
-use futures::{AsyncRead, AsyncReadExt};
+use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use num_traits::Float;
 
 use crate::{
     cache::Cacheable,
     errors::Result,
-    extio::{ExtendedAsyncRead, ExtendedRead, ExtendedWrite},
+    extio::{ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite},
 };
 
 use super::{
@@ -98,11 +98,23 @@ where
 
         let mut links = Vec::with_capacity(n);
         for _ in 0..n {
-            // Oh no! No async for this.
             links.push(Cid::read_bytes(&mut stream)?);
         }
 
         Ok(Self(links))
+    }
+
+    async fn save_to_async(
+        self,
+        _resolver: &Arc<Resolver<N>>,
+        stream: &mut (impl AsyncWrite + Unpin + Send),
+    ) -> Result<()> {
+        stream.write_u32_async(self.0.len() as u32).await?;
+        for link in &self.0 {
+            stream.write_cid(&link).await?;
+        }
+
+        Ok(())
     }
 }
 
@@ -110,7 +122,7 @@ impl Cacheable for Links {
     fn size(&self) -> u64 {
         Resolver::<f32>::HEADER_SIZE
             + 4
-            + self.0.iter().map(|l| l.to_bytes().len()).sum::<usize>() as u64
+            + self.0.iter().map(|l| l.encoded_len()).sum::<usize>() as u64
     }
 }
 
@@ -130,13 +142,26 @@ mod tests {
     }
 
     #[test]
-    fn serialize_deserialize() -> Result<()> {
+    fn load_save() -> Result<()> {
         let resolver: Arc<Resolver<f32>> = testing::resolver();
         let links = make_one();
         let expected = links.0.clone();
 
         let cid = resolver.save(links)?;
         let links = resolver.get_links(&cid)?;
+        assert_eq!(expected, links.0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn load_save_async() -> Result<()> {
+        let resolver: Arc<Resolver<f32>> = testing::resolver();
+        let links = make_one();
+        let expected = links.0.clone();
+
+        let cid = resolver.save_async(links).await?;
+        let links = resolver.get_links_async(&cid).await?;
         assert_eq!(expected, links.0);
 
         Ok(())

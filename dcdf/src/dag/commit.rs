@@ -116,10 +116,10 @@ where
 {
     fn size(&self) -> u64 {
         Resolver::<N>::HEADER_SIZE
-            + (self.root.to_bytes().len()
+            + (self.root.encoded_len()
                 + 1
                 + match self.prev {
-                    Some(cid) => cid.to_bytes().len(),
+                    Some(cid) => cid.encoded_len(),
                     None => 0,
                 }
                 + self.message.len()) as u64

@@ -1,9 +1,14 @@
 //! Extend Read and Write with some convenience methods for binary i/o
 //!
-use std::{io, marker::Unpin};
+use std::io;
 
 use async_trait::async_trait;
+use cid::Cid;
 use futures::{io as aio, AsyncReadExt, AsyncWriteExt};
+use unsigned_varint::{
+    aio::read_u64 as varint_read_u64,
+    encode::{u64 as varint_encode_u64, u64_buffer as varint_u64_buffer},
+};
 
 use super::errors::Result;
 
@@ -88,6 +93,9 @@ pub trait ExtendedAsyncRead: aio::AsyncRead {
 
     /// Read a Big Endian encoded 32 bit integer from a stream
     async fn read_u32_async(&mut self) -> io::Result<u32>;
+
+    /// Read a CID from a stream
+    async fn read_cid(&mut self) -> Result<Cid>;
 }
 
 #[async_trait]
@@ -122,6 +130,47 @@ impl<R: aio::AsyncRead + Unpin + Send> ExtendedAsyncRead for R {
         self.read_exact(&mut buffer).await?;
 
         Ok(u32::from_be_bytes(buffer))
+    }
+
+    /// Read a CID from a stream
+    async fn read_cid(&mut self) -> Result<Cid> {
+        let mut bytes = vec![];
+        let version = varint_read_u64(&mut *self).await?;
+        let codec = varint_read_u64(&mut *self).await?;
+
+        // CIDv0 has the fixed `0x12 0x20` prefix
+        if [version, codec] == [0x12, 0x20] {
+            bytes.push(version as u8);
+            bytes.push(codec as u8);
+            self.take(32).read_to_end(&mut bytes).await?;
+
+            Ok(Cid::try_from(bytes)?)
+        } else {
+            let mut varint_buf = varint_u64_buffer();
+            let code = varint_read_u64(&mut *self).await?;
+            let size = varint_read_u64(&mut *self).await?;
+
+            <Vec<u8> as io::Write>::write_all(
+                &mut bytes,
+                varint_encode_u64(version, &mut varint_buf),
+            )?;
+            <Vec<u8> as io::Write>::write_all(
+                &mut bytes,
+                varint_encode_u64(codec, &mut varint_buf),
+            )?;
+            <Vec<u8> as io::Write>::write_all(
+                &mut bytes,
+                varint_encode_u64(code, &mut varint_buf),
+            )?;
+            <Vec<u8> as io::Write>::write_all(
+                &mut bytes,
+                varint_encode_u64(size, &mut varint_buf),
+            )?;
+
+            self.take(size).read_to_end(&mut bytes).await?;
+
+            Ok(Cid::try_from(bytes)?)
+        }
     }
 }
 
@@ -186,6 +235,9 @@ pub trait ExtendedAsyncWrite: aio::AsyncWrite {
 
     /// Write a Big Endian encoded 32 bit unsigned integer to a stream
     async fn write_u32_async(&mut self, word: u32) -> io::Result<()>;
+
+    /// Write a Cid to a stream
+    async fn write_cid(&mut self, cid: &Cid) -> Result<()>;
 }
 
 #[async_trait]
@@ -217,6 +269,14 @@ impl<W: aio::AsyncWrite + Unpin + Send> ExtendedAsyncWrite for W {
     /// Write a Big Endian encoded 32 bit unsigned integer to a stream
     async fn write_u32_async(&mut self, word: u32) -> io::Result<()> {
         let buffer = word.to_be_bytes();
+        self.write_all(&buffer).await?;
+
+        Ok(())
+    }
+
+    /// Write a Cid to a stream
+    async fn write_cid(&mut self, cid: &Cid) -> Result<()> {
+        let buffer = cid.to_bytes();
         self.write_all(&buffer).await?;
 
         Ok(())

@@ -2,7 +2,7 @@ use std::{fmt::Debug, io, sync::Arc};
 
 use async_trait::async_trait;
 use cid::Cid;
-use futures::io::AsyncRead;
+use futures::io::{AsyncRead, AsyncWrite};
 use num_traits::Float;
 
 use crate::{
@@ -45,6 +45,14 @@ pub trait AsyncNode<N>: Node<N>
 where
     N: Float + Debug + Send + Sync + 'static,
 {
+    /// Save an object into the DAG
+    ///
+    async fn save_to_async(
+        self,
+        resolver: &Arc<Resolver<N>>,
+        stream: &mut (impl AsyncWrite + Unpin + Send),
+    ) -> Result<()>;
+
     /// Load an object from a stream
     async fn load_from_async(
         resolver: &Arc<Resolver<N>>,
@@ -81,5 +89,13 @@ where
         stream: &mut (impl AsyncRead + Unpin + Send),
     ) -> Result<Self> {
         FChunk::read_from_async(stream).await
+    }
+
+    async fn save_to_async(
+        self,
+        _resolver: &Arc<Resolver<N>>,
+        stream: &mut (impl AsyncWrite + Unpin + Send),
+    ) -> Result<()> {
+        self.write_to_async(stream).await
     }
 }

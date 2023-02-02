@@ -72,7 +72,7 @@ pub trait StoreWrite: Write {
 }
 
 #[async_trait]
-pub trait StoreAsyncWrite: AsyncWrite {
+pub trait StoreAsyncWrite: AsyncWrite + Unpin + Send {
     /// Close the output stream and return the `cid` for the newly written object.
     ///
     async fn finish_async(self: Box<Self>) -> Cid;

@@ -14,7 +14,7 @@ use crate::{
     cache_async::Cache as AsyncCache,
     codec::FChunk,
     errors::Result,
-    extio::{ExtendedAsyncRead, ExtendedRead, ExtendedWrite, Serialize},
+    extio::{ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite, Serialize},
 };
 
 use super::{
@@ -163,6 +163,23 @@ where
         }
     }
 
+    /// Get a `Superchunk` from the data store.
+    ///
+    /// # Arguments
+    ///
+    /// * `cid` - The CID of the superchunk to retreive.
+    ///
+    pub async fn get_superchunk_async(
+        self: &Arc<Resolver<N>>,
+        cid: &Cid,
+    ) -> Result<Arc<Superchunk<N>>> {
+        let item = self.check_cache(cid).await?;
+        match &*item {
+            CacheItem::Superchunk(chunk) => Ok(Arc::clone(&chunk)),
+            _ => panic!("Expecting superchunk."),
+        }
+    }
+
     /// Get an `Fchunk` from the data store.
     ///
     /// # Arguments
@@ -257,6 +274,23 @@ where
         Ok(stream.finish())
     }
 
+    /// Store a node
+    ///
+    pub async fn save_async<O>(self: &Arc<Resolver<N>>, node: O) -> Result<Cid>
+    where
+        O: AsyncNode<N>,
+    {
+        let mut stream = self.mapper.store_async().await;
+        stream.write_u16_async(MAGIC_NUMBER).await?;
+        stream.write_u32_async(FORMAT_VERSION).await?;
+        stream.write_byte_async(Self::type_code()).await?;
+        stream.write_byte_async(O::NODE_TYPE).await?;
+
+        node.save_to_async(&self, &mut stream).await?;
+
+        Ok(stream.finish_async().await)
+    }
+
     /// Retrieve a node
     ///
     fn retrieve(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Option<CacheItem<N>>> {
@@ -316,11 +350,9 @@ where
                     node::NODE_SUBCHUNK => CacheItem::Subchunk(Arc::new(
                         FChunk::load_from_async(self, &mut stream).await?,
                     )),
-                    /*
-                    node::NODE_SUPERCHUNK => {
-                        CacheItem::Superchunk(Arc::new(Superchunk::load_from_async(self, &mut stream).await?))
-                    }
-                    */
+                    node::NODE_SUPERCHUNK => CacheItem::Superchunk(Arc::new(
+                        Superchunk::load_from_async(self, &mut stream).await?,
+                    )),
                     _ => panic!("Unrecognized node type: {node_type}"),
                 };
 
