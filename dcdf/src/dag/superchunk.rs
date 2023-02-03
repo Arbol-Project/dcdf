@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use cid::Cid;
 use futures::{
     future::join_all,
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncWrite},
 };
 use ndarray::{s, Array2, Array3, ArrayBase, DataMut, Ix3};
 use num_traits::Float;

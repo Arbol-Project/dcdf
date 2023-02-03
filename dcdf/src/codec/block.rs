@@ -204,8 +204,7 @@ mod tests {
     use futures::io::Cursor as AsyncCursor;
     use ndarray::{arr3, s, Array3};
     use std::collections::HashSet;
-    use std::io::{Cursor, Seek};
-    use tempfile::tempfile;
+    use std::io::Cursor;
 
     fn array8() -> Array3<i32> {
         arr3(&[
@@ -260,14 +259,13 @@ mod tests {
                 .collect(),
         );
 
-        let mut file = tempfile()?;
-        block.write_to(&mut file)?;
-        file.sync_all()?;
-        file.rewind()?;
+        let mut buffer = Vec::with_capacity(block.size() as usize);
+        block.write_to(&mut buffer)?;
 
         // The number of time instants in the block is written as a single byte, so the maximum
         // number lof logs we can actually store in this block is 254. If we're allowed to actually
         // create the block, then serializing and deserializing will lead to incorrect behavior.
+        let mut file = Cursor::new(buffer);
         let block: Block<i32> = Block::read_from(&mut file)?;
         assert_eq!(block.logs.len(), 300);
 

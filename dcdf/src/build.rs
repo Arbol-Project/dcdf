@@ -129,19 +129,6 @@ where
     }
 }
 
-pub fn build_subchunk<N, T>(mut instants: T, k: i32, fraction: Fraction) -> SubchunkBuild<N>
-where
-    N: Float + Debug + Send + Sync + 'static,
-    T: Iterator<Item = Array2<N>>,
-{
-    let first = instants.next().expect("No time instants to encode");
-    let mut builder = SubchunkBuilder::new(first, k, fraction);
-    for instant in instants {
-        builder.push(instant);
-    }
-    builder.finish()
-}
-
 pub struct SuperchunkBuild<N>
 where
     N: Float + Debug + Send + Sync + 'static,
@@ -509,6 +496,19 @@ mod tests {
         ];
 
         data.into_iter().cycle().take(100).collect()
+    }
+
+    fn build_subchunk<N, T>(mut instants: T, k: i32, fraction: Fraction) -> SubchunkBuild<N>
+    where
+        N: Float + Debug + Send + Sync + 'static,
+        T: Iterator<Item = Array2<N>>,
+    {
+        let first = instants.next().expect("No time instants to encode");
+        let mut builder = SubchunkBuilder::new(first, k, fraction);
+        for instant in instants {
+            builder.push(instant);
+        }
+        builder.finish()
     }
 
     #[test]

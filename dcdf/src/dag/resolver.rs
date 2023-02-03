@@ -18,8 +18,8 @@ use crate::{
 };
 
 use super::{
-    //    commit::Commit,
-    //    folder::Folder,
+    commit::Commit,
+    folder::Folder,
     links::Links,
     mapper::{Mapper, StoreWrite},
     node::{self, AsyncNode, Node},
@@ -51,8 +51,8 @@ enum CacheItem<N>
 where
     N: Float + Debug + Send + Sync + 'static,
 {
-    //Commit(Arc<Commit<N>>),
-    //Folder(Arc<Folder<N>>),
+    Commit(Arc<Commit<N>>),
+    Folder(Arc<Folder<N>>),
     Links(Arc<Links>),
     Subchunk(Arc<FChunk<N>>),
     Superchunk(Arc<Superchunk<N>>),
@@ -64,8 +64,8 @@ where
 {
     fn ls(&self) -> Vec<(String, Cid)> {
         match self {
-            //CacheItem::Commit(commit) => commit.ls(),
-            //CacheItem::Folder(folder) => folder.ls(),
+            CacheItem::Commit(commit) => commit.ls(),
+            CacheItem::Folder(folder) => folder.ls(),
             CacheItem::Links(links) => <Links as Node<N>>::ls(links),
             CacheItem::Subchunk(chunk) => chunk.ls(),
             CacheItem::Superchunk(chunk) => chunk.ls(),
@@ -79,8 +79,8 @@ where
 {
     fn size(&self) -> u64 {
         match self {
-            //CacheItem::Commit(commit) => commit.size(),
-            //CacheItem::Folder(folder) => folder.size(),
+            CacheItem::Commit(commit) => commit.size(),
+            CacheItem::Folder(folder) => folder.size(),
             CacheItem::Links(links) => links.size(),
             CacheItem::Subchunk(chunk) => chunk.size(),
             CacheItem::Superchunk(chunk) => chunk.size(),
@@ -115,7 +115,6 @@ where
         }
     }
 
-    /*
     /// Get a `Folder` from the data store.
     ///
     /// # Arguments
@@ -130,9 +129,15 @@ where
             _ => panic!("Expecting folder."),
         }
     }
-    */
 
-    /*
+    pub async fn get_folder_async(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<Folder<N>>> {
+        let item = self.check_cache(cid).await?;
+        match &*item {
+            CacheItem::Folder(folder) => Ok(Arc::clone(&folder)),
+            _ => panic!("Expecting folder."),
+        }
+    }
+
     /// Get a `Commit` from the data store.
     ///
     /// # Arguments
@@ -146,7 +151,15 @@ where
             CacheItem::Commit(commit) => Ok(Arc::clone(&commit)),
             _ => panic!("Expecting commit."),
         }
-    }*/
+    }
+
+    pub async fn get_commit_async(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<Commit<N>>> {
+        let item = self.check_cache(cid).await?;
+        match &*item {
+            CacheItem::Commit(commit) => Ok(Arc::clone(&commit)),
+            _ => panic!("Expecting commit."),
+        }
+    }
 
     /// Get a `Superchunk` from the data store.
     ///
@@ -299,19 +312,15 @@ where
             Some(mut stream) => {
                 let node_type = self.read_header(&mut stream)?;
                 let item = match node_type {
-                    /*
                     node::NODE_COMMIT => {
                         CacheItem::Commit(Arc::new(Commit::load_from(self, &mut stream)?))
                     }
-                    */
                     node::NODE_LINKS => {
                         CacheItem::Links(Arc::new(Links::load_from(self, &mut stream)?))
                     }
-                    /*
                     node::NODE_FOLDER => {
                         CacheItem::Folder(Arc::new(Folder::load_from(self, &mut stream)?))
                     }
-                    */
                     node::NODE_SUBCHUNK => {
                         CacheItem::Subchunk(Arc::new(FChunk::load_from(self, &mut stream)?))
                     }
@@ -334,19 +343,15 @@ where
             Some(mut stream) => {
                 let node_type = self.read_header_async(&mut stream).await?;
                 let item = match node_type {
-                    /*
-                    node::NODE_COMMIT => {
-                        CacheItem::Commit(Arc::new(Commit::load_from(self, &mut stream)?))
-                    }
-                    */
+                    node::NODE_COMMIT => CacheItem::Commit(Arc::new(
+                        Commit::load_from_async(self, &mut stream).await?,
+                    )),
                     node::NODE_LINKS => {
                         CacheItem::Links(Arc::new(Links::load_from_async(self, &mut stream).await?))
                     }
-                    /*
-                    node::NODE_FOLDER => {
-                        CacheItem::Folder(Arc::new(Folder::load_from(self, &mut stream)?))
-                    }
-                    */
+                    node::NODE_FOLDER => CacheItem::Folder(Arc::new(
+                        Folder::load_from_async(self, &mut stream).await?,
+                    )),
                     node::NODE_SUBCHUNK => CacheItem::Subchunk(Arc::new(
                         FChunk::load_from_async(self, &mut stream).await?,
                     )),
@@ -445,9 +450,9 @@ where
             Some(mut stream) => {
                 let code = self.read_header(&mut stream)?;
                 let node_type = match code {
-                    //node::NODE_COMMIT => "Commit",
+                    node::NODE_COMMIT => "Commit",
                     node::NODE_LINKS => "Links",
-                    //node::NODE_FOLDER => "Folder",
+                    node::NODE_FOLDER => "Folder",
                     node::NODE_SUBCHUNK => "Subchunk",
                     node::NODE_SUPERCHUNK => "Superchunk",
                     _ => panic!("Unrecognized node type: {code}"),

@@ -7,7 +7,7 @@ use std::{
 
 use async_trait::async_trait;
 use cid::Cid;
-use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use futures::{AsyncRead, AsyncReadExt, AsyncWrite};
 use num_traits::Float;
 
 use crate::{
@@ -86,7 +86,7 @@ where
 {
     /// Load an object from a stream
     async fn load_from_async(
-        resolver: &Arc<Resolver<N>>,
+        _resolver: &Arc<Resolver<N>>,
         stream: &mut (impl AsyncRead + Unpin + Send),
     ) -> Result<Self> {
         let n = stream.read_u32_async().await? as usize;

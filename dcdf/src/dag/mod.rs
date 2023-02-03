@@ -1,5 +1,5 @@
-//pub mod commit;
-//pub mod folder;
+pub mod commit;
+pub mod folder;
 pub(crate) mod links;
 pub mod mapper;
 pub mod resolver;
