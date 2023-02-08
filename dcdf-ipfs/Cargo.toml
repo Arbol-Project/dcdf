@@ -7,10 +7,12 @@ edition = "2021"
 
 [dependencies]
 dcdf = { path = "../dcdf"}
+async-trait = "0.1"
 bytes = "1.2"
-cid = "0.8"
+cid = "0.10"
 futures = "0.3"
-ipfs-api-backend-hyper = { git = "https://github.com/ferristseng/rust-ipfs-api.git", branch = "master" }
+reqwest = { version = "0.11", features=["multipart", "json", "stream"] }
+serde = { version = "1.0", features=["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [dev-dependencies]

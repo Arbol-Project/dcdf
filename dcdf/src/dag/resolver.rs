@@ -444,11 +444,52 @@ where
         }
     }
 
+    pub async fn ls_async(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Option<Vec<LsEntry>>> {
+        match self.retrieve_async(cid.clone()).await? {
+            None => Ok(None),
+            Some(object) => {
+                let mut ls = Vec::new();
+                for (name, cid) in object.ls() {
+                    let node_type = self.node_type_of_async(&cid).await?;
+                    let size = self.mapper.size_of_async(&cid).await?;
+                    let entry = LsEntry {
+                        cid,
+                        name,
+                        node_type,
+                        size,
+                    };
+                    ls.push(entry)
+                }
+
+                Ok(Some(ls))
+            }
+        }
+    }
+
     fn node_type_of(&self, cid: &Cid) -> Result<Option<&'static str>> {
         match self.mapper.load(cid) {
             None => Ok(None),
             Some(mut stream) => {
                 let code = self.read_header(&mut stream)?;
+                let node_type = match code {
+                    node::NODE_COMMIT => "Commit",
+                    node::NODE_LINKS => "Links",
+                    node::NODE_FOLDER => "Folder",
+                    node::NODE_SUBCHUNK => "Subchunk",
+                    node::NODE_SUPERCHUNK => "Superchunk",
+                    _ => panic!("Unrecognized node type: {code}"),
+                };
+
+                Ok(Some(node_type))
+            }
+        }
+    }
+
+    async fn node_type_of_async(&self, cid: &Cid) -> Result<Option<&'static str>> {
+        match self.mapper.load_async(cid).await {
+            None => Ok(None),
+            Some(mut stream) => {
+                let code = self.read_header_async(&mut stream).await?;
                 let node_type = match code {
                     node::NODE_COMMIT => "Commit",
                     node::NODE_LINKS => "Links",
