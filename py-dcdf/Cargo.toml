@@ -11,7 +11,7 @@ name = "py_dcdf"
 crate-type = ["cdylib"]
 
 [dependencies]
-cid = "0.8"
+cid = "0.10"
 dcdf = { path = "../dcdf" }
 dcdf-ipfs = { path = "../dcdf-ipfs" }
 ndarray = "0.15"

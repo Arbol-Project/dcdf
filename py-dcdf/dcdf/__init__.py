@@ -86,13 +86,13 @@ def load(file_or_path):
     return _dcdf.load_from(file_or_path)
 
 
-def new_ipfs_resolver(cache_bytes=_256_MB, dtype=numpy.float32):
+def new_ipfs_resolver(cache_bytes=_256_MB, dtype=numpy.float32, blocking=True):
     dtype = numpy.dtype(dtype).name
     factory = _IPFS_RESOLVER_FACTORIES.get(dtype)
     if factory is None:
         raise ValueError(f"Unsupported dtype: {dtype}")
 
-    return factory(cache_bytes)
+    return factory(cache_bytes, blocking)
 
 
 def build_superchunk(
