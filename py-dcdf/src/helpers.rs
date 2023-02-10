@@ -1,7 +1,4 @@
-use pyo3::exceptions::{
-    PyIOError,
-    PyValueError,
-};
+use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
 
 use dcdf;

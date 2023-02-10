@@ -870,7 +870,7 @@ mod tests {
             let chunk = chunk(data.clone());
             let _values = chunk.get_cell(0, 100, 4, 8);
         }
- 
+
         #[test]
         fn get_window() {
             let data = array();

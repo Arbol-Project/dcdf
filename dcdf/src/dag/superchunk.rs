@@ -286,10 +286,12 @@ where
         let chunk = chunk_row * self.subsidelen + chunk_col;
         match self.references[chunk] {
             Reference::Elided => {
-                for (i, value) in SuperCellIter::new(self, start, start + values.len(), chunk).enumerate() {
+                for (i, value) in
+                    SuperCellIter::new(self, start, start + values.len(), chunk).enumerate()
+                {
                     values[i] = value;
                 }
-            },
+            }
             Reference::Local(index) => {
                 let chunk = &self.local[index];
                 chunk.fill_cell(start, local_row, local_col, values);
@@ -301,7 +303,7 @@ where
                 chunk.fill_cell(start, local_row, local_col, values);
             }
         }
-        
+
         Ok(())
     }
 
