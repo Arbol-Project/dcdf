@@ -13,8 +13,9 @@ use cid::Cid;
 use futures::{
     future::join_all,
     io::{AsyncRead, AsyncWrite},
+    lock::Mutex as AsyncMutex,
 };
-use ndarray::{s, Array2, Array3, ArrayBase, DataMut, Ix3};
+use ndarray::{s, Array1, Array2, Array3, ArrayBase, DataMut, Ix1, Ix3};
 use num_traits::Float;
 use parking_lot::Mutex;
 
@@ -77,6 +78,7 @@ where
     /// Hashes of externally stored subchunks
     external_cid: Cid,
     external: Mutex<Option<Weak<Links>>>,
+    external_async: AsyncMutex<Option<Weak<Links>>>,
 
     /// Resolver for retrieving subchunks
     resolver: Arc<Resolver<N>>,
@@ -104,7 +106,6 @@ where
         min: Dac,
         local: Vec<Arc<FChunk<N>>>,
         external_cid: Cid,
-        external: Mutex<Option<Weak<Links>>>,
         resolver: Arc<Resolver<N>>,
         fractional_bits: usize,
         chunks_sidelen: usize,
@@ -119,7 +120,8 @@ where
             min,
             local,
             external_cid,
-            external,
+            external: Mutex::new(None),
+            external_async: AsyncMutex::new(None),
             resolver,
             fractional_bits,
             chunks_sidelen,
@@ -241,6 +243,66 @@ where
                 })
             }
         }
+    }
+
+    /// Get a cell's value across time instants.
+    ///
+    pub async fn get_cell(
+        self: &Arc<Self>,
+        start: usize,
+        end: usize,
+        row: usize,
+        col: usize,
+    ) -> Result<Array1<N>> {
+        let (start, end) = rearrange(start, end);
+        let mut values = Array1::zeros([end - start]);
+        self.fill_cell(start, row, col, &mut values).await?;
+
+        Ok(values)
+    }
+
+    /// Fill in a preallocated array with a cell's value across time instants.
+    ///
+    pub async fn fill_cell<S>(
+        self: &Arc<Self>,
+        start: usize,
+        row: usize,
+        col: usize,
+        values: &mut ArrayBase<S, Ix1>,
+    ) -> Result<()>
+    where
+        S: DataMut<Elem = N>,
+    {
+        self.check_bounds(start + values.len() - 1, row, col);
+
+        // Theoretically compiler will optimize to single DIVREM instructions
+        // https://stackoverflow.com/questions/69051429
+        //      /what-is-the-function-to-get-the-quotient-and-remainder-divmod-for-rust
+        let chunk_row = row / self.chunks_sidelen;
+        let local_row = row % self.chunks_sidelen;
+        let chunk_col = col / self.chunks_sidelen;
+        let local_col = col % self.chunks_sidelen;
+
+        let chunk = chunk_row * self.subsidelen + chunk_col;
+        match self.references[chunk] {
+            Reference::Elided => {
+                for (i, value) in SuperCellIter::new(self, start, start + values.len(), chunk).enumerate() {
+                    values[i] = value;
+                }
+            },
+            Reference::Local(index) => {
+                let chunk = &self.local[index];
+                chunk.fill_cell(start, local_row, local_col, values);
+            }
+            Reference::External(index) => {
+                let external = &self.external_async().await?;
+                let cid = &external[index];
+                let chunk = self.resolver.get_subchunk_async(cid).await?;
+                chunk.fill_cell(start, local_row, local_col, values);
+            }
+        }
+        
+        Ok(())
     }
 
     /// Get a subarray of this Chunk.
@@ -548,7 +610,7 @@ where
     async fn external_async(&self) -> Result<Arc<Links>> {
         // Try to use cached version. Because we only store a weak reference locally, the LRU cache
         // is still in charge of whether an object is still available.
-        let mut external = self.external.lock();
+        let mut external = self.external_async.lock().await;
         if let Some(links) = &*external {
             if let Some(links) = links.upgrade() {
                 return Ok(links);
@@ -634,6 +696,7 @@ where
             local,
             external_cid,
             external: Mutex::new(None),
+            external_async: AsyncMutex::new(None),
             max,
             min,
             resolver: Arc::clone(resolver),
@@ -761,6 +824,7 @@ where
             local,
             external_cid,
             external: Mutex::new(None),
+            external_async: AsyncMutex::new(None),
             max,
             min,
             resolver: Arc::clone(resolver),
@@ -1496,6 +1560,7 @@ where
             local,
             external_cid,
             external: Mutex::new(None),
+            external_async: AsyncMutex::new(None),
             resolver: Arc::clone(&self.resolver),
             fractional_bits: bits,
             chunks_sidelen: self.chunks_sidelen,
@@ -1731,6 +1796,83 @@ mod tests {
                         .expect("This isn't what causes the panic").collect();
                     assert_eq!(values.len(), instants + 1);
                 }
+
+                #[tokio::test]
+                async fn [<$name _test_get_cell>]() -> Result<()> {
+                    let (data, chunk) = [<$name _async>]().await?;
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    for row in 0..rows {
+                        for col in 0..cols {
+                            let start = row + col;
+                            let end = instants - start;
+                            let values = chunk.get_cell(start, end, row, col).await?;
+                            assert_eq!(values.len(), end - start);
+                            for i in 0..values.len() {
+                                assert_eq!(values[i], data[i + start][[row, col]]);
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                #[tokio::test]
+                async fn [<$name _test_get_cell_rearrange>]() -> Result<()> {
+                    let (data, chunk) = [<$name _async>]().await?;
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+                    for row in 0..rows {
+                        for col in 0..cols {
+                            let start = row + col;
+                            let end = instants - start;
+                            let values = chunk.get_cell(end, start, row, col).await?;
+                            assert_eq!(values.len(), end - start);
+                            for i in 0..values.len() {
+                                assert_eq!(values[i], data[i + start][[row, col]]);
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                #[tokio::test]
+                #[should_panic]
+                async fn [<$name _test_get_cell_time_out_of_bounds>]() {
+                    let (_, chunk) = [<$name _async>]().await.expect("this should work");
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+
+                    let values = chunk.get_cell(0, instants + 1, rows, cols).await
+                        .expect("This isn't what causes the panic");
+                    assert_eq!(values.len(), instants + 1);
+                }
+
+                #[tokio::test]
+                #[should_panic]
+                async fn [<$name _test_get_cell_row_out_of_bounds>]() {
+                    let (_, chunk) = [<$name _async>]().await.expect("this should work");
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+
+                    let values = chunk.get_cell(0, instants, rows + 1, cols).await
+                        .expect("This isn't what causes the panic");
+                    assert_eq!(values.len(), instants + 1);
+                }
+
+                #[tokio::test]
+                #[should_panic]
+                async fn [<$name _test_get_cell_col_out_of_bounds>]() {
+                    let (_, chunk) = [<$name _async>]().await.expect("this should work");
+                    let chunk = Arc::new(chunk);
+                    let [instants, rows, cols] = chunk.shape;
+
+                    let values = chunk.get_cell(0, instants, rows, cols + 1).await
+                        .expect("This isn't what causes the panic");
+                    assert_eq!(values.len(), instants + 1);
+                }
+
 
                 #[test]
                 fn [<$name _test_get_window>]() -> Result<()> {

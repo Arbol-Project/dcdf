@@ -10,7 +10,7 @@ use std::{
 
 use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncWrite};
-use ndarray::{s, Array2, Array3, ArrayBase, DataMut, Ix3};
+use ndarray::{s, Array1, Array2, Array3, ArrayBase, DataMut, Ix1, Ix3};
 use num_traits::{Float, PrimInt};
 
 use crate::{
@@ -81,6 +81,41 @@ where
         FCellIter {
             chunk: Arc::clone(&self),
             iter: Rc::new(RefCell::new(self.chunk.iter_cell(start, end, row, col))),
+        }
+    }
+
+    /// Get a cell's value across time instants.
+    ///
+    pub fn get_cell(
+        self: &Arc<Self>,
+        start: usize,
+        end: usize,
+        row: usize,
+        col: usize,
+    ) -> Array1<F> {
+        let (start, end) = rearrange(start, end);
+        let mut values = Array1::zeros([end - start]);
+        self.fill_cell(start, row, col, &mut values);
+
+        values
+    }
+
+    /// Fill in a preallocated array with cell's value across time instants.
+    ///
+    pub fn fill_cell<S>(
+        self: &Arc<Self>,
+        start: usize,
+        row: usize,
+        col: usize,
+        values: &mut ArrayBase<S, Ix1>,
+    ) where
+        S: DataMut<Elem = F>,
+    {
+        self.chunk.check_bounds(start + values.len() - 1, row, col);
+        for (i, (block, instant)) in self.chunk.iter(start, start + values.len()).enumerate() {
+            let block = &self.chunk.blocks[block];
+            let value = block.get(instant, row, col);
+            values[i] = fixed::from_fixed(value, self.fractional_bits);
         }
     }
 
@@ -778,6 +813,64 @@ mod tests {
             let _values: Vec<f32> = chunk.iter_cell(0, 100, 4, 8).collect();
         }
 
+        #[test]
+        fn get_cell() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            for row in 0..8 {
+                for col in 0..8 {
+                    let start = row * col;
+                    let end = 100 - col;
+                    let values = chunk.get_cell(start, end, row, col);
+                    assert_eq!(values.len(), end - start);
+                    for i in 0..values.len() {
+                        assert_eq!(values[i], data[i + start][[row, col]]);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn get_cell_rearrange() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            for row in 0..8 {
+                for col in 0..8 {
+                    let start = row * col;
+                    let end = 100 - col;
+                    let values = chunk.get_cell(end, start, row, col);
+                    assert_eq!(values.len(), end - start);
+                    for i in 0..values.len() {
+                        assert_eq!(values[i], data[i + start][[row, col]]);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        #[should_panic]
+        fn get_cell_end_out_of_bounds() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let _values = chunk.get_cell(0, 200, 4, 4);
+        }
+
+        #[test]
+        #[should_panic]
+        fn get_cell_row_out_of_bounds() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let _values = chunk.get_cell(0, 100, 8, 4);
+        }
+
+        #[test]
+        #[should_panic]
+        fn get_cell_col_out_of_bounds() {
+            let data = array();
+            let chunk = chunk(data.clone());
+            let _values = chunk.get_cell(0, 100, 4, 8);
+        }
+ 
         #[test]
         fn get_window() {
             let data = array();

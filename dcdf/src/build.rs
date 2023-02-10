@@ -9,7 +9,6 @@ use std::{
 use cid::Cid;
 use ndarray::{s, Array2};
 use num_traits::Float;
-use parking_lot::Mutex;
 
 use super::{
     cache::Cacheable,
@@ -342,7 +341,6 @@ where
             Dac::from(min),
             local,
             external_cid,
-            Mutex::new(None),
             Arc::clone(&self.resolver),
             bits,
             self.chunks_sidelen,
