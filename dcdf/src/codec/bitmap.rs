@@ -1,10 +1,20 @@
-use num_traits::PrimInt;
-use std::fmt::Debug;
-use std::io::{Read, Write};
+use std::{
+    fmt::Debug,
+    io::{Read, Write},
+};
 
-use crate::cache::Cacheable;
-use crate::errors::Result;
-use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
+use async_trait::async_trait;
+use futures::io::{AsyncRead, AsyncWrite};
+use num_traits::PrimInt;
+
+use crate::{
+    cache::Cacheable,
+    errors::Result,
+    extio::{
+        ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite, Serialize,
+        SerializeAsync,
+    },
+};
 
 /// Used to build up a BitMap.
 ///
@@ -159,6 +169,48 @@ impl Serialize for BitMap {
     }
 }
 
+#[async_trait]
+impl SerializeAsync for BitMap {
+    /// Write the bitmap to a stream
+    ///
+    async fn write_to_async(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+        stream.write_u32_async(self.length as u32).await?;
+        stream.write_u32_async(self.k as u32).await?;
+        for index_block in &self.index {
+            stream.write_u32_async(*index_block).await?;
+        }
+        for bitmap_block in &self.bitmap {
+            stream.write_u32_async(*bitmap_block).await?;
+        }
+        Ok(())
+    }
+
+    /// Read a bitmap from a stream
+    ///
+    async fn read_from_async(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+        let length = stream.read_u32_async().await? as usize;
+        let k = stream.read_u32_async().await? as usize;
+
+        let blocks = length / 32 / k;
+        let mut index = Vec::with_capacity(blocks as usize);
+        for _ in 0..blocks {
+            index.push(stream.read_u32_async().await?);
+        }
+
+        let words = div_ceil(length, 32);
+        let mut bitmap = Vec::with_capacity(words);
+        for _ in 0..words {
+            bitmap.push(stream.read_u32_async().await?);
+        }
+
+        Ok(Self {
+            length,
+            k,
+            index,
+            bitmap,
+        })
+    }
+}
 impl Cacheable for BitMap {
     /// Return number of bytes in serialized representation
     ///
@@ -229,8 +281,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::io::Cursor as AsyncCursor;
     use rand;
     use rand::{Rng, RngCore};
+    use std::io::Cursor;
     use std::time;
 
     impl BitMapBuilder {
@@ -392,5 +446,45 @@ mod tests {
         let bitmap = make_bitmap(1 << 30);
         let indexes: Vec<usize> = RandomRange(1 << 30).take(1000).collect();
         test_rank(bitmap, &indexes);
+    }
+
+    #[test]
+    fn serialize_deserialize() -> Result<()> {
+        let bitmap = make_bitmap(1 << 20).finish();
+        let indexes = RandomRange(1 << 20);
+        let indexes: Vec<usize> = indexes.take(100).collect();
+
+        let mut buffer: Vec<u8> = Vec::with_capacity(bitmap.size() as usize);
+        bitmap.write_to(&mut buffer)?;
+        assert_eq!(buffer.len(), bitmap.size() as usize);
+
+        let mut cursor = Cursor::new(buffer);
+        let bitmap2 = BitMap::read_from(&mut cursor)?;
+
+        for index in indexes {
+            assert_eq!(bitmap.rank(index), bitmap2.rank(index));
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn serialize_deserialize_async() -> Result<()> {
+        let bitmap = make_bitmap(1 << 20).finish();
+        let indexes = RandomRange(1 << 20);
+        let indexes: Vec<usize> = indexes.take(100).collect();
+
+        let mut buffer: Vec<u8> = Vec::with_capacity(bitmap.size() as usize);
+        bitmap.write_to_async(&mut buffer).await?;
+        assert_eq!(buffer.len(), bitmap.size() as usize);
+
+        let mut cursor = AsyncCursor::new(buffer);
+        let bitmap2 = BitMap::read_from_async(&mut cursor).await?;
+
+        for index in indexes {
+            assert_eq!(bitmap.rank(index), bitmap2.rank(index));
+        }
+
+        Ok(())
     }
 }

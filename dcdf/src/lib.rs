@@ -1,4 +1,6 @@
+mod build;
 mod cache;
+mod cache_async;
 mod codec;
 mod dag;
 mod errors;
@@ -8,6 +10,9 @@ mod geom;
 mod helpers;
 mod simple;
 
+pub use build::build_superchunk as build_superchunk_async;
+pub use build::SuperchunkBuilder as SuperchunkBuilderAsync;
+
 pub use cache::Cacheable;
 
 pub use codec::CellIter;
@@ -16,7 +21,9 @@ pub use codec::FChunk;
 
 pub use dag::commit::Commit;
 pub use dag::folder::Folder;
+pub use dag::mapper::AsyncMapper;
 pub use dag::mapper::Mapper;
+pub use dag::mapper::StoreAsyncWrite;
 pub use dag::mapper::StoreWrite;
 pub use dag::resolver::LsEntry;
 pub use dag::resolver::Resolver;

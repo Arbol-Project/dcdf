@@ -1,21 +1,29 @@
-use std::collections::{btree_map, BTreeMap};
-use std::fmt::Debug;
-use std::io::{Read, Write};
-use std::sync::Arc;
+use std::{
+    collections::BTreeMap,
+    fmt::Debug,
+    io::{Read, Write},
+    sync::Arc,
+};
 
+use async_trait::async_trait;
 use cid::Cid;
+use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use num_traits::Float;
 
-use crate::cache::Cacheable;
-use crate::errors::Result;
-use crate::extio::{ExtendedRead, ExtendedWrite};
+use crate::{
+    cache::Cacheable,
+    errors::Result,
+    extio::{ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite},
+};
 
-use super::node::{Node, NODE_FOLDER};
-use super::resolver::Resolver;
+use super::{
+    node::{AsyncNode, Node, NODE_FOLDER},
+    resolver::Resolver,
+};
 
 pub struct Folder<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     items: BTreeMap<String, Cid>,
     resolver: Arc<Resolver<N>>,
@@ -23,7 +31,7 @@ where
 
 impl<N> Folder<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     pub fn new(resolver: &Arc<Resolver<N>>) -> Self {
         Self {
@@ -56,7 +64,17 @@ where
         Ok(self.update(name, object))
     }
 
-    pub fn iter(&self) -> btree_map::Iter<String, Cid> {
+    pub async fn insert_async<O, S>(&self, name: S, object: O) -> Result<Self>
+    where
+        O: AsyncNode<N>,
+        S: Into<String>,
+    {
+        let object = self.resolver.save_async(object).await?;
+
+        Ok(self.update(name, object))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Cid)> {
         self.items.iter()
     }
 
@@ -71,7 +89,7 @@ where
 
 impl<N> Node<N> for Folder<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     const NODE_TYPE: u8 = NODE_FOLDER;
 
@@ -114,9 +132,54 @@ where
     }
 }
 
+#[async_trait]
+impl<N> AsyncNode<N> for Folder<N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
+    /// Save an object into the DAG
+    ///
+    async fn save_to_async(
+        self,
+        _resolver: &Arc<Resolver<N>>,
+        stream: &mut (impl AsyncWrite + Unpin + Send),
+    ) -> Result<()> {
+        stream.write_u32_async(self.items.len() as u32).await?;
+        for (key, value) in &self.items {
+            stream.write_byte_async(key.len() as u8).await?;
+            stream.write_all(key.as_bytes()).await?;
+            stream.write_cid(&value).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Load an object from a stream
+    async fn load_from_async(
+        resolver: &Arc<Resolver<N>>,
+        stream: &mut (impl AsyncRead + Unpin + Send),
+    ) -> Result<Self> {
+        let mut items = BTreeMap::new();
+        let n_items = stream.read_u32_async().await? as usize;
+        for _ in 0..n_items {
+            let strlen = stream.read_byte_async().await? as u64;
+            let mut key = String::with_capacity(strlen as usize);
+            stream.take(strlen).read_to_string(&mut key).await?;
+
+            let item = stream.read_cid().await?;
+            items.insert(key, item);
+        }
+
+        Ok(Self {
+            items,
+            resolver: Arc::clone(resolver),
+        })
+    }
+}
+
 impl<N> Cacheable for Folder<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     fn size(&self) -> u64 {
         Resolver::<N>::HEADER_SIZE
@@ -124,7 +187,7 @@ where
             + self
                 .items
                 .iter()
-                .map(|(key, value)| 1 + key.len() + value.to_bytes().len())
+                .map(|(key, value)| 1 + key.len() + value.encoded_len())
                 .sum::<usize>() as u64
     }
 }
@@ -159,6 +222,28 @@ mod tests {
         let c = c.update("b", resolver.save(b)?);
 
         resolver.save(c)
+    }
+
+    async fn folders_async(resolver: &Arc<Resolver<f32>>) -> Result<Cid> {
+        let data1 = testing::array(16);
+        let superchunk1 = testing::superchunk(&data1, resolver)?;
+        let superchunk1 = resolver.save_async(superchunk1).await?;
+
+        let a = Folder::new(resolver);
+        let a = a.update("data", superchunk1);
+
+        let data2 = testing::array(15);
+        let superchunk2 = testing::superchunk(&data2, resolver)?;
+        let superchunk2 = resolver.save_async(superchunk2).await?;
+
+        let b = Folder::new(resolver);
+        let b = b.update("data", superchunk2);
+
+        let c = Folder::new(resolver);
+        let c = c.update("a", resolver.save_async(a).await?);
+        let c = c.update("b", resolver.save_async(b).await?);
+
+        resolver.save_async(c).await
     }
 
     #[test]
@@ -197,25 +282,25 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_get() -> Result<()> {
+    #[tokio::test]
+    async fn test_get() -> Result<()> {
         let resolver = testing::resolver();
-        let cid = folders(&resolver)?;
-        let c = resolver.get_folder(&cid)?;
+        let cid = folders_async(&resolver).await?;
+        let c = resolver.get_folder_async(&cid).await?;
 
         let a = c.get("a").expect("no value for a");
-        let a = resolver.get_folder(&a)?;
+        let a = resolver.get_folder_async(&a).await?;
 
         let b = c.get("b").expect("no value for b");
-        let b = resolver.get_folder(&b)?;
+        let b = resolver.get_folder_async(&b).await?;
 
         let superchunk = a.get("data").expect("no value for data");
-        let superchunk = resolver.get_superchunk(&superchunk)?;
+        let superchunk = resolver.get_superchunk_async(&superchunk).await?;
 
         assert_eq!(superchunk.shape(), [100, 16, 16]);
 
         let superchunk = b.get("data").expect("no value for data");
-        let superchunk = resolver.get_superchunk(&superchunk)?;
+        let superchunk = resolver.get_superchunk_async(&superchunk).await?;
 
         assert_eq!(superchunk.shape(), [100, 15, 15]);
 

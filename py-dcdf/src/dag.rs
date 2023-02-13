@@ -16,8 +16,8 @@ use dcdf_ipfs::IpfsMapper;
 use super::helpers::convert_error;
 
 #[pyfunction]
-pub fn new_ipfs_resolver_f32(cache_bytes: u64) -> PyResolverF32 {
-    let mapper = Box::new(IpfsMapper::new());
+pub fn new_ipfs_resolver_f32(cache_bytes: u64, blocking: bool) -> PyResolverF32 {
+    let mapper = Box::new(IpfsMapper::new(blocking));
     PyResolverF32 {
         inner: Arc::new(dcdf::Resolver::new(mapper, cache_bytes)),
     }

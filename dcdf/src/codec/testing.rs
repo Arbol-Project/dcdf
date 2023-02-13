@@ -7,7 +7,7 @@ use crate::geom;
 
 impl<I> Snapshot<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     /// Wrap Snapshot.build with function that creates the `get` closure so that it doesn't have to
     /// be repeated in every test of Snapshot.
@@ -34,7 +34,7 @@ where
 
 impl<I> Log<I>
 where
-    I: PrimInt + Debug,
+    I: PrimInt + Debug + Send + Sync,
 {
     /// Wrap Log.build with function that creates the `get_s` and `get_t` closures so that they
     /// don't  have to be repeated in every test of Log.

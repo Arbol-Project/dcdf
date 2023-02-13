@@ -1,17 +1,25 @@
-use std::fmt::Debug;
-use std::io;
-use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
+use std::{
+    fmt::Debug,
+    io,
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
+use async_trait::async_trait;
 use cid::Cid;
+use futures::{AsyncRead, AsyncReadExt, AsyncWrite};
 use num_traits::Float;
 
-use crate::cache::Cacheable;
-use crate::errors::Result;
-use crate::extio::{ExtendedRead, ExtendedWrite};
+use crate::{
+    cache::Cacheable,
+    errors::Result,
+    extio::{ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite},
+};
 
-use super::node::{Node, NODE_LINKS};
-use super::resolver::Resolver;
+use super::{
+    node::{AsyncNode, Node, NODE_LINKS},
+    resolver::Resolver,
+};
 
 pub(crate) struct Links(Vec<Cid>);
 
@@ -37,7 +45,7 @@ impl DerefMut for Links {
 
 impl<N> Node<N> for Links
 where
-    N: Float + Debug + 'static, // # SMELL N is not used
+    N: Float + Debug + Send + Sync + 'static, // # SMELL N is not used
 {
     const NODE_TYPE: u8 = NODE_LINKS;
 
@@ -71,11 +79,50 @@ where
     }
 }
 
+#[async_trait]
+impl<N> AsyncNode<N> for Links
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
+    /// Load an object from a stream
+    async fn load_from_async(
+        _resolver: &Arc<Resolver<N>>,
+        stream: &mut (impl AsyncRead + Unpin + Send),
+    ) -> Result<Self> {
+        let n = stream.read_u32_async().await? as usize;
+
+        // Cid doesn't have async read, so read into a buffer and use that
+        let mut buffer = vec![];
+        stream.read_to_end(&mut buffer).await?;
+        let mut stream = io::Cursor::new(buffer);
+
+        let mut links = Vec::with_capacity(n);
+        for _ in 0..n {
+            links.push(Cid::read_bytes(&mut stream)?);
+        }
+
+        Ok(Self(links))
+    }
+
+    async fn save_to_async(
+        self,
+        _resolver: &Arc<Resolver<N>>,
+        stream: &mut (impl AsyncWrite + Unpin + Send),
+    ) -> Result<()> {
+        stream.write_u32_async(self.0.len() as u32).await?;
+        for link in &self.0 {
+            stream.write_cid(&link).await?;
+        }
+
+        Ok(())
+    }
+}
+
 impl Cacheable for Links {
     fn size(&self) -> u64 {
         Resolver::<f32>::HEADER_SIZE
             + 4
-            + self.0.iter().map(|l| l.to_bytes().len()).sum::<usize>() as u64
+            + self.0.iter().map(|l| l.encoded_len()).sum::<usize>() as u64
     }
 }
 
@@ -95,13 +142,26 @@ mod tests {
     }
 
     #[test]
-    fn serialize_deserialize() -> Result<()> {
+    fn load_save() -> Result<()> {
         let resolver: Arc<Resolver<f32>> = testing::resolver();
         let links = make_one();
         let expected = links.0.clone();
 
         let cid = resolver.save(links)?;
         let links = resolver.get_links(&cid)?;
+        assert_eq!(expected, links.0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn load_save_async() -> Result<()> {
+        let resolver: Arc<Resolver<f32>> = testing::resolver();
+        let links = make_one();
+        let expected = links.0.clone();
+
+        let cid = resolver.save_async(links).await?;
+        let links = resolver.get_links_async(&cid).await?;
         assert_eq!(expected, links.0);
 
         Ok(())

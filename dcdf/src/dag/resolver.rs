@@ -1,22 +1,30 @@
-use std::any::TypeId;
-use std::fmt::Debug;
-use std::io::{self, Read};
-use std::sync::Arc;
+use std::{
+    any::TypeId,
+    fmt::Debug,
+    io::{self, Read},
+    sync::Arc,
+};
 
 use cid::Cid;
+use futures::{io::AsyncRead, FutureExt};
 use num_traits::Float;
 
-use crate::cache::{Cache, Cacheable};
-use crate::codec::FChunk;
-use crate::errors::Result;
-use crate::extio::{ExtendedRead, ExtendedWrite, Serialize};
+use crate::{
+    cache::{Cache, Cacheable},
+    cache_async::Cache as AsyncCache,
+    codec::FChunk,
+    errors::Result,
+    extio::{ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite, Serialize},
+};
 
-use super::commit::Commit;
-use super::folder::Folder;
-use super::links::Links;
-use super::mapper::{Mapper, StoreWrite};
-use super::node::{self, Node};
-use super::superchunk::Superchunk;
+use super::{
+    commit::Commit,
+    folder::Folder,
+    links::Links,
+    mapper::{Mapper, StoreWrite},
+    node::{self, AsyncNode, Node},
+    superchunk::Superchunk,
+};
 
 const MAGIC_NUMBER: u16 = 0xDCDF + 1;
 const FORMAT_VERSION: u32 = 0;
@@ -32,15 +40,16 @@ const TYPE_F64: u8 = 64;
 ///
 pub struct Resolver<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     mapper: Box<dyn Mapper>,
     cache: Cache<Cid, CacheItem<N>>,
+    async_cache: AsyncCache<Cid, CacheItem<N>>,
 }
 
 enum CacheItem<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     Commit(Arc<Commit<N>>),
     Folder(Arc<Folder<N>>),
@@ -51,7 +60,7 @@ where
 
 impl<N> CacheItem<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     fn ls(&self) -> Vec<(String, Cid)> {
         match self {
@@ -66,7 +75,7 @@ where
 
 impl<N> Cacheable for CacheItem<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     fn size(&self) -> u64 {
         match self {
@@ -81,7 +90,7 @@ where
 
 impl<N> Resolver<N>
 where
-    N: Float + Debug + 'static,
+    N: Float + Debug + Send + Sync + 'static,
 {
     pub(crate) const HEADER_SIZE: u64 = 2 + 4 + 1 + 1;
 
@@ -98,7 +107,12 @@ where
     ///
     pub fn new(mapper: Box<dyn Mapper>, cache_bytes: u64) -> Self {
         let cache = Cache::new(cache_bytes);
-        Self { mapper, cache }
+        let async_cache = AsyncCache::new(cache_bytes);
+        Self {
+            mapper,
+            cache,
+            async_cache,
+        }
     }
 
     /// Get a `Folder` from the data store.
@@ -110,6 +124,14 @@ where
     pub fn get_folder(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<Folder<N>>> {
         let item = self.cache.get(cid, |cid| self.retrieve(&cid))?;
 
+        match &*item {
+            CacheItem::Folder(folder) => Ok(Arc::clone(&folder)),
+            _ => panic!("Expecting folder."),
+        }
+    }
+
+    pub async fn get_folder_async(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<Folder<N>>> {
+        let item = self.check_cache(cid).await?;
         match &*item {
             CacheItem::Folder(folder) => Ok(Arc::clone(&folder)),
             _ => panic!("Expecting folder."),
@@ -131,6 +153,14 @@ where
         }
     }
 
+    pub async fn get_commit_async(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<Commit<N>>> {
+        let item = self.check_cache(cid).await?;
+        match &*item {
+            CacheItem::Commit(commit) => Ok(Arc::clone(&commit)),
+            _ => panic!("Expecting commit."),
+        }
+    }
+
     /// Get a `Superchunk` from the data store.
     ///
     /// # Arguments
@@ -146,6 +176,23 @@ where
         }
     }
 
+    /// Get a `Superchunk` from the data store.
+    ///
+    /// # Arguments
+    ///
+    /// * `cid` - The CID of the superchunk to retreive.
+    ///
+    pub async fn get_superchunk_async(
+        self: &Arc<Resolver<N>>,
+        cid: &Cid,
+    ) -> Result<Arc<Superchunk<N>>> {
+        let item = self.check_cache(cid).await?;
+        match &*item {
+            CacheItem::Superchunk(chunk) => Ok(Arc::clone(&chunk)),
+            _ => panic!("Expecting superchunk."),
+        }
+    }
+
     /// Get an `Fchunk` from the data store.
     ///
     /// # Arguments
@@ -153,8 +200,26 @@ where
     /// * `cid` - The CID of the chunk to retreive.
     ///
     pub(crate) fn get_subchunk(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<FChunk<N>>> {
-        let item = self.cache.get(cid, |cid| self.retrieve(&cid))?;
+        let load = |cid| self.retrieve(&cid);
+        let item = self.cache.get(cid, load)?;
 
+        match &*item {
+            CacheItem::Subchunk(chunk) => Ok(Arc::clone(&chunk)),
+            _ => panic!("Expecting subchunk."),
+        }
+    }
+
+    /// Get an `Fchunk` from the data store.
+    ///
+    /// # Arguments
+    ///
+    /// * `cid` - The CID of the chunk to retreive.
+    ///
+    pub(crate) async fn get_subchunk_async(
+        self: &Arc<Resolver<N>>,
+        cid: &Cid,
+    ) -> Result<Arc<FChunk<N>>> {
+        let item = self.check_cache(cid).await?;
         match &*item {
             CacheItem::Subchunk(chunk) => Ok(Arc::clone(&chunk)),
             _ => panic!("Expecting subchunk."),
@@ -174,6 +239,26 @@ where
             CacheItem::Links(links) => Ok(Arc::clone(&links)),
             _ => panic!("Expecting links."),
         }
+    }
+
+    /// Get a `Links` from the data store.
+    ///
+    /// # Arguments
+    ///
+    /// * `cid` - The CID of the links to retreive.
+    ///
+    pub(crate) async fn get_links_async(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<Links>> {
+        let item = self.check_cache(cid).await?;
+        match &*item {
+            CacheItem::Links(links) => Ok(Arc::clone(&links)),
+            _ => panic!("Expecting links."),
+        }
+    }
+
+    async fn check_cache(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<CacheItem<N>>> {
+        let resolver = Arc::clone(self);
+        let load = |cid: Cid| async move { resolver.retrieve_async(cid.clone()).await }.boxed();
+        self.async_cache.get(cid, load).await
     }
 
     /// Compute the hash for a subchunk.
@@ -200,6 +285,23 @@ where
         node.save_to(&self, &mut stream)?;
 
         Ok(stream.finish())
+    }
+
+    /// Store a node
+    ///
+    pub async fn save_async<O>(self: &Arc<Resolver<N>>, node: O) -> Result<Cid>
+    where
+        O: AsyncNode<N>,
+    {
+        let mut stream = self.mapper.store_async().await;
+        stream.write_u16_async(MAGIC_NUMBER).await?;
+        stream.write_u32_async(FORMAT_VERSION).await?;
+        stream.write_byte_async(Self::type_code()).await?;
+        stream.write_byte_async(O::NODE_TYPE).await?;
+
+        node.save_to_async(&self, &mut stream).await?;
+
+        Ok(stream.finish_async().await)
     }
 
     /// Retrieve a node
@@ -233,6 +335,37 @@ where
         }
     }
 
+    /// Retrieve a node
+    ///
+    async fn retrieve_async(self: &Arc<Resolver<N>>, cid: Cid) -> Result<Option<CacheItem<N>>> {
+        match self.mapper.load_async(&cid).await {
+            None => Ok(None),
+            Some(mut stream) => {
+                let node_type = self.read_header_async(&mut stream).await?;
+                let item = match node_type {
+                    node::NODE_COMMIT => CacheItem::Commit(Arc::new(
+                        Commit::load_from_async(self, &mut stream).await?,
+                    )),
+                    node::NODE_LINKS => {
+                        CacheItem::Links(Arc::new(Links::load_from_async(self, &mut stream).await?))
+                    }
+                    node::NODE_FOLDER => CacheItem::Folder(Arc::new(
+                        Folder::load_from_async(self, &mut stream).await?,
+                    )),
+                    node::NODE_SUBCHUNK => CacheItem::Subchunk(Arc::new(
+                        FChunk::load_from_async(self, &mut stream).await?,
+                    )),
+                    node::NODE_SUPERCHUNK => CacheItem::Superchunk(Arc::new(
+                        Superchunk::load_from_async(self, &mut stream).await?,
+                    )),
+                    _ => panic!("Unrecognized node type: {node_type}"),
+                };
+
+                Ok(Some(item))
+            }
+        }
+    }
+
     fn read_header(&self, stream: &mut impl Read) -> io::Result<u8> {
         let magic_number = stream.read_u16()?;
         if magic_number != MAGIC_NUMBER {
@@ -249,6 +382,27 @@ where
         }
 
         stream.read_byte()
+    }
+
+    async fn read_header_async(
+        &self,
+        stream: &mut (impl AsyncRead + Unpin + Send),
+    ) -> io::Result<u8> {
+        let magic_number = stream.read_u16_async().await?;
+        if magic_number != MAGIC_NUMBER {
+            panic!("File is not a DCDF graph node file.");
+        }
+
+        let version = stream.read_u32_async().await?;
+        if version != FORMAT_VERSION {
+            panic!("Unrecognized file format.");
+        }
+
+        if Self::type_code() != stream.read_byte_async().await? {
+            panic!("Numeric type doesn't match.");
+        }
+
+        stream.read_byte_async().await
     }
 
     /// Obtain an input stream for reading an object from the store.
@@ -290,11 +444,52 @@ where
         }
     }
 
+    pub async fn ls_async(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Option<Vec<LsEntry>>> {
+        match self.retrieve_async(cid.clone()).await? {
+            None => Ok(None),
+            Some(object) => {
+                let mut ls = Vec::new();
+                for (name, cid) in object.ls() {
+                    let node_type = self.node_type_of_async(&cid).await?;
+                    let size = self.mapper.size_of_async(&cid).await?;
+                    let entry = LsEntry {
+                        cid,
+                        name,
+                        node_type,
+                        size,
+                    };
+                    ls.push(entry)
+                }
+
+                Ok(Some(ls))
+            }
+        }
+    }
+
     fn node_type_of(&self, cid: &Cid) -> Result<Option<&'static str>> {
         match self.mapper.load(cid) {
             None => Ok(None),
             Some(mut stream) => {
                 let code = self.read_header(&mut stream)?;
+                let node_type = match code {
+                    node::NODE_COMMIT => "Commit",
+                    node::NODE_LINKS => "Links",
+                    node::NODE_FOLDER => "Folder",
+                    node::NODE_SUBCHUNK => "Subchunk",
+                    node::NODE_SUPERCHUNK => "Superchunk",
+                    _ => panic!("Unrecognized node type: {code}"),
+                };
+
+                Ok(Some(node_type))
+            }
+        }
+    }
+
+    async fn node_type_of_async(&self, cid: &Cid) -> Result<Option<&'static str>> {
+        match self.mapper.load_async(cid).await {
+            None => Ok(None),
+            Some(mut stream) => {
+                let code = self.read_header_async(&mut stream).await?;
                 let node_type = match code {
                     node::NODE_COMMIT => "Commit",
                     node::NODE_LINKS => "Links",
