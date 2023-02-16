@@ -11,7 +11,7 @@ where
 {
     /// Wrap Snapshot.build with function that creates the `get` closure so that it doesn't have to
     /// be repeated in every test of Snapshot.
-    pub fn from_array(data: ArrayView2<I>, k: i32) -> Self {
+    pub(crate) fn from_array(data: ArrayView2<I>, k: i32) -> Self {
         let get = |row, col| data[[row, col]].to_i64().unwrap();
         let shape = data.shape();
         let rows = shape[0];
@@ -22,7 +22,7 @@ where
     /// Wrap Snapshot.get_window with function that allocates an array and creates the `set`
     /// enclosure, so it doesn't have to repeated in every test for `get_window`.
     ///
-    pub fn get_window(&self, bounds: &geom::Rect) -> Array2<I> {
+    pub(crate) fn get_window(&self, bounds: &geom::Rect) -> Array2<I> {
         let mut window = Array2::zeros([bounds.rows(), bounds.cols()]);
         let set = |row, col, value| window[[row, col]] = I::from(value).unwrap();
 
@@ -38,7 +38,7 @@ where
 {
     /// Wrap Log.build with function that creates the `get_s` and `get_t` closures so that they
     /// don't  have to be repeated in every test of Log.
-    pub fn from_arrays(snapshot: ArrayView2<I>, log: ArrayView2<I>, k: i32) -> Self {
+    pub(crate) fn from_arrays(snapshot: ArrayView2<I>, log: ArrayView2<I>, k: i32) -> Self {
         let get_s = |row, col| snapshot[[row, col]].to_i64().unwrap();
         let get_t = |row, col| log[[row, col]].to_i64().unwrap();
         let shape = snapshot.shape();
@@ -50,7 +50,7 @@ where
     /// Wrap Log.get_window with function that allocates an array and creates the `set`
     /// enclosure, so it doesn't have to repeated in every test for `get_window`.
     ///
-    pub fn get_window(&self, snapshot: &Snapshot<I>, bounds: &geom::Rect) -> Array2<I> {
+    pub(crate) fn get_window(&self, snapshot: &Snapshot<I>, bounds: &geom::Rect) -> Array2<I> {
         let mut window = Array2::zeros([bounds.rows(), bounds.cols()]);
         let set = |row, col, value| window[[row, col]] = I::from(value).unwrap();
 
@@ -62,7 +62,7 @@ where
 
 /// Reference implementation for search_window that works on an ndarray::Array2, for comparison
 /// to the K^2 raster implementations.
-pub fn array_search_window<N>(
+pub(crate) fn array_search_window<N>(
     data: ArrayView2<N>,
     top: usize,
     bottom: usize,

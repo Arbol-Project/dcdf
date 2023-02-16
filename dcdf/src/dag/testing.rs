@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fmt::Debug,
-    io::{self, Cursor, Read, Write},
+    io::{self, Write},
     mem,
     pin::Pin,
     result,
@@ -11,30 +11,33 @@ use std::{
 use async_trait::async_trait;
 use cid::{multihash::MultihashGeneric, Cid};
 use futures::{
-    io::{AsyncRead, AsyncWrite, Cursor as AsyncCursor, Error as AioError},
+    io::{AsyncRead, AsyncWrite, Cursor, Error as AioError},
     task::{Context, Poll},
 };
 use multihash::{Hasher, Sha2_256};
-use ndarray::{arr2, Array2, ArrayView2};
+use ndarray::{Array1, arr2, Array2, ArrayView2, Array3};
 use num_traits::{Float, Num};
 use parking_lot::Mutex;
 
-use crate::{errors::Result, fixed::Precise};
-
-use super::{
-    mapper::{AsyncMapper, Mapper, StoreAsyncWrite, StoreWrite},
-    resolver::Resolver,
-    superchunk::{build_superchunk, Superchunk},
+use crate::{
+    errors::Result,
+    geom,
 };
 
-pub type AioResult<T> = result::Result<T, AioError>;
+use super::{
+    mapper::{Mapper, StoreWrite},
+    resolver::Resolver,
+    superchunk::Superchunk,
+};
+
+pub(crate) type AioResult<T> = result::Result<T, AioError>;
 
 /// The SHA_256 multicodec code
 const SHA2_256: u64 = 0x12;
 
 /// Reference implementation for search_window that works on an ndarray::Array2, for comparison
 /// to the K^2 raster implementations.
-pub fn array_search_window<N>(
+pub(crate) fn array_search_window<N>(
     data: ArrayView2<N>,
     top: usize,
     bottom: usize,
@@ -73,46 +76,23 @@ impl MemoryMapper {
     }
 }
 
+#[async_trait]
 impl Mapper for MemoryMapper {
-    fn store(&self) -> Box<dyn StoreWrite + '_> {
+    async fn store(&self) -> Box<dyn StoreWrite + '_> {
         Box::new(MemoryMapperStoreWrite::new(self, false))
     }
 
-    fn hash(&self) -> Box<dyn StoreWrite + '_> {
+    async fn hash(&self) -> Box<dyn StoreWrite + '_> {
         Box::new(MemoryMapperStoreWrite::new(self, true))
     }
 
-    fn load(&self, cid: &Cid) -> Option<Box<dyn Read + '_>> {
+    async fn load(&self, cid: &Cid) -> Option<Box<dyn AsyncRead + Unpin + Send + '_>> {
         let objects = self.objects.lock();
         let object = objects.get(cid)?;
         Some(Box::new(Cursor::new(object.clone())))
     }
 
-    fn size_of(&self, cid: &Cid) -> io::Result<Option<u64>> {
-        let objects = self.objects.lock();
-        Ok(objects
-            .get(cid)
-            .and_then(|object| Some(object.len() as u64)))
-    }
-}
-
-#[async_trait]
-impl AsyncMapper for MemoryMapper {
-    async fn store_async(&self) -> Box<dyn StoreAsyncWrite + '_> {
-        Box::new(MemoryMapperStoreAsyncWrite::new(self, false))
-    }
-
-    async fn hash_async(&self) -> Box<dyn StoreAsyncWrite + '_> {
-        Box::new(MemoryMapperStoreAsyncWrite::new(self, true))
-    }
-
-    async fn load_async(&self, cid: &Cid) -> Option<Box<dyn AsyncRead + Unpin + Send + '_>> {
-        let objects = self.objects.lock();
-        let object = objects.get(cid)?;
-        Some(Box::new(AsyncCursor::new(object.clone())))
-    }
-
-    async fn size_of_async(&self, cid: &Cid) -> io::Result<Option<u64>> {
+    async fn size_of(&self, cid: &Cid) -> io::Result<Option<u64>> {
         let objects = self.objects.lock();
         Ok(objects
             .get(cid)
@@ -122,51 +102,12 @@ impl AsyncMapper for MemoryMapper {
 
 struct MemoryMapperStoreWrite<'a> {
     mapper: &'a MemoryMapper,
-    writer: Box<Sha2_256Write<Vec<u8>>>,
-    hash_only: bool,
-}
-
-impl<'a> MemoryMapperStoreWrite<'a> {
-    fn new(mapper: &'a MemoryMapper, hash_only: bool) -> Self {
-        let writer = Box::new(Sha2_256Write::wrap(Vec::new()));
-        Self {
-            mapper,
-            writer,
-            hash_only,
-        }
-    }
-}
-
-impl<'a> Write for MemoryMapperStoreWrite<'a> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.writer.write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.writer.flush()
-    }
-}
-
-impl<'a> StoreWrite for MemoryMapperStoreWrite<'a> {
-    fn finish(mut self: Box<Self>) -> Cid {
-        let object = mem::replace(&mut self.writer.inner, vec![]);
-        let cid = self.writer.finish();
-        if !self.hash_only {
-            self.mapper.objects.lock().insert(cid, object);
-        }
-
-        cid
-    }
-}
-
-struct MemoryMapperStoreAsyncWrite<'a> {
-    mapper: &'a MemoryMapper,
     buffer: Vec<u8>,
     hash: Sha2_256,
     hash_only: bool,
 }
 
-impl<'a> MemoryMapperStoreAsyncWrite<'a> {
+impl<'a> MemoryMapperStoreWrite<'a> {
     fn new(mapper: &'a MemoryMapper, hash_only: bool) -> Self {
         Self {
             mapper,
@@ -177,7 +118,7 @@ impl<'a> MemoryMapperStoreAsyncWrite<'a> {
     }
 }
 
-impl<'a> AsyncWrite for MemoryMapperStoreAsyncWrite<'a> {
+impl<'a> AsyncWrite for MemoryMapperStoreWrite<'a> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
@@ -203,8 +144,8 @@ impl<'a> AsyncWrite for MemoryMapperStoreAsyncWrite<'a> {
 }
 
 #[async_trait]
-impl<'a> StoreAsyncWrite for MemoryMapperStoreAsyncWrite<'a> {
-    async fn finish_async(mut self: Box<Self>) -> Cid {
+impl<'a> StoreWrite for MemoryMapperStoreWrite<'a> {
+    async fn finish(mut self: Box<Self>) -> Cid {
         let object = mem::replace(&mut self.buffer, vec![]);
         let digest = self.hash.finalize();
         let hash = MultihashGeneric::wrap(SHA2_256, &digest).expect("Not really sure.");
@@ -218,57 +159,7 @@ impl<'a> StoreAsyncWrite for MemoryMapperStoreAsyncWrite<'a> {
     }
 }
 
-/// An implementor of `StoreWrite` that computes CIDs using Sha2 256.
-///
-pub struct Sha2_256Write<W: Write> {
-    pub inner: W,
-    hash: Sha2_256,
-}
-
-impl<W> Sha2_256Write<W>
-where
-    W: Write,
-{
-    /// Wrap an existing output stream
-    ///
-    pub fn wrap(inner: W) -> Self {
-        Self {
-            inner,
-            hash: Sha2_256::default(),
-        }
-    }
-}
-
-impl<W> Write for Sha2_256Write<W>
-where
-    W: Write,
-{
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let result = self.inner.write(buf);
-        if let Ok(len) = result {
-            self.hash.update(&buf[..len]);
-        }
-        result
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-impl<W> StoreWrite for Sha2_256Write<W>
-where
-    W: Write,
-{
-    fn finish(mut self: Box<Self>) -> Cid {
-        let digest = self.hash.finalize();
-        let hash = MultihashGeneric::wrap(SHA2_256, &digest).expect("Not really sure.");
-
-        Cid::new_v1(SHA2_256, hash)
-    }
-}
-
-pub fn cid_for(data: &str) -> Cid {
+pub(crate) fn cid_for(data: &str) -> Cid {
     let mut hash = Sha2_256::default();
     hash.update(&data.as_bytes());
 
@@ -278,14 +169,14 @@ pub fn cid_for(data: &str) -> Cid {
     Cid::new_v1(SHA2_256, hash)
 }
 
-pub fn resolver<N>() -> Arc<Resolver<N>>
+pub(crate) fn resolver<N>() -> Arc<Resolver<N>>
 where
     N: Float + Debug + Send + Sync,
 {
     Arc::new(Resolver::new(Box::new(MemoryMapper::new()), 0))
 }
 
-pub fn array8() -> Vec<Array2<f32>> {
+pub(crate) fn array8() -> Vec<Array2<f32>> {
     let data = vec![
         arr2(&[
             [9.5, 8.25, 7.75, 7.75, 6.125, 6.125, 3.375, 2.625],
@@ -322,7 +213,7 @@ pub fn array8() -> Vec<Array2<f32>> {
     data.into_iter().cycle().take(100).collect()
 }
 
-pub fn array(sidelen: usize) -> Vec<Array2<f32>> {
+pub(crate) fn array(sidelen: usize) -> Vec<Array2<f32>> {
     let data = array8();
 
     data.into_iter()
@@ -330,18 +221,31 @@ pub fn array(sidelen: usize) -> Vec<Array2<f32>> {
         .collect()
 }
 
-pub fn superchunk(
-    data: &Vec<Array2<f32>>,
-    resolver: &Arc<Resolver<f32>>,
-) -> Result<Superchunk<f32>> {
-    let build = build_superchunk(
-        data.clone().into_iter(),
-        Arc::clone(resolver),
-        3,
-        2,
-        Precise(3),
-        0,
-    )?;
+impl<N> Superchunk<N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
+    /// Get a cell's value across time instants. Convenience for calling fill_cell in tests.
+    ///
+    pub(crate) async fn get_cell(
+        self: &Arc<Self>,
+        start: usize,
+        end: usize,
+        row: usize,
+        col: usize,
+    ) -> Result<Array1<N>> {
+        let mut values = Array1::zeros([end - start]);
+        self.fill_cell(start, row, col, &mut values).await?;
 
-    Ok(build.data)
+        Ok(values)
+    }
+
+    /// Get a subarray of this Chunk.
+    ///
+    pub(crate) async fn get_window(self: &Arc<Self>, bounds: &geom::Cube) -> Result<Array3<N>> {
+        let mut window = Array3::zeros([bounds.instants(), bounds.rows(), bounds.cols()]);
+        self.fill_window(bounds.start, bounds.top, bounds.left, &mut window).await?;
+
+        Ok(window)
+    }
 }

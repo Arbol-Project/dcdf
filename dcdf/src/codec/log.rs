@@ -2,7 +2,6 @@ use std::{
     cmp::min,
     collections::VecDeque,
     fmt::Debug,
-    io::{Read, Write},
     marker::PhantomData,
 };
 
@@ -14,8 +13,8 @@ use crate::{
     cache::Cacheable,
     errors::Result,
     extio::{
-        ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite, Serialize,
-        SerializeAsync,
+        ExtendedAsyncRead, ExtendedAsyncWrite,
+        Serialize,
     },
     geom,
 };
@@ -31,7 +30,7 @@ use super::{
 /// A Log stores raster data for a particular time instant in a raster time series as the
 /// difference between this time instant and a reference Snapshot.
 ///
-pub struct Log<I>
+pub(crate) struct Log<I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
@@ -64,82 +63,39 @@ where
     sidelen: usize,
 }
 
+#[async_trait]
 impl<I> Serialize for Log<I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
     /// Write a log to a stream
     ///
-    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
-        stream.write_byte(self.k as u8)?;
-        stream.write_u32(self.shape[0] as u32)?;
-        stream.write_u32(self.shape[1] as u32)?;
-        stream.write_u32(self.sidelen as u32)?;
-        self.nodemap.write_to(stream)?;
-        self.equal.write_to(stream)?;
-        self.max.write_to(stream)?;
-        self.min.write_to(stream)?;
+    async fn write_to(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+        stream.write_byte(self.k as u8).await?;
+        stream.write_u32(self.shape[0] as u32).await?;
+        stream.write_u32(self.shape[1] as u32).await?;
+        stream.write_u32(self.sidelen as u32).await?;
+        self.nodemap.write_to(stream).await?;
+        self.equal.write_to(stream).await?;
+        self.max.write_to(stream).await?;
+        self.min.write_to(stream).await?;
 
         Ok(())
     }
 
     /// Read a log from a stream
     ///
-    fn read_from(stream: &mut impl Read) -> Result<Self> {
-        let k = stream.read_byte()? as i32;
-        let shape = [stream.read_u32()? as usize, stream.read_u32()? as usize];
-        let sidelen = stream.read_u32()? as usize;
-        let nodemap = BitMap::read_from(stream)?;
-        let equal = BitMap::read_from(stream)?;
-        let max = Dac::read_from(stream)?;
-        let min = Dac::read_from(stream)?;
-
-        Ok(Self {
-            _marker: PhantomData,
-            nodemap,
-            equal,
-            max,
-            min,
-            k,
-            shape,
-            sidelen,
-        })
-    }
-}
-
-#[async_trait]
-impl<I> SerializeAsync for Log<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
-    /// Write a log to a stream
-    ///
-    async fn write_to_async(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
-        stream.write_byte_async(self.k as u8).await?;
-        stream.write_u32_async(self.shape[0] as u32).await?;
-        stream.write_u32_async(self.shape[1] as u32).await?;
-        stream.write_u32_async(self.sidelen as u32).await?;
-        self.nodemap.write_to_async(stream).await?;
-        self.equal.write_to_async(stream).await?;
-        self.max.write_to_async(stream).await?;
-        self.min.write_to_async(stream).await?;
-
-        Ok(())
-    }
-
-    /// Read a log from a stream
-    ///
-    async fn read_from_async(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
-        let k = stream.read_byte_async().await? as i32;
+    async fn read_from(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+        let k = stream.read_byte().await? as i32;
         let shape = [
-            stream.read_u32_async().await? as usize,
-            stream.read_u32_async().await? as usize,
+            stream.read_u32().await? as usize,
+            stream.read_u32().await? as usize,
         ];
-        let sidelen = stream.read_u32_async().await? as usize;
-        let nodemap = BitMap::read_from_async(stream).await?;
-        let equal = BitMap::read_from_async(stream).await?;
-        let max = Dac::read_from_async(stream).await?;
-        let min = Dac::read_from_async(stream).await?;
+        let sidelen = stream.read_u32().await? as usize;
+        let nodemap = BitMap::read_from(stream).await?;
+        let equal = BitMap::read_from(stream).await?;
+        let max = Dac::read_from(stream).await?;
+        let min = Dac::read_from(stream).await?;
 
         Ok(Self {
             _marker: PhantomData,
@@ -180,7 +136,7 @@ where
     /// `get_t` indirection.
     ///
 
-    pub fn build<GS, GT>(get_s: GS, get_t: GT, shape: [usize; 2], k: i32) -> Self
+    pub(crate) fn build<GS, GT>(get_s: GS, get_t: GT, shape: [usize; 2], k: i32) -> Self
     where
         GS: Fn(usize, usize) -> i64,
         GT: Fn(usize, usize) -> i64,
@@ -245,7 +201,7 @@ where
     ///
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
-    pub fn get(&self, snapshot: &Snapshot<I>, row: usize, col: usize) -> I {
+    pub(crate) fn get(&self, snapshot: &Snapshot<I>, row: usize, col: usize) -> I {
         let max_t: I = self.max.get(0);
         let max_s: I = snapshot.max.get(0);
         let single_t = !self.nodemap.get(0);
@@ -382,7 +338,7 @@ where
     ///
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
-    pub fn fill_window<S>(&self, mut set: S, snapshot: &Snapshot<I>, bounds: &geom::Rect)
+    pub(crate) fn fill_window<S>(&self, mut set: S, snapshot: &Snapshot<I>, bounds: &geom::Rect)
     where
         S: FnMut(usize, usize, i64),
     {
@@ -590,7 +546,7 @@ where
     ///
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
-    pub fn search_window(
+    pub(crate) fn search_window(
         &self,
         snapshot: &Snapshot<I>,
         bounds: &geom::Rect,
@@ -895,10 +851,9 @@ impl K2PTreeNode {
 mod tests {
     use super::super::testing::array_search_window;
     use super::*;
-    use futures::io::Cursor as AsyncCursor;
+    use futures::io::Cursor;
     use ndarray::{arr3, s, Array2, Array3};
     use std::collections::HashSet;
-    use std::io::Cursor;
 
     fn array8() -> Array3<i32> {
         arr3(&[
@@ -1843,40 +1798,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn serialize_deserialize() -> Result<()> {
+    #[tokio::test]
+    async fn serialize_deserialize() -> Result<()> {
         let data = array8();
         let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
 
         let mut buffer: Vec<u8> = Vec::with_capacity(log.size() as usize);
-        log.write_to(&mut buffer)?;
+        log.write_to(&mut buffer).await?;
         assert_eq!(buffer.len(), log.size() as usize);
 
         let mut buffer = Cursor::new(buffer);
-        let log = Log::read_from(&mut buffer)?;
-
-        for row in 0..8 {
-            for col in 0..8 {
-                assert_eq!(log.get(&snapshot, row, col), data[[1, row, col]]);
-            }
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn serialize_deserialize_async() -> Result<()> {
-        let data = array8();
-        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
-
-        let mut buffer: Vec<u8> = Vec::with_capacity(log.size() as usize);
-        log.write_to_async(&mut buffer).await?;
-        assert_eq!(buffer.len(), log.size() as usize);
-
-        let mut buffer = AsyncCursor::new(buffer);
-        let log = Log::read_from_async(&mut buffer).await?;
+        let log = Log::read_from(&mut buffer).await?;
 
         for row in 0..8 {
             for col in 0..8 {

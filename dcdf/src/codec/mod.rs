@@ -30,11 +30,11 @@ mod dac;
 mod log;
 mod snapshot;
 
-pub use block::Block;
-pub use chunk::{CellIter, Chunk, FCellIter, FChunk};
-pub use dac::Dac;
-pub use log::Log;
-pub use snapshot::Snapshot;
+pub(crate) use block::Block;
+pub(crate) use chunk::{Chunk, FChunk};
+pub(crate) use dac::Dac;
+pub(crate) use log::Log;
+pub(crate) use snapshot::Snapshot;
 
 #[cfg(test)]
 mod testing;

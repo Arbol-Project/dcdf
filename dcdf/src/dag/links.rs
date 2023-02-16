@@ -13,11 +13,11 @@ use num_traits::Float;
 use crate::{
     cache::Cacheable,
     errors::Result,
-    extio::{ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite},
+    extio::{ExtendedAsyncRead, ExtendedAsyncWrite},
 };
 
 use super::{
-    node::{AsyncNode, Node, NODE_LINKS},
+    node::{Node, NODE_LINKS},
     resolver::Resolver,
 };
 
@@ -43,53 +43,19 @@ impl DerefMut for Links {
     }
 }
 
+#[async_trait]
 impl<N> Node<N> for Links
 where
     N: Float + Debug + Send + Sync + 'static, // # SMELL N is not used
 {
     const NODE_TYPE: u8 = NODE_LINKS;
 
-    fn save_to(self, _resolver: &Arc<Resolver<N>>, stream: &mut impl io::Write) -> Result<()> {
-        stream.write_u32(self.0.len() as u32)?;
-        for link in &self.0 {
-            link.write_bytes(&mut *stream)?;
-        }
-
-        Ok(())
-    }
-
-    fn load_from(_resolver: &Arc<Resolver<N>>, stream: &mut impl io::Read) -> Result<Self> {
-        let n = stream.read_u32()? as usize;
-        let mut links = Vec::with_capacity(n);
-        for _ in 0..n {
-            links.push(Cid::read_bytes(&mut *stream)?);
-        }
-
-        Ok(Self(links))
-    }
-
-    /// List other nodes contained by this node
-    fn ls(&self) -> Vec<(String, Cid)> {
-        let mut ls = Vec::new();
-        for (i, cid) in self.iter().enumerate() {
-            ls.push((i.to_string(), cid.clone()));
-        }
-
-        ls
-    }
-}
-
-#[async_trait]
-impl<N> AsyncNode<N> for Links
-where
-    N: Float + Debug + Send + Sync + 'static,
-{
     /// Load an object from a stream
-    async fn load_from_async(
+    async fn load_from(
         _resolver: &Arc<Resolver<N>>,
         stream: &mut (impl AsyncRead + Unpin + Send),
     ) -> Result<Self> {
-        let n = stream.read_u32_async().await? as usize;
+        let n = stream.read_u32().await? as usize;
 
         // Cid doesn't have async read, so read into a buffer and use that
         let mut buffer = vec![];
@@ -104,17 +70,27 @@ where
         Ok(Self(links))
     }
 
-    async fn save_to_async(
+    async fn save_to(
         self,
         _resolver: &Arc<Resolver<N>>,
         stream: &mut (impl AsyncWrite + Unpin + Send),
     ) -> Result<()> {
-        stream.write_u32_async(self.0.len() as u32).await?;
+        stream.write_u32(self.0.len() as u32).await?;
         for link in &self.0 {
             stream.write_cid(&link).await?;
         }
 
         Ok(())
+    }
+
+    /// List other nodes contained by this node
+    fn ls(&self) -> Vec<(String, Cid)> {
+        let mut ls = Vec::new();
+        for (i, cid) in self.iter().enumerate() {
+            ls.push((i.to_string(), cid.clone()));
+        }
+
+        ls
     }
 }
 
@@ -141,27 +117,14 @@ mod tests {
         links
     }
 
-    #[test]
-    fn load_save() -> Result<()> {
-        let resolver: Arc<Resolver<f32>> = testing::resolver();
-        let links = make_one();
-        let expected = links.0.clone();
-
-        let cid = resolver.save(links)?;
-        let links = resolver.get_links(&cid)?;
-        assert_eq!(expected, links.0);
-
-        Ok(())
-    }
-
     #[tokio::test]
-    async fn load_save_async() -> Result<()> {
+    async fn load_save() -> Result<()> {
         let resolver: Arc<Resolver<f32>> = testing::resolver();
         let links = make_one();
         let expected = links.0.clone();
 
-        let cid = resolver.save_async(links).await?;
-        let links = resolver.get_links_async(&cid).await?;
+        let cid = resolver.save(links).await?;
+        let links = resolver.get_links(&cid).await?;
         assert_eq!(expected, links.0);
 
         Ok(())

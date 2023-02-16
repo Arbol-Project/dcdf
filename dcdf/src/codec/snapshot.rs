@@ -2,7 +2,6 @@ use std::{
     cmp::min,
     collections::VecDeque,
     fmt::Debug,
-    io::{Read, Write},
     marker::PhantomData,
 };
 
@@ -14,8 +13,8 @@ use crate::{
     cache::Cacheable,
     errors::Result,
     extio::{
-        ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite, Serialize,
-        SerializeAsync,
+        ExtendedAsyncRead, ExtendedAsyncWrite,
+        Serialize,
     },
     geom,
 };
@@ -28,20 +27,20 @@ use super::dac::Dac;
 /// A Snapshot stores raster data for a particular time instant in a raster time series. Data is
 /// stored standalone without reference to any other time instant.
 ///
-pub struct Snapshot<I>
+pub(crate) struct Snapshot<I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
     _marker: PhantomData<I>,
 
     /// Bitmap of tree structure, known as T in Silva-Coira
-    pub nodemap: BitMap,
+    pub(crate) nodemap: BitMap,
 
     /// Tree node maximum values, known as Lmax in Silva-Coira
-    pub max: Dac,
+    pub(crate) max: Dac,
 
     /// Tree node minimum values, known as Lmin in Silva-Coira
-    pub min: Dac,
+    pub(crate) min: Dac,
 
     /// The K in K²-Raster. Each level of the tree structure is divided into k² subtrees.
     /// In practice, this will almost always be 2.
@@ -50,84 +49,44 @@ where
     /// Shape of the encoded raster. Since K² matrix is grown to a square with sides whose length
     /// are a power of K, we need to keep track of the dimensions of the original raster so we can
     /// perform range checking.
-    pub shape: [usize; 2],
+    pub(crate) shape: [usize; 2],
 
     /// Length of one side of logical matrix, ie number of rows, number of columns, which are equal
     /// since it is a square
     sidelen: usize,
 }
 
+#[async_trait]
 impl<I> Serialize for Snapshot<I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
     /// Write a snapshot to a stream
     ///
-    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
-        stream.write_byte(self.k as u8)?;
-        stream.write_u32(self.shape[0] as u32)?;
-        stream.write_u32(self.shape[1] as u32)?;
-        stream.write_u32(self.sidelen as u32)?;
-        self.nodemap.write_to(stream)?;
-        self.max.write_to(stream)?;
-        self.min.write_to(stream)?;
+    async fn write_to(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+        stream.write_byte(self.k as u8).await?;
+        stream.write_u32(self.shape[0] as u32).await?;
+        stream.write_u32(self.shape[1] as u32).await?;
+        stream.write_u32(self.sidelen as u32).await?;
+        self.nodemap.write_to(stream).await?;
+        self.max.write_to(stream).await?;
+        self.min.write_to(stream).await?;
 
         Ok(())
     }
 
     /// Read a snapshot from a stream
     ///
-    fn read_from(stream: &mut impl Read) -> Result<Self> {
-        let k = stream.read_byte()? as i32;
-        let shape = [stream.read_u32()? as usize, stream.read_u32()? as usize];
-        let sidelen = stream.read_u32()? as usize;
-        let nodemap = BitMap::read_from(stream)?;
-        let max = Dac::read_from(stream)?;
-        let min = Dac::read_from(stream)?;
-
-        Ok(Self {
-            _marker: PhantomData,
-            nodemap,
-            max,
-            min,
-            k,
-            shape,
-            sidelen,
-        })
-    }
-}
-
-#[async_trait]
-impl<I> SerializeAsync for Snapshot<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
-    /// Write a snapshot to a stream
-    ///
-    async fn write_to_async(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
-        stream.write_byte_async(self.k as u8).await?;
-        stream.write_u32_async(self.shape[0] as u32).await?;
-        stream.write_u32_async(self.shape[1] as u32).await?;
-        stream.write_u32_async(self.sidelen as u32).await?;
-        self.nodemap.write_to_async(stream).await?;
-        self.max.write_to_async(stream).await?;
-        self.min.write_to_async(stream).await?;
-
-        Ok(())
-    }
-
-    /// Read a snapshot from a stream
-    ///
-    async fn read_from_async(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
-        let k = stream.read_byte_async().await? as i32;
+    async fn read_from(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+        let k = stream.read_byte().await? as i32;
         let shape = [
-            stream.read_u32_async().await? as usize,
-            stream.read_u32_async().await? as usize,
+            stream.read_u32().await? as usize,
+            stream.read_u32().await? as usize,
         ];
-        let sidelen = stream.read_u32_async().await? as usize;
-        let nodemap = BitMap::read_from_async(stream).await?;
-        let max = Dac::read_from_async(stream).await?;
-        let min = Dac::read_from_async(stream).await?;
+        let sidelen = stream.read_u32().await? as usize;
+        let nodemap = BitMap::read_from(stream).await?;
+        let max = Dac::read_from(stream).await?;
+        let min = Dac::read_from(stream).await?;
 
         Ok(Self {
             _marker: PhantomData,
@@ -171,7 +130,7 @@ where
     /// arrays will use this to convert cell values from floating point to a fixed point
     /// representation.
     ///
-    pub fn build<G>(get: G, shape: [usize; 2], k: i32) -> Self
+    pub(crate) fn build<G>(get: G, shape: [usize; 2], k: i32) -> Self
     where
         G: Fn(usize, usize) -> i64,
     {
@@ -229,7 +188,7 @@ where
     /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
     ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
-    pub fn get(&self, row: usize, col: usize) -> I {
+    pub(crate) fn get(&self, row: usize, col: usize) -> I {
         if !self.nodemap.get(0) {
             // Special case, single node tree
             return self.max.get(0);
@@ -268,7 +227,7 @@ where
     /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
     ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
-    pub fn fill_window<S>(&self, mut set: S, bounds: &geom::Rect)
+    pub(crate) fn fill_window<S>(&self, mut set: S, bounds: &geom::Rect)
     where
         S: FnMut(usize, usize, i64),
     {
@@ -374,7 +333,7 @@ where
     /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
     ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
-    pub fn search_window(&self, bounds: &geom::Rect, lower: I, upper: I) -> Vec<(usize, usize)> {
+    pub(crate) fn search_window(&self, bounds: &geom::Rect, lower: I, upper: I) -> Vec<(usize, usize)> {
         let mut cells: Vec<(usize, usize)> = vec![];
 
         if !self.nodemap.get(0) {
@@ -566,10 +525,9 @@ impl K2TreeNode {
 mod tests {
     use super::super::testing::array_search_window;
     use super::*;
-    use futures::io::Cursor as AsyncCursor;
+    use futures::io::Cursor;
     use ndarray::{arr2, s, Array2};
     use std::collections::HashSet;
-    use std::io::Cursor;
 
     fn array8() -> Array2<i32> {
         arr2(&[
@@ -935,38 +893,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn serialize_deserialize() -> Result<()> {
+    #[tokio::test]
+    async fn serialize_deserialize() -> Result<()> {
         let data = array8();
         let snapshot = Snapshot::from_array(data.view(), 2);
 
         let mut buffer: Vec<u8> = Vec::with_capacity(snapshot.size() as usize);
-        snapshot.write_to(&mut buffer)?;
+        snapshot.write_to(&mut buffer).await?;
         assert_eq!(buffer.len(), snapshot.size() as usize);
 
         let mut buffer = Cursor::new(buffer);
-        let snapshot: Snapshot<i32> = Snapshot::read_from(&mut buffer)?;
-
-        for row in 0..8 {
-            for col in 0..8 {
-                assert_eq!(snapshot.get(row, col), data[[row, col]]);
-            }
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn serialize_deserialize_async() -> Result<()> {
-        let data = array8();
-        let snapshot = Snapshot::from_array(data.view(), 2);
-
-        let mut buffer: Vec<u8> = Vec::with_capacity(snapshot.size() as usize);
-        snapshot.write_to_async(&mut buffer).await?;
-        assert_eq!(buffer.len(), snapshot.size() as usize);
-
-        let mut buffer = AsyncCursor::new(buffer);
-        let snapshot: Snapshot<i32> = Snapshot::read_from_async(&mut buffer).await?;
+        let snapshot: Snapshot<i32> = Snapshot::read_from(&mut buffer).await?;
 
         for row in 0..8 {
             for col in 0..8 {

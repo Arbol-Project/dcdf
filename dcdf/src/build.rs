@@ -22,17 +22,25 @@ use super::{
     fixed::{to_fixed, Fraction, Precise, Round},
 };
 
-pub struct SubchunkBuild<N>
+pub(crate) struct SubchunkBuild<N>
 where
     N: Float + Debug + Send + Sync,
 {
-    pub data: FChunk<N>,
-    pub logs: usize,
-    pub snapshots: usize,
-    pub compression: f32,
+    pub(crate) data: FChunk<N>,
+
+    // I might use these later to see build stats.
+    
+    #[allow(dead_code)]
+    pub(crate) logs: usize,
+
+    #[allow(dead_code)]
+    pub(crate) snapshots: usize,
+
+    #[allow(dead_code)]
+    pub(crate) compression: f32,
 }
 
-pub struct SubchunkBuilder<N>
+pub(crate) struct SubchunkBuilder<N>
 where
     N: Float + Debug + Send + Sync,
 {
@@ -52,7 +60,7 @@ impl<N> SubchunkBuilder<N>
 where
     N: Float + Debug + Send + Sync + 'static,
 {
-    pub fn new(first: Array2<N>, k: i32, fraction: Fraction) -> Self {
+    pub(crate) fn new(first: Array2<N>, k: i32, fraction: Fraction) -> Self {
         let shape = first.shape();
         let rows = shape[0];
         let cols = shape[1];
@@ -77,7 +85,7 @@ where
         }
     }
 
-    pub fn push(&mut self, instant: Array2<N>) {
+    pub(crate) fn push(&mut self, instant: Array2<N>) {
         let get_t = |row, col| match self.fraction {
             Precise(bits) => to_fixed(instant[[row, col]], bits, false),
             Round(bits) => to_fixed(instant[[row, col]], bits, true),
@@ -103,7 +111,7 @@ where
         }
     }
 
-    pub fn finish(mut self) -> SubchunkBuild<N> {
+    pub(crate) fn finish(mut self) -> SubchunkBuild<N> {
         self.count_snapshots += 1;
         self.count_logs += self.logs.len();
         self.blocks.push(Block::new(self.snapshot, self.logs));
@@ -162,7 +170,7 @@ where
     builder.finish().await
 }
 
-pub struct SuperchunkBuilder<N>
+pub(crate) struct SuperchunkBuilder<N>
 where
     N: Float + Debug + Send + Sync + 'static,
 {
@@ -186,7 +194,7 @@ impl<N> SuperchunkBuilder<N>
 where
     N: Float + Debug + Send + Sync,
 {
-    pub fn new(
+    pub(crate) fn new(
         first: Array2<N>,
         k: i32,
         fraction: Fraction,
@@ -232,7 +240,7 @@ where
         }
     }
 
-    pub async fn push(&mut self, a: Array2<N>) {
+    pub(crate) async fn push(&mut self, a: Array2<N>) {
         for ((subarray, min_value, max_value), builder) in
             iter_subarrays(a, self.subsidelen, self.chunks_sidelen).zip(&mut self.builders)
         {
@@ -261,7 +269,7 @@ where
         true
     }
 
-    pub async fn finish(mut self) -> Result<SuperchunkBuild<N>> {
+    pub(crate) async fn finish(mut self) -> Result<SuperchunkBuild<N>> {
         // Swap builders out of self before moving so that self can be borrowed by methods later.
         let builders = replace(&mut self.builders, vec![]);
         let builds: Vec<SubchunkBuild<N>> = builders
@@ -282,7 +290,7 @@ where
                 elided += 1;
                 references.push(Reference::Elided);
             } else if build.data.size() < self.local_threshold {
-                let cid = self.resolver.hash_subchunk(&build.data)?;
+                let cid = self.resolver.hash_subchunk(&build.data).await?;
                 let index = match local_references.get(&cid) {
                     Some(index) => *index,
                     None => {
@@ -296,7 +304,7 @@ where
                 references.push(Reference::Local(index))
             } else {
                 sizes.push(build.data.size());
-                let cid = self.resolver.save_async(build.data).await?;
+                let cid = self.resolver.save(build.data).await?;
                 let index = match external_references.get(&cid) {
                     Some(index) => *index,
                     None => {
@@ -314,7 +322,7 @@ where
         let size_external = external.size();
         let local_len = local.len();
         let external_len = external.len();
-        let external_cid = self.resolver.save_async(external).await?;
+        let external_cid = self.resolver.save(external).await?;
 
         let (round, bits) = match self.fraction {
             Round(bits) => (true, bits),
@@ -456,7 +464,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::{arr2, Array2};
+    use ndarray::{arr1, arr2, Array2};
     use std::sync::Arc;
 
     fn array_float() -> Vec<Array2<f32>> {
@@ -515,8 +523,8 @@ mod tests {
         let built = build_subchunk(data.into_iter(), 2, Precise(3));
         let chunk = Arc::new(built.data);
         assert_eq!(
-            chunk.iter_cell(0, 5, 0, 0).collect::<Vec<f32>>(),
-            vec![9.5, 9.5, 9.5, 9.5, 9.5]
+            chunk.get_cell(0, 5, 0, 0),
+            arr1(&[9.5, 9.5, 9.5, 9.5, 9.5]),
         );
         assert_eq!(built.snapshots, 1);
         assert_eq!(built.logs, 99);
@@ -530,8 +538,8 @@ mod tests {
         let built = build_subchunk(data.into_iter(), 2, Precise(3));
         let chunk = Arc::new(built.data);
         assert_eq!(
-            chunk.iter_cell(0, 5, 0, 0).collect::<Vec<f64>>(),
-            vec![9.5, 9.5, 9.5, 9.5, 9.5]
+            chunk.get_cell(0, 5, 0, 0),
+            arr1(&[9.5, 9.5, 9.5, 9.5, 9.5]),
         );
         assert_eq!(built.snapshots, 1);
         assert_eq!(built.logs, 99);
@@ -545,8 +553,8 @@ mod tests {
         let built = build_subchunk(data.into_iter(), 2, Round(2));
         let chunk = Arc::new(built.data);
         assert_eq!(
-            chunk.iter_cell(0, 5, 2, 4).collect::<Vec<f64>>(),
-            vec![3.5, 5.0, 5.0, 3.5, 5.0]
+            chunk.get_cell(0, 5, 2, 4),
+            arr1(&[3.5, 5.0, 5.0, 3.5, 5.0]),
         );
         assert_eq!(built.snapshots, 1);
         assert_eq!(built.logs, 99);

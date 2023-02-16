@@ -13,6 +13,7 @@ from cpc_precip import CpcPrecipDataset
 
 
 DATASET = "cpc_precip_global-daily"
+#DATASET = "era5_land_precip-hourly"
 
 
 def query_dclimate(dataset, start, end, lat, lon):

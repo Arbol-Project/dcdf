@@ -1,7 +1,6 @@
 use std::{
     cell::RefCell,
     fmt::Debug,
-    io::{Read, Write},
     marker::PhantomData,
     rc::Rc,
     sync::Arc,
@@ -10,7 +9,7 @@ use std::{
 
 use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncWrite};
-use ndarray::{s, Array1, Array2, Array3, ArrayBase, DataMut, Ix1, Ix3};
+use ndarray::{s, Array2, ArrayBase, DataMut, Ix1, Ix3};
 use num_traits::{Float, PrimInt};
 
 use crate::{
@@ -18,8 +17,8 @@ use crate::{
     dag::resolver::Resolver,
     errors::Result,
     extio::{
-        ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite, Serialize,
-        SerializeAsync,
+        ExtendedAsyncRead, ExtendedAsyncWrite, 
+        Serialize,
     },
     fixed, geom,
     helpers::rearrange,
@@ -33,7 +32,7 @@ use super::block::Block;
 /// floating point using `fractional_bits` to determine the number of bits that are used to
 /// represent the fractional part of the number.
 ///
-pub struct FChunk<F>
+pub(crate) struct FChunk<F>
 where
     F: Float + Debug + Send + Sync,
 {
@@ -53,7 +52,7 @@ where
     /// Create an FChunk that wraps `chunk` using `fractional_bits` for fixed point to floating
     /// point conversion.
     ///
-    pub fn new(chunk: Chunk<i64>, fractional_bits: usize) -> Self {
+    pub(crate) fn new(chunk: Chunk<i64>, fractional_bits: usize) -> Self {
         Self {
             _marker: PhantomData,
             fractional_bits: fractional_bits,
@@ -65,44 +64,19 @@ where
     ///
     /// Returns [instants, rows, cols]
     ///
-    pub fn shape(&self) -> [usize; 3] {
+    pub(crate) fn shape(&self) -> [usize; 3] {
         self.chunk.shape()
     }
 
-    /// Iterate over a cell's value across time instants.
+    /// Get a single data point
     ///
-    pub fn iter_cell(
-        self: &Arc<Self>,
-        start: usize,
-        end: usize,
-        row: usize,
-        col: usize,
-    ) -> FCellIter<F> {
-        FCellIter {
-            chunk: Arc::clone(&self),
-            iter: Rc::new(RefCell::new(self.chunk.iter_cell(start, end, row, col))),
-        }
-    }
-
-    /// Get a cell's value across time instants.
-    ///
-    pub fn get_cell(
-        self: &Arc<Self>,
-        start: usize,
-        end: usize,
-        row: usize,
-        col: usize,
-    ) -> Array1<F> {
-        let (start, end) = rearrange(start, end);
-        let mut values = Array1::zeros([end - start]);
-        self.fill_cell(start, row, col, &mut values);
-
-        values
+    pub(crate) fn get(&self, instant: usize, row: usize, col: usize) -> F {
+        fixed::from_fixed(self.chunk.get(instant, row, col), self.fractional_bits)
     }
 
     /// Fill in a preallocated array with cell's value across time instants.
     ///
-    pub fn fill_cell<S>(
+    pub(crate) fn fill_cell<S>(
         self: &Arc<Self>,
         start: usize,
         row: usize,
@@ -119,44 +93,31 @@ where
         }
     }
 
-    /// Get a subarray of this Chunk.
-    ///
-    pub fn get_window(self: &Arc<Self>, bounds: &geom::Cube) -> Array3<F> {
-        self.chunk
-            .check_bounds(bounds.end - 1, bounds.bottom - 1, bounds.right - 1);
-
-        let mut window = Array3::zeros([bounds.instants(), bounds.rows(), bounds.cols()]);
-        self.fill_window(bounds, &mut window);
-
-        window
-    }
 
     /// Fill in a preallocated array with subarray from this chunk
     ///
     pub(crate) fn fill_window<S>(
         self: &Arc<Self>,
-        bounds: &geom::Cube,
+        start: usize,
+        top: usize,
+        left: usize,
         window: &mut ArrayBase<S, Ix3>,
     ) where
         S: DataMut<Elem = F>,
     {
-        for (i, (block, instant)) in self.chunk.iter(bounds.start, bounds.end).enumerate() {
+        let shape = window.shape();
+        let end = start + shape[0];
+        let bottom = top + shape[1];
+        let right = left + shape[2];
+        self.chunk.check_bounds(end - 1, bottom - 1, right - 1);
+
+        for (i, (block, instant)) in self.chunk.iter(start, end).enumerate() {
             let mut window2d = window.slice_mut(s![i, .., ..]);
             let set = |row, col, value| {
                 window2d[[row, col]] = fixed::from_fixed(value, self.fractional_bits)
             };
             let block = &self.chunk.blocks[block];
-            block.fill_window(set, instant, &bounds.rect());
-        }
-    }
-
-    /// Iterate over subarrays of successive time instants.
-    ///
-    pub fn iter_window(self: &Arc<Self>, bounds: &geom::Cube) -> FWindowIter<F> {
-        FWindowIter {
-            _marker: PhantomData,
-            iter: Rc::new(RefCell::new(self.chunk.iter_window(bounds))),
-            fractional_bits: self.fractional_bits,
+            block.fill_window(set, instant, &geom::Rect::new(top, bottom, left, right));
         }
     }
 
@@ -165,7 +126,7 @@ where
     /// Returns an iterator that produces coordinate triplets [instant, row, col] of matching
     /// cells.
     ///
-    pub fn iter_search(&self, bounds: &geom::Cube, lower: F, upper: F) -> SearchIter<i64> {
+    pub(crate) fn iter_search(&self, bounds: &geom::Cube, lower: F, upper: F) -> SearchIter<i64> {
         self.chunk.iter_search(
             bounds,
             fixed::to_fixed(lower, self.fractional_bits, true),
@@ -174,45 +135,25 @@ where
     }
 }
 
+#[async_trait]
 impl<F> Serialize for FChunk<F>
 where
     F: Float + Debug + Send + Sync,
 {
     /// Write a chunk to a stream
     ///
-    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
-        stream.write_byte(self.fractional_bits as u8)?;
-        self.chunk.write_to(stream)?;
+    async fn write_to(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+        stream.write_byte(self.fractional_bits as u8).await?;
+        self.chunk.write_to(stream).await?;
         Ok(())
     }
 
     /// Read a chunk from a stream
     ///
-    fn read_from(stream: &mut impl Read) -> Result<Self> {
-        let fractional_bits = stream.read_byte()? as usize;
-        Ok(FChunk::new(Chunk::read_from(stream)?, fractional_bits))
-    }
-}
-
-#[async_trait]
-impl<F> SerializeAsync for FChunk<F>
-where
-    F: Float + Debug + Send + Sync,
-{
-    /// Write a chunk to a stream
-    ///
-    async fn write_to_async(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
-        stream.write_byte_async(self.fractional_bits as u8).await?;
-        self.chunk.write_to_async(stream).await?;
-        Ok(())
-    }
-
-    /// Read a chunk from a stream
-    ///
-    async fn read_from_async(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
-        let fractional_bits = stream.read_byte_async().await? as usize;
+    async fn read_from(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+        let fractional_bits = stream.read_byte().await? as usize;
         Ok(FChunk::new(
-            Chunk::read_from_async(stream).await?,
+            Chunk::read_from(stream).await?,
             fractional_bits,
         ))
     }
@@ -231,29 +172,7 @@ where
     }
 }
 
-pub struct FCellIter<F>
-where
-    F: Float + Debug + Send + Sync,
-{
-    chunk: Arc<FChunk<F>>,
-    iter: Rc<RefCell<CellIter<i64>>>,
-}
-
-impl<F> Iterator for FCellIter<F>
-where
-    F: Float + Debug + Send + Sync,
-{
-    type Item = F;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.iter.borrow_mut().next() {
-            Some(value) => Some(fixed::from_fixed(value, self.chunk.fractional_bits)),
-            None => None,
-        }
-    }
-}
-
-pub struct FWindowIter<F>
+pub(crate) struct FWindowIter<F>
 where
     F: Float + Debug + Send + Sync,
 {
@@ -280,7 +199,7 @@ where
 ///
 /// Made up of a series of blocks.
 ///
-pub struct Chunk<I>
+pub(crate) struct Chunk<I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
@@ -317,34 +236,38 @@ where
     ///
     /// Returns [instants, rows, cols]
     ///
-    pub fn shape(&self) -> [usize; 3] {
+    pub(crate) fn shape(&self) -> [usize; 3] {
         let [rows, cols] = self.blocks[0].snapshot.shape;
         let instants = self.blocks.iter().map(|i| 1 + i.logs.len()).sum();
         [instants, rows, cols]
     }
 
-    /// Iterate over time instants in this chunk.
+    /// Get a single value
     ///
-    /// Used internally by the other iterators.
-    ///
-    fn iter(self: &Arc<Self>, start: usize, end: usize) -> ChunkIter<I> {
-        let (block, instant) = if start < self.index[0] {
-            // Common special case, starting at beginning of chunk
-            (0, start)
+    fn get(&self, instant: usize, row: usize, col: usize) -> I {
+        let (block, instant) = self.find_block(instant);
+        let block = &self.blocks[block];
+        block.get(instant, row, col)
+    }
+    
+    fn find_block(&self, instant: usize) -> (usize, usize) {
+        if instant < self.index[0] {
+            // Common special case, first block
+            (0, instant)
         } else {
-            // Use binary search to locate starting block
+            // Use binary search to locate block
             let mut lower = 0;
             let mut upper = self.blocks.len();
             let mut index = upper / 2;
             loop {
                 let here = self.index[index];
-                if here == start {
+                if here == instant {
                     index += 1;
                     break;
-                } else if here < start {
+                } else if here < instant {
                     lower = index;
-                } else if here > start {
-                    if self.index[index - 1] <= start {
+                } else if here > instant {
+                    if self.index[index - 1] <= instant {
                         break;
                     } else {
                         upper = index;
@@ -352,8 +275,16 @@ where
                 }
                 index = (lower + upper) / 2;
             }
-            (index, start - self.index[index - 1])
-        };
+            (index, instant - self.index[index - 1])
+        }
+    }
+
+    /// Iterate over time instants in this chunk.
+    ///
+    /// Used internally by the other iterators.
+    ///
+    fn iter(self: &Arc<Self>, start: usize, end: usize) -> ChunkIter<I> {
+        let (block, instant) = self.find_block(start);
 
         ChunkIter {
             chunk: Arc::clone(&self),
@@ -363,57 +294,12 @@ where
         }
     }
 
-    /// Iterate over a cell's value across time instants.
-    ///
-    pub fn iter_cell(
-        self: &Arc<Self>,
-        start: usize,
-        end: usize,
-        row: usize,
-        col: usize,
-    ) -> CellIter<I> {
-        let (start, end) = rearrange(start, end);
-        self.check_bounds(end - 1, row, col);
-        CellIter {
-            iter: Rc::new(RefCell::new(self.iter(start, end))),
-            row,
-            col,
-        }
-    }
-
-    /// Get a subarray of this Chunk.
-    ///
-    pub fn get_window(self: &Arc<Self>, bounds: &geom::Cube) -> Array3<I> {
-        self.check_bounds(bounds.end - 1, bounds.bottom - 1, bounds.right - 1);
-
-        let mut windows = Array3::zeros([bounds.instants(), bounds.rows(), bounds.cols()]);
-
-        for (i, (block, instant)) in self.iter(bounds.start, bounds.end).enumerate() {
-            let mut window = windows.slice_mut(s![i, .., ..]);
-            let set = |row, col, value| window[[row, col]] = I::from(value).unwrap();
-            let block = &self.blocks[block];
-            block.fill_window(set, instant, &bounds.rect());
-        }
-        windows
-    }
-
-    /// Iterate over subarrays of successive time instants.
-    ///
-    pub fn iter_window(self: &Arc<Self>, bounds: &geom::Cube) -> WindowIter<I> {
-        self.check_bounds(bounds.end - 1, bounds.bottom - 1, bounds.right - 1);
-
-        WindowIter {
-            iter: Rc::new(RefCell::new(self.iter(bounds.start, bounds.end))),
-            bounds: bounds.rect(),
-        }
-    }
-
     /// Search a subarray for cells that fall in a given range.
     ///
     /// Returns an iterator that produces coordinate triplets [instant, row, col] of matching
     /// cells.
     ///
-    pub fn iter_search(self: &Arc<Self>, bounds: &geom::Cube, lower: I, upper: I) -> SearchIter<I> {
+    pub(crate) fn iter_search(self: &Arc<Self>, bounds: &geom::Cube, lower: I, upper: I) -> SearchIter<I> {
         let (lower, upper) = rearrange(lower, upper);
         self.check_bounds(bounds.end - 1, bounds.bottom - 1, bounds.right - 1);
 
@@ -446,61 +332,30 @@ where
     }
 }
 
+#[async_trait]
 impl<I> Serialize for Chunk<I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
     /// Write a chunk to a stream
     ///
-    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
-        stream.write_u32(self.blocks.len() as u32)?;
+    async fn write_to(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+        stream.write_u32(self.blocks.len() as u32).await?;
         for block in &self.blocks {
-            block.write_to(stream)?;
+            block.write_to(stream).await?;
         }
         Ok(())
     }
 
     /// Read a chunk from a stream
     ///
-    fn read_from(stream: &mut impl Read) -> Result<Self> {
-        let n_blocks = stream.read_u32()? as usize;
+    async fn read_from(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+        let n_blocks = stream.read_u32().await? as usize;
         let mut blocks = Vec::with_capacity(n_blocks);
         let mut index = Vec::with_capacity(n_blocks);
         let mut count = 0;
         for _ in 0..n_blocks {
-            let block = Block::read_from(stream)?;
-            count += block.logs.len() + 1;
-            blocks.push(block);
-            index.push(count);
-        }
-        Ok(Self { blocks, index })
-    }
-}
-
-#[async_trait]
-impl<I> SerializeAsync for Chunk<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
-    /// Write a chunk to a stream
-    ///
-    async fn write_to_async(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
-        stream.write_u32_async(self.blocks.len() as u32).await?;
-        for block in &self.blocks {
-            block.write_to_async(stream).await?;
-        }
-        Ok(())
-    }
-
-    /// Read a chunk from a stream
-    ///
-    async fn read_from_async(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
-        let n_blocks = stream.read_u32_async().await? as usize;
-        let mut blocks = Vec::with_capacity(n_blocks);
-        let mut index = Vec::with_capacity(n_blocks);
-        let mut count = 0;
-        for _ in 0..n_blocks {
-            let block = Block::read_from_async(stream).await?;
+            let block = Block::read_from(stream).await?;
             count += block.logs.len() + 1;
             blocks.push(block);
             index.push(count);
@@ -562,7 +417,7 @@ where
     }
 }
 
-pub struct CellIter<I>
+pub(crate) struct CellIter<I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
@@ -589,7 +444,7 @@ where
     }
 }
 
-pub struct WindowIter<I>
+pub(crate) struct WindowIter<I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
@@ -615,7 +470,7 @@ where
     }
 }
 
-pub struct SearchIter<I>
+pub(crate) struct SearchIter<I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
@@ -679,13 +534,41 @@ mod tests {
     use super::super::snapshot::Snapshot;
     use super::super::testing::array_search_window;
     use super::*;
-    use futures::io::Cursor as AsyncCursor;
-    use ndarray::arr2;
+    use futures::io::Cursor;
+    use ndarray::{Array1, arr2, Array3};
     use std::collections::HashSet;
-    use std::io::Cursor;
 
     mod fchunk {
         use super::*;
+
+        impl<F> FChunk<F>
+        where
+            F: Float + Debug + Send + Sync,
+        {
+            /// Get a cell's value across time instants.
+            ///
+            pub(crate) fn get_cell(
+                self: &Arc<Self>,
+                start: usize,
+                end: usize,
+                row: usize,
+                col: usize,
+            ) -> Array1<F> {
+                let mut values = Array1::zeros([end - start]);
+                self.fill_cell(start, row, col, &mut values);
+
+                values
+            }
+
+            /// Get a subarray of this Chunk.
+            ///
+            pub(crate) fn get_window(self: &Arc<Self>, bounds: &geom::Cube) -> Array3<F> {
+                let mut window = Array3::zeros([bounds.instants(), bounds.rows(), bounds.cols()]);
+                self.fill_window(bounds.start, bounds.top, bounds.left, &mut window);
+
+                window
+            }
+        }
 
         fn array() -> Vec<Array2<f32>> {
             let data = vec![
@@ -756,65 +639,20 @@ mod tests {
         }
 
         #[test]
-        fn iter_cell() {
+        fn get() {
             let data = array();
             let chunk = chunk(data.clone());
-            for row in 0..8 {
-                for col in 0..8 {
-                    let start = row * col;
-                    let end = 100 - col;
-                    let values: Vec<f32> = chunk.iter_cell(start, end, row, col).collect();
-                    assert_eq!(values.len(), end - start);
-                    for i in 0..values.len() {
-                        assert_eq!(values[i], data[i + start][[row, col]]);
+            for instant in 0..100 {
+                for row in 0..8 {
+                    for col in 0..8 {
+                        assert_eq!(chunk.get(instant, row, col), data[instant][[row, col]]);
                     }
                 }
             }
         }
 
         #[test]
-        fn iter_cell_rearrange() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            for row in 0..8 {
-                for col in 0..8 {
-                    let start = row * col;
-                    let end = 100 - col;
-                    let values: Vec<f32> = chunk.iter_cell(end, start, row, col).collect();
-                    assert_eq!(values.len(), end - start);
-                    for i in 0..values.len() {
-                        assert_eq!(values[i], data[i + start][[row, col]]);
-                    }
-                }
-            }
-        }
-
-        #[test]
-        #[should_panic]
-        fn iter_cell_end_out_of_bounds() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            let _values: Vec<f32> = chunk.iter_cell(0, 200, 4, 4).collect();
-        }
-
-        #[test]
-        #[should_panic]
-        fn iter_cell_row_out_of_bounds() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            let _values: Vec<f32> = chunk.iter_cell(0, 100, 8, 4).collect();
-        }
-
-        #[test]
-        #[should_panic]
-        fn iter_cell_col_out_of_bounds() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            let _values: Vec<f32> = chunk.iter_cell(0, 100, 4, 8).collect();
-        }
-
-        #[test]
-        fn get_cell() {
+        fn fill_cell() {
             let data = array();
             let chunk = chunk(data.clone());
             for row in 0..8 {
@@ -831,25 +669,8 @@ mod tests {
         }
 
         #[test]
-        fn get_cell_rearrange() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            for row in 0..8 {
-                for col in 0..8 {
-                    let start = row * col;
-                    let end = 100 - col;
-                    let values = chunk.get_cell(end, start, row, col);
-                    assert_eq!(values.len(), end - start);
-                    for i in 0..values.len() {
-                        assert_eq!(values[i], data[i + start][[row, col]]);
-                    }
-                }
-            }
-        }
-
-        #[test]
         #[should_panic]
-        fn get_cell_end_out_of_bounds() {
+        fn fill_cell_end_out_of_bounds() {
             let data = array();
             let chunk = chunk(data.clone());
             let _values = chunk.get_cell(0, 200, 4, 4);
@@ -857,7 +678,7 @@ mod tests {
 
         #[test]
         #[should_panic]
-        fn get_cell_row_out_of_bounds() {
+        fn fill_cell_row_out_of_bounds() {
             let data = array();
             let chunk = chunk(data.clone());
             let _values = chunk.get_cell(0, 100, 8, 4);
@@ -865,40 +686,14 @@ mod tests {
 
         #[test]
         #[should_panic]
-        fn get_cell_col_out_of_bounds() {
+        fn fill_cell_col_out_of_bounds() {
             let data = array();
             let chunk = chunk(data.clone());
             let _values = chunk.get_cell(0, 100, 4, 8);
         }
 
         #[test]
-        fn get_window() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            for top in 0..8 {
-                for bottom in top + 1..=8 {
-                    for left in 0..8 {
-                        for right in left + 1..=8 {
-                            let start = top * left;
-                            let end = bottom * right + 36;
-                            let bounds = geom::Cube::new(start, end, top, bottom, left, right);
-                            let window = chunk.get_window(&bounds);
-                            assert_eq!(window.shape(), [end - start, bottom - top, right - left]);
-
-                            for i in 0..end - start {
-                                assert_eq!(
-                                    window.slice(s![i, .., ..]),
-                                    data[start + i].slice(s![top..bottom, left..right])
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        #[test]
-        fn get_window_rearrange() {
+        fn fill_window() {
             let data = array();
             let chunk = chunk(data.clone());
             for top in 0..8 {
@@ -925,72 +720,11 @@ mod tests {
 
         #[test]
         #[should_panic]
-        fn get_window_out_of_bounds() {
+        fn fill_window_out_of_bounds() {
             let data = array();
             let chunk = chunk(data.clone());
             let bounds = geom::Cube::new(0, 100, 0, 9, 0, 9);
             let _window = chunk.get_window(&bounds);
-        }
-
-        #[test]
-        fn iter_window() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            for top in 0..8 {
-                for bottom in top + 1..=8 {
-                    for left in 0..8 {
-                        for right in left + 1..=8 {
-                            let start = top * left;
-                            let end = bottom * right + 36;
-                            let bounds = geom::Cube::new(start, end, top, bottom, left, right);
-                            let windows: Vec<Array2<f32>> = chunk.iter_window(&bounds).collect();
-                            assert_eq!(windows.len(), end - start);
-
-                            for i in 0..windows.len() {
-                                assert_eq!(
-                                    windows[i],
-                                    data[i + start].slice(s![top..bottom, left..right])
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        #[test]
-        fn iter_window_rearrange() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            for top in 0..8 {
-                for bottom in top + 1..=8 {
-                    for left in 0..8 {
-                        for right in left + 1..=8 {
-                            let start = top * left;
-                            let end = bottom * right + 36;
-                            let bounds = geom::Cube::new(start, end, top, bottom, left, right);
-                            let windows: Vec<Array2<f32>> = chunk.iter_window(&bounds).collect();
-                            assert_eq!(windows.len(), end - start);
-
-                            for i in 0..windows.len() {
-                                assert_eq!(
-                                    windows[i],
-                                    data[i + start].slice(s![top..bottom, left..right])
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        #[test]
-        #[should_panic]
-        fn iter_window_out_of_bounds() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            let bounds = geom::Cube::new(0, 100, 0, 9, 0, 9);
-            let _window: Vec<Array2<f32>> = chunk.iter_window(&bounds).collect();
         }
 
         #[test]
@@ -1089,54 +823,25 @@ mod tests {
                 .collect();
         }
 
-        #[test]
-        fn serialize_deserialize() -> Result<()> {
+        #[tokio::test]
+        async fn serialize_deserialize() -> Result<()> {
             let data = array();
             let chunk = chunk(data.clone());
             let mut file: Vec<u8> = Vec::with_capacity(chunk.size() as usize);
-            chunk.write_to(&mut file)?;
+            chunk.write_to(&mut file).await?;
             assert_eq!(
                 file.len(),
                 (chunk.size() - Resolver::<f32>::HEADER_SIZE) as usize
             );
 
             let mut file = Cursor::new(file);
-            let chunk: Arc<FChunk<f32>> = Arc::new(FChunk::read_from(&mut file)?);
+            let chunk: Arc<FChunk<f32>> = Arc::new(FChunk::read_from(&mut file).await?);
 
             for row in 0..8 {
                 for col in 0..8 {
                     let start = row * col;
                     let end = 100 - col;
-                    let values: Vec<f32> = chunk.iter_cell(start, end, row, col).collect();
-                    assert_eq!(values.len(), end - start);
-                    for i in 0..values.len() {
-                        assert_eq!(values[i], data[i + start][[row, col]]);
-                    }
-                }
-            }
-
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn serialize_deserialize_async() -> Result<()> {
-            let data = array();
-            let chunk = chunk(data.clone());
-            let mut file: Vec<u8> = Vec::with_capacity(chunk.size() as usize);
-            chunk.write_to_async(&mut file).await?;
-            assert_eq!(
-                file.len(),
-                (chunk.size() - Resolver::<f32>::HEADER_SIZE) as usize
-            );
-
-            let mut file = AsyncCursor::new(file);
-            let chunk: Arc<FChunk<f32>> = Arc::new(FChunk::read_from_async(&mut file).await?);
-
-            for row in 0..8 {
-                for col in 0..8 {
-                    let start = row * col;
-                    let end = 100 - col;
-                    let values: Vec<f32> = chunk.iter_cell(start, end, row, col).collect();
+                    let values = chunk.get_cell(start, end, row, col);
                     assert_eq!(values.len(), end - start);
                     for i in 0..values.len() {
                         assert_eq!(values[i], data[i + start][[row, col]]);
@@ -1219,183 +924,16 @@ mod tests {
         }
 
         #[test]
-        fn iter_cell() {
+        fn get() {
             let data = array();
             let chunk = chunk(data.clone());
-            for row in 0..8 {
-                for col in 0..8 {
-                    let start = row * col;
-                    let end = 100 - col;
-                    let values: Vec<i32> = chunk.iter_cell(start, end, row, col).collect();
-                    assert_eq!(values.len(), end - start);
-                    for i in 0..values.len() {
-                        assert_eq!(values[i], data[i + start][[row, col]]);
+            for instant in 0..100 {
+                for row in 0..8 {
+                    for col in 0..8 {
+                        assert_eq!(chunk.get(instant, row, col), data[instant][[row, col]]);
                     }
                 }
             }
-        }
-
-        #[test]
-        fn iter_cell_rearrange() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            for row in 0..8 {
-                for col in 0..8 {
-                    let start = row * col;
-                    let end = 100 - col;
-                    let values: Vec<i32> = chunk.iter_cell(end, start, row, col).collect();
-                    assert_eq!(values.len(), end - start);
-                    for i in 0..values.len() {
-                        assert_eq!(values[i], data[i + start][[row, col]]);
-                    }
-                }
-            }
-        }
-
-        #[test]
-        #[should_panic]
-        fn iter_cell_end_out_of_bounds() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            let _values: Vec<i32> = chunk.iter_cell(0, 200, 4, 4).collect();
-        }
-
-        #[test]
-        #[should_panic]
-        fn iter_cell_row_out_of_bounds() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            let _values: Vec<i32> = chunk.iter_cell(0, 100, 8, 4).collect();
-        }
-
-        #[test]
-        #[should_panic]
-        fn iter_cell_col_out_of_bounds() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            let _values: Vec<i32> = chunk.iter_cell(0, 100, 4, 8).collect();
-        }
-
-        #[test]
-        fn get_window() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            for top in 0..8 {
-                for bottom in top + 1..=8 {
-                    for left in 0..8 {
-                        for right in left + 1..=8 {
-                            let start = top * left;
-                            let end = bottom * right + 36;
-                            let bounds = geom::Cube::new(start, end, top, bottom, left, right);
-                            let window = chunk.get_window(&bounds);
-                            assert_eq!(window.shape(), [end - start, bottom - top, right - left]);
-
-                            for i in 0..end - start {
-                                assert_eq!(
-                                    window.slice(s![i, .., ..]),
-                                    data[start + i].slice(s![top..bottom, left..right])
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        #[test]
-        fn get_window_rearrange() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            for top in 0..8 {
-                for bottom in top + 1..=8 {
-                    for left in 0..8 {
-                        for right in left + 1..=8 {
-                            let start = top * left;
-                            let end = bottom * right + 36;
-                            let bounds = geom::Cube::new(start, end, top, bottom, left, right);
-                            let window = chunk.get_window(&bounds);
-                            assert_eq!(window.shape(), [end - start, bottom - top, right - left]);
-
-                            for i in 0..end - start {
-                                assert_eq!(
-                                    window.slice(s![i, .., ..]),
-                                    data[start + i].slice(s![top..bottom, left..right])
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        #[test]
-        #[should_panic]
-        fn get_window_out_of_bounds() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            let bounds = geom::Cube::new(0, 100, 0, 9, 0, 9);
-            let _window = chunk.get_window(&bounds);
-        }
-
-        #[test]
-        fn iter_window() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            for top in 0..8 {
-                for bottom in top + 1..=8 {
-                    for left in 0..8 {
-                        for right in left + 1..=8 {
-                            let start = top * left;
-                            let end = bottom * right + 36;
-                            let bounds = geom::Cube::new(start, end, top, bottom, left, right);
-                            let windows: Vec<Array2<i32>> = chunk.iter_window(&bounds).collect();
-                            assert_eq!(windows.len(), end - start);
-
-                            for i in 0..windows.len() {
-                                assert_eq!(
-                                    windows[i],
-                                    data[i + start].slice(s![top..bottom, left..right])
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        #[test]
-        fn iter_window_rearrange() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            for top in 0..8 {
-                for bottom in top + 1..=8 {
-                    for left in 0..8 {
-                        for right in left + 1..=8 {
-                            let start = top * left;
-                            let end = bottom * right + 36;
-                            let bounds = geom::Cube::new(start, end, top, bottom, left, right);
-                            let windows: Vec<Array2<i32>> = chunk.iter_window(&bounds).collect();
-                            assert_eq!(windows.len(), end - start);
-
-                            for i in 0..windows.len() {
-                                assert_eq!(
-                                    windows[i],
-                                    data[i + start].slice(s![top..bottom, left..right])
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        #[test]
-        #[should_panic]
-        fn iter_window_out_of_bounds() {
-            let data = array();
-            let chunk = chunk(data.clone());
-            let bounds = geom::Cube::new(0, 100, 0, 9, 0, 9);
-            let _window: Vec<Array2<i32>> = chunk.iter_window(&bounds).collect();
         }
 
         #[test]
@@ -1494,53 +1032,24 @@ mod tests {
                 .collect();
         }
 
-        #[test]
-        fn serialize_deserialize() -> Result<()> {
+        #[tokio::test]
+        async fn serialize_deserialize() -> Result<()> {
             let data = array();
             let chunk = chunk(data.clone());
 
             let mut buffer: Vec<u8> = Vec::with_capacity(chunk.size() as usize);
-            chunk.write_to(&mut buffer)?;
+            chunk.write_to(&mut buffer).await?;
             assert_eq!(buffer.len(), chunk.size() as usize);
 
             let mut buffer = Cursor::new(buffer);
-            let chunk: Arc<Chunk<i32>> = Arc::new(Chunk::read_from(&mut buffer)?);
+            let chunk: Arc<Chunk<i32>> = Arc::new(Chunk::read_from(&mut buffer).await?);
 
             for row in 0..8 {
                 for col in 0..8 {
                     let start = row * col;
                     let end = 100 - col;
-                    let values: Vec<i32> = chunk.iter_cell(start, end, row, col).collect();
-                    assert_eq!(values.len(), end - start);
-                    for i in 0..values.len() {
-                        assert_eq!(values[i], data[i + start][[row, col]]);
-                    }
-                }
-            }
-
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn serialize_deserialize_async() -> Result<()> {
-            let data = array();
-            let chunk = chunk(data.clone());
-
-            let mut buffer: Vec<u8> = Vec::with_capacity(chunk.size() as usize);
-            chunk.write_to_async(&mut buffer).await?;
-            assert_eq!(buffer.len(), chunk.size() as usize);
-
-            let mut buffer = AsyncCursor::new(buffer);
-            let chunk: Arc<Chunk<i32>> = Arc::new(Chunk::read_from_async(&mut buffer).await?);
-
-            for row in 0..8 {
-                for col in 0..8 {
-                    let start = row * col;
-                    let end = 100 - col;
-                    let values: Vec<i32> = chunk.iter_cell(start, end, row, col).collect();
-                    assert_eq!(values.len(), end - start);
-                    for i in 0..values.len() {
-                        assert_eq!(values[i], data[i + start][[row, col]]);
+                    for instant in start..end {
+                        assert_eq!(chunk.get(instant, row, col), data[instant][[row, col]]);
                     }
                 }
             }
