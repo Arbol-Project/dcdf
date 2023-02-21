@@ -106,7 +106,7 @@ impl Cacheable for Links {
 mod tests {
     use super::*;
 
-    use super::super::testing;
+    use crate::testing;
 
     fn make_one() -> Links {
         let mut links = Links::new();

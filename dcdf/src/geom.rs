@@ -1,6 +1,6 @@
 use super::helpers::rearrange;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Rect {
     pub top: usize,
     pub bottom: usize,
@@ -68,7 +68,7 @@ impl Iterator for RectIter {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Cube {
     pub start: usize,
     pub end: usize,

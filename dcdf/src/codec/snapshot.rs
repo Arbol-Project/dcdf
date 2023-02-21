@@ -1,9 +1,4 @@
-use std::{
-    cmp::min,
-    collections::VecDeque,
-    fmt::Debug,
-    marker::PhantomData,
-};
+use std::{cmp::min, collections::VecDeque, fmt::Debug, marker::PhantomData};
 
 use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncWrite};
@@ -12,10 +7,7 @@ use num_traits::PrimInt;
 use crate::{
     cache::Cacheable,
     errors::Result,
-    extio::{
-        ExtendedAsyncRead, ExtendedAsyncWrite,
-        Serialize,
-    },
+    extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
     geom,
 };
 
@@ -333,7 +325,12 @@ where
     /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
     ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
-    pub(crate) fn search_window(&self, bounds: &geom::Rect, lower: I, upper: I) -> Vec<(usize, usize)> {
+    pub(crate) fn search_window(
+        &self,
+        bounds: &geom::Rect,
+        lower: I,
+        upper: I,
+    ) -> Vec<(usize, usize)> {
         let mut cells: Vec<(usize, usize)> = vec![];
 
         if !self.nodemap.get(0) {
@@ -523,8 +520,8 @@ impl K2TreeNode {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testing::array_search_window;
     use super::*;
+    use crate::testing::array_search_window;
     use futures::io::Cursor;
     use ndarray::{arr2, s, Array2};
     use std::collections::HashSet;

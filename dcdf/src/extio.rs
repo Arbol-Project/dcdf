@@ -15,10 +15,7 @@ use super::errors::Result;
 #[async_trait]
 pub(crate) trait Serialize: Sized {
     /// Write self to a stream
-    async fn write_to(
-        &self,
-        stream: &mut (impl aio::AsyncWrite + Unpin + Send),
-    ) -> Result<()>;
+    async fn write_to(&self, stream: &mut (impl aio::AsyncWrite + Unpin + Send)) -> Result<()>;
 
     /// Read Self from a stream
     async fn read_from(stream: &mut (impl aio::AsyncRead + Unpin + Send)) -> Result<Self>;

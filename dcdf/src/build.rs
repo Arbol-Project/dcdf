@@ -15,6 +15,7 @@ use super::{
     codec::{Block, Chunk, Dac, FChunk, Log, Snapshot},
     dag::{
         links::Links,
+        mmarray::MMArray3,
         resolver::Resolver,
         superchunk::{Reference, Superchunk},
     },
@@ -29,7 +30,6 @@ where
     pub(crate) data: FChunk<N>,
 
     // I might use these later to see build stats.
-    
     #[allow(dead_code)]
     pub(crate) logs: usize,
 
@@ -304,7 +304,7 @@ where
                 references.push(Reference::Local(index))
             } else {
                 sizes.push(build.data.size());
-                let cid = self.resolver.save(build.data).await?;
+                let cid = self.resolver.save(MMArray3::Subchunk(build.data)).await?;
                 let index = match external_references.get(&cid) {
                     Some(index) => *index,
                     None => {
@@ -464,6 +464,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::build_subchunk;
     use ndarray::{arr1, arr2, Array2};
     use std::sync::Arc;
 
@@ -504,28 +505,12 @@ mod tests {
         data.into_iter().cycle().take(100).collect()
     }
 
-    fn build_subchunk<N, T>(mut instants: T, k: i32, fraction: Fraction) -> SubchunkBuild<N>
-    where
-        N: Float + Debug + Send + Sync + 'static,
-        T: Iterator<Item = Array2<N>>,
-    {
-        let first = instants.next().expect("No time instants to encode");
-        let mut builder = SubchunkBuilder::new(first, k, fraction);
-        for instant in instants {
-            builder.push(instant);
-        }
-        builder.finish()
-    }
-
     #[test]
     fn build_subchunk_f32() {
         let data = array_float();
         let built = build_subchunk(data.into_iter(), 2, Precise(3));
         let chunk = Arc::new(built.data);
-        assert_eq!(
-            chunk.get_cell(0, 5, 0, 0),
-            arr1(&[9.5, 9.5, 9.5, 9.5, 9.5]),
-        );
+        assert_eq!(chunk.get_cell(0, 5, 0, 0), arr1(&[9.5, 9.5, 9.5, 9.5, 9.5]),);
         assert_eq!(built.snapshots, 1);
         assert_eq!(built.logs, 99);
         assert_eq!(built.compression, 0.3521875);
@@ -537,10 +522,7 @@ mod tests {
         let data: Vec<Array2<f64>> = data.into_iter().map(|a| a.map(|n| *n as f64)).collect();
         let built = build_subchunk(data.into_iter(), 2, Precise(3));
         let chunk = Arc::new(built.data);
-        assert_eq!(
-            chunk.get_cell(0, 5, 0, 0),
-            arr1(&[9.5, 9.5, 9.5, 9.5, 9.5]),
-        );
+        assert_eq!(chunk.get_cell(0, 5, 0, 0), arr1(&[9.5, 9.5, 9.5, 9.5, 9.5]),);
         assert_eq!(built.snapshots, 1);
         assert_eq!(built.logs, 99);
         assert_eq!(built.compression, 0.17609376);
@@ -552,10 +534,7 @@ mod tests {
         let data: Vec<Array2<f64>> = data.into_iter().map(|a| a.map(|n| *n as f64)).collect();
         let built = build_subchunk(data.into_iter(), 2, Round(2));
         let chunk = Arc::new(built.data);
-        assert_eq!(
-            chunk.get_cell(0, 5, 2, 4),
-            arr1(&[3.5, 5.0, 5.0, 3.5, 5.0]),
-        );
+        assert_eq!(chunk.get_cell(0, 5, 2, 4), arr1(&[3.5, 5.0, 5.0, 3.5, 5.0]),);
         assert_eq!(built.snapshots, 1);
         assert_eq!(built.logs, 99);
         assert_eq!(built.compression, 0.16294922);

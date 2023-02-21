@@ -35,6 +35,3 @@ pub(crate) use chunk::{Chunk, FChunk};
 pub(crate) use dac::Dac;
 pub(crate) use log::Log;
 pub(crate) use snapshot::Snapshot;
-
-#[cfg(test)]
-mod testing;

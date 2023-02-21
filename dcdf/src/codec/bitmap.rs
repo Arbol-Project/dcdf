@@ -1,6 +1,4 @@
-use std::{
-    fmt::Debug,
-};
+use std::fmt::Debug;
 
 use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncWrite};
@@ -9,10 +7,7 @@ use num_traits::PrimInt;
 use crate::{
     cache::Cacheable,
     errors::Result,
-    extio::{
-        ExtendedAsyncRead, ExtendedAsyncWrite,
-        Serialize,
-    },
+    extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
 };
 
 /// Used to build up a BitMap.

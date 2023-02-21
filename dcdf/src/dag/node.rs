@@ -5,15 +5,12 @@ use cid::Cid;
 use futures::io::{AsyncRead, AsyncWrite};
 use num_traits::Float;
 
-use crate::{
-    codec::FChunk,
-    errors::Result,
-    extio::Serialize,
-};
+use crate::{codec::FChunk, errors::Result, extio::Serialize};
 
 use super::resolver::Resolver;
 
 pub(crate) const NODE_LINKS: u8 = 5;
+pub(crate) const NODE_MMARRAY3: u8 = 0;
 pub(crate) const NODE_SUBCHUNK: u8 = 1;
 pub(crate) const NODE_SUPERCHUNK: u8 = 2;
 

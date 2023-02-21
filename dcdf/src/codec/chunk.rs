@@ -1,10 +1,5 @@
 use std::{
-    cell::RefCell,
-    fmt::Debug,
-    marker::PhantomData,
-    rc::Rc,
-    sync::Arc,
-    vec::IntoIter as VecIntoIter,
+    cell::RefCell, fmt::Debug, marker::PhantomData, rc::Rc, sync::Arc, vec::IntoIter as VecIntoIter,
 };
 
 use async_trait::async_trait;
@@ -16,10 +11,7 @@ use crate::{
     cache::Cacheable,
     dag::resolver::Resolver,
     errors::Result,
-    extio::{
-        ExtendedAsyncRead, ExtendedAsyncWrite, 
-        Serialize,
-    },
+    extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
     fixed, geom,
     helpers::rearrange,
 };
@@ -32,7 +24,7 @@ use super::block::Block;
 /// floating point using `fractional_bits` to determine the number of bits that are used to
 /// represent the fractional part of the number.
 ///
-pub(crate) struct FChunk<F>
+pub struct FChunk<F>
 where
     F: Float + Debug + Send + Sync,
 {
@@ -77,7 +69,7 @@ where
     /// Fill in a preallocated array with cell's value across time instants.
     ///
     pub(crate) fn fill_cell<S>(
-        self: &Arc<Self>,
+        &self,
         start: usize,
         row: usize,
         col: usize,
@@ -93,11 +85,10 @@ where
         }
     }
 
-
     /// Fill in a preallocated array with subarray from this chunk
     ///
     pub(crate) fn fill_window<S>(
-        self: &Arc<Self>,
+        &self,
         start: usize,
         top: usize,
         left: usize,
@@ -126,7 +117,12 @@ where
     /// Returns an iterator that produces coordinate triplets [instant, row, col] of matching
     /// cells.
     ///
-    pub(crate) fn iter_search(&self, bounds: &geom::Cube, lower: F, upper: F) -> SearchIter<i64> {
+    pub(crate) fn iter_search<'a>(
+        &'a self,
+        bounds: &geom::Cube,
+        lower: F,
+        upper: F,
+    ) -> impl Iterator<Item = (usize, usize, usize)> + 'a {
         self.chunk.iter_search(
             bounds,
             fixed::to_fixed(lower, self.fractional_bits, true),
@@ -172,16 +168,16 @@ where
     }
 }
 
-pub(crate) struct FWindowIter<F>
+pub(crate) struct FWindowIter<'a, F>
 where
     F: Float + Debug + Send + Sync,
 {
     _marker: PhantomData<F>,
-    iter: Rc<RefCell<WindowIter<i64>>>,
+    iter: Rc<RefCell<WindowIter<'a, i64>>>,
     fractional_bits: usize,
 }
 
-impl<F> Iterator for FWindowIter<F>
+impl<'a, F> Iterator for FWindowIter<'a, F>
 where
     F: Float + Debug + Send + Sync,
 {
@@ -249,7 +245,7 @@ where
         let block = &self.blocks[block];
         block.get(instant, row, col)
     }
-    
+
     fn find_block(&self, instant: usize) -> (usize, usize) {
         if instant < self.index[0] {
             // Common special case, first block
@@ -283,11 +279,11 @@ where
     ///
     /// Used internally by the other iterators.
     ///
-    fn iter(self: &Arc<Self>, start: usize, end: usize) -> ChunkIter<I> {
+    fn iter<'a>(&'a self, start: usize, end: usize) -> ChunkIter<'a, I> {
         let (block, instant) = self.find_block(start);
 
         ChunkIter {
-            chunk: Arc::clone(&self),
+            chunk: self,
             block,
             instant,
             remaining: end - start,
@@ -299,7 +295,7 @@ where
     /// Returns an iterator that produces coordinate triplets [instant, row, col] of matching
     /// cells.
     ///
-    pub(crate) fn iter_search(self: &Arc<Self>, bounds: &geom::Cube, lower: I, upper: I) -> SearchIter<I> {
+    pub(crate) fn iter_search(&self, bounds: &geom::Cube, lower: I, upper: I) -> SearchIter<I> {
         let (lower, upper) = rearrange(lower, upper);
         self.check_bounds(bounds.end - 1, bounds.bottom - 1, bounds.right - 1);
 
@@ -380,17 +376,17 @@ where
 ///
 /// Used internally by the other iterators.
 ///
-struct ChunkIter<I>
+struct ChunkIter<'a, I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
-    chunk: Arc<Chunk<I>>,
+    chunk: &'a Chunk<I>,
     block: usize,
     instant: usize,
     remaining: usize,
 }
 
-impl<I> Iterator for ChunkIter<I>
+impl<'a, I> Iterator for ChunkIter<'a, I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
@@ -417,16 +413,16 @@ where
     }
 }
 
-pub(crate) struct CellIter<I>
+pub(crate) struct CellIter<'a, I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
-    iter: Rc<RefCell<ChunkIter<I>>>,
+    iter: Rc<RefCell<ChunkIter<'a, I>>>,
     row: usize,
     col: usize,
 }
 
-impl<I> Iterator for CellIter<I>
+impl<'a, I> Iterator for CellIter<'a, I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
@@ -444,15 +440,15 @@ where
     }
 }
 
-pub(crate) struct WindowIter<I>
+pub(crate) struct WindowIter<'a, I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
-    iter: Rc<RefCell<ChunkIter<I>>>,
+    iter: Rc<RefCell<ChunkIter<'a, I>>>,
     bounds: geom::Rect,
 }
 
-impl<I> Iterator for WindowIter<I>
+impl<'a, I> Iterator for WindowIter<'a, I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
@@ -470,11 +466,11 @@ where
     }
 }
 
-pub(crate) struct SearchIter<I>
+pub(crate) struct SearchIter<'a, I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
-    iter: Rc<RefCell<ChunkIter<I>>>,
+    iter: Rc<RefCell<ChunkIter<'a, I>>>,
     bounds: geom::Rect,
     lower: I,
     upper: I,
@@ -483,7 +479,7 @@ where
     results: Option<VecIntoIter<(usize, usize)>>,
 }
 
-impl<I> SearchIter<I>
+impl<'a, I> SearchIter<'a, I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
@@ -501,7 +497,7 @@ where
     }
 }
 
-impl<I> Iterator for SearchIter<I>
+impl<'a, I> Iterator for SearchIter<'a, I>
 where
     I: PrimInt + Debug + Send + Sync,
 {
@@ -532,10 +528,10 @@ where
 mod tests {
     use super::super::log::Log;
     use super::super::snapshot::Snapshot;
-    use super::super::testing::array_search_window;
     use super::*;
+    use crate::testing::array_search_window;
     use futures::io::Cursor;
-    use ndarray::{Array1, arr2, Array3};
+    use ndarray::{arr2, Array1, Array3};
     use std::collections::HashSet;
 
     mod fchunk {
@@ -548,7 +544,7 @@ mod tests {
             /// Get a cell's value across time instants.
             ///
             pub(crate) fn get_cell(
-                self: &Arc<Self>,
+                &self,
                 start: usize,
                 end: usize,
                 row: usize,
@@ -562,7 +558,7 @@ mod tests {
 
             /// Get a subarray of this Chunk.
             ///
-            pub(crate) fn get_window(self: &Arc<Self>, bounds: &geom::Cube) -> Array3<F> {
+            pub(crate) fn get_window(&self, bounds: &geom::Cube) -> Array3<F> {
                 let mut window = Array3::zeros([bounds.instants(), bounds.rows(), bounds.cols()]);
                 self.fill_window(bounds.start, bounds.top, bounds.left, &mut window);
 

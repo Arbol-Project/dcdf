@@ -9,9 +9,7 @@ use futures::{
 
 use parking_lot::Mutex;
 
-use super::{
-    errors::{Error, Result},
-};
+use super::errors::{Error, Result};
 
 /// An LRU (least recently used) cache.
 ///

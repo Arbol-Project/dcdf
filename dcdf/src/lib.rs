@@ -15,6 +15,7 @@ pub use cache::Cacheable;
 
 pub use dag::mapper::Mapper;
 pub use dag::mapper::StoreWrite;
+pub use dag::mmarray::MMArray3;
 pub use dag::resolver::LsEntry;
 pub use dag::resolver::Resolver;
 pub use dag::superchunk::Superchunk;
@@ -30,3 +31,6 @@ pub use fixed::FractionSuggester;
 
 pub use geom::Cube;
 pub use geom::Rect;
+
+#[cfg(test)]
+mod testing;

@@ -1,16 +1,17 @@
 use std::{
     cmp,
     fmt::Debug,
+    pin::Pin,
     sync::{Arc, Weak},
 };
 
 use async_trait::async_trait;
 use cid::Cid;
 use futures::{
-    future::join_all,
+    future::{join_all, ready},
     io::{AsyncRead, AsyncWrite},
     lock::Mutex as AsyncMutex,
-    stream::{FuturesUnordered, Stream},
+    stream::{self, once, FuturesUnordered, Stream, StreamExt},
 };
 use ndarray::{s, ArrayBase, DataMut, Ix1, Ix3};
 use num_traits::Float;
@@ -20,10 +21,7 @@ use crate::{
     codec::Dac,
     codec::FChunk,
     errors::{Error, Result},
-    extio::{
-        ExtendedAsyncRead, ExtendedAsyncWrite,
-        Serialize,
-    },
+    extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
     fixed::{from_fixed, to_fixed},
     geom,
     helpers::rearrange,
@@ -31,6 +29,7 @@ use crate::{
 
 use super::{
     links::Links,
+    mmarray::MMArray3,
     node::{Node, NODE_SUPERCHUNK},
     resolver::Resolver,
 };
@@ -75,7 +74,7 @@ where
     external: AsyncMutex<Option<Weak<Links>>>,
 
     /// Resolver for retrieving subchunks
-    resolver: Arc<Resolver<N>>,
+    pub(crate) resolver: Arc<Resolver<N>>,
 
     /// Number of fractional bits stored in fixed point number representation
     fractional_bits: usize,
@@ -130,7 +129,7 @@ where
 
     /// Get a cell's value at a particular time instant.
     ///
-    pub async fn get(self: &Arc<Self>, instant: usize, row: usize, col: usize) -> Result<N> {
+    pub async fn get(&self, instant: usize, row: usize, col: usize) -> Result<N> {
         self.check_bounds(instant, row, col);
 
         // Theoretically compiler will optimize to single DIVREM instructions
@@ -157,9 +156,9 @@ where
             Reference::External(index) => {
                 let external = &self.external().await?;
                 let cid = &external[index];
-                let chunk = self.resolver.get_subchunk(cid).await?;
+                let chunk = self.resolver.get_mmarray3(cid).await?;
 
-                Ok(chunk.get(instant, local_row, local_col))
+                Ok(chunk.get(instant, local_row, local_col).await?)
             }
         }
     }
@@ -167,14 +166,14 @@ where
     /// Fill in a preallocated array with a cell's value across time instants.
     ///
     pub async fn fill_cell<S>(
-        self: &Arc<Self>,
+        &self,
         start: usize,
         row: usize,
         col: usize,
         values: &mut ArrayBase<S, Ix1>,
     ) -> Result<()>
     where
-        S: DataMut<Elem = N>,
+        S: DataMut<Elem = N> + Send,
     {
         self.check_bounds(start + values.len() - 1, row, col);
 
@@ -202,8 +201,8 @@ where
             Reference::External(index) => {
                 let external = &self.external().await?;
                 let cid = &external[index];
-                let chunk = self.resolver.get_subchunk(cid).await?;
-                chunk.fill_cell(start, local_row, local_col, values);
+                let chunk = self.resolver.get_mmarray3(cid).await?;
+                chunk.fill_cell(start, local_row, local_col, values).await?;
             }
         }
 
@@ -213,14 +212,14 @@ where
     /// Fill in a preallocated array with subarray from this chunk
     ///
     pub async fn fill_window<S>(
-        self: &Arc<Self>,
+        &self,
         start: usize,
         top: usize,
         left: usize,
         window: &mut ArrayBase<S, Ix3>,
     ) -> Result<()>
     where
-        S: DataMut<Elem = N>,
+        S: DataMut<Elem = N> + Send,
     {
         let mut futures = vec![];
         let shape = window.shape();
@@ -270,8 +269,10 @@ where
                     Reference::External(index) => {
                         let external = &self.external().await?;
                         let cid = &external[index];
-                        let chunk = self.resolver.get_subchunk(cid).await?;
-                        chunk.fill_window(bounds.start, bounds.top, bounds.left, &mut subwindow);
+                        let chunk = self.resolver.get_mmarray3(cid).await?;
+                        chunk
+                            .fill_window(bounds.start, bounds.top, bounds.left, &mut subwindow)
+                            .await?;
                     }
                 }
 
@@ -288,27 +289,34 @@ where
 
     /// Search a subarray for cells that fall in a given range.
     ///
-    /// Returns a Stream that produces Vecs of coordinate triplets [instant, row, col] of matching
-    /// cells.
+    /// Returns a boxed Stream that produces Vecs of coordinate triplets [instant, row, col] of
+    /// matching cells.
     ///
-    pub fn search<'a>(
-        self: &'a Arc<Self>,
-        bounds: &'a geom::Cube,
+    pub fn search(
+        myself: &Arc<MMArray3<N>>,
+        bounds: geom::Cube,
         lower: N,
         upper: N,
-    ) -> impl Stream<Item = Result<Vec<(usize, usize, usize)>>> + 'a {
+    ) -> Pin<Box<dyn Stream<Item = Result<(usize, usize, usize)>> + Send>> {
+        let myself = Arc::clone(myself);
+        let chunk = match &*myself {
+            MMArray3::Superchunk(chunk) => chunk,
+            _ => {
+                panic!("not a superchunk");
+            }
+        };
         let (lower, upper) = rearrange(lower, upper);
-        self.check_bounds(bounds.end - 1, bounds.bottom - 1, bounds.right - 1);
+        chunk.check_bounds(bounds.end - 1, bounds.bottom - 1, bounds.right - 1);
 
         // Use local min and max to figure out which subchunks have cells in range
-        let lower_fixed = to_fixed(lower, self.fractional_bits, true);
-        let upper_fixed = to_fixed(upper, self.fractional_bits, true);
+        let lower_fixed = to_fixed(lower, chunk.fractional_bits, true);
+        let upper_fixed = to_fixed(upper, chunk.fractional_bits, true);
         let has_cells = |subchunk: &WindowSubchunk| {
-            let stride = self.subsidelen * self.subsidelen;
+            let stride = chunk.subsidelen * chunk.subsidelen;
             let mut index = subchunk.index + bounds.start * stride;
             for _ in bounds.start..bounds.end {
-                let min = self.min.get(index);
-                let max = self.max.get(index);
+                let min = chunk.min.get(index);
+                let max = chunk.max.get(index);
                 if upper_fixed > min && lower_fixed < max {
                     return true;
                 }
@@ -318,67 +326,92 @@ where
             false
         };
 
-        let subchunks = self
+        let subchunks = chunk
             .subchunks_for(&bounds.rect())
             .into_iter()
             .filter(has_cells);
 
         let stream = FuturesUnordered::new();
         for subchunk in subchunks {
+            let me = Arc::clone(&myself);
             let future = async move {
-                let top = subchunk.chunk.top;
-                let left = subchunk.chunk.left;
-                let bounds = geom::Cube::new(
-                    bounds.start,
-                    bounds.end,
-                    subchunk.local.top,
-                    subchunk.local.bottom,
-                    subchunk.local.left,
-                    subchunk.local.right,
-                );
-                let cells = match self.references[subchunk.index] {
-                    Reference::Elided => {
-                        let subiter = SuperSearchIter::new(
-                            &self,
-                            subchunk.index,
-                            lower,
-                            upper,
-                            bounds.start,
-                            bounds.end,
-                            subchunk.local,
-                        );
-
-                        subiter
-                            .map(|(instant, row, col)| (instant, row + top, col + left))
-                            .collect()
-                    }
-                    Reference::Local(index) => {
-                        let chunk = &self.local[index];
-                        chunk
-                            .iter_search(&bounds, lower, upper)
-                            .map(|(instant, row, col)| (instant, row + top, col + left))
-                            .collect()
-                    }
-                    Reference::External(index) => {
-                        let external = self.external().await?;
-                        let cid = &external[index];
-                        let chunk = self.resolver.get_subchunk(&cid).await?;
-                        chunk
-                            .iter_search(&bounds, lower, upper)
-                            .map(|(instant, row, col)| (instant, row + top, col + left))
-                            .collect()
-                    }
-                };
-
-                Ok(cells)
+                match Self::search_subchunk(me, bounds, lower, upper, subchunk).await {
+                    Ok(stream) => stream,
+                    Err(err) => once(ready(Err(err))).boxed(),
+                }
             };
 
             stream.push(future);
         }
 
-        stream
+        stream.flatten_unordered(None).boxed()
     }
 
+    async fn search_subchunk(
+        myself: Arc<MMArray3<N>>,
+        bounds: geom::Cube,
+        lower: N,
+        upper: N,
+        subchunk: WindowSubchunk,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<(usize, usize, usize)>> + Send>>> {
+        let chunk = match &*myself {
+            MMArray3::Superchunk(chunk) => chunk,
+            _ => {
+                panic!("Not a superchunk");
+            }
+        };
+
+        let top = subchunk.chunk.top;
+        let left = subchunk.chunk.left;
+        let bounds = geom::Cube::new(
+            bounds.start,
+            bounds.end,
+            subchunk.local.top,
+            subchunk.local.bottom,
+            subchunk.local.left,
+            subchunk.local.right,
+        );
+        match chunk.references[subchunk.index] {
+            Reference::Elided => {
+                let subiter = SuperSearchIter::new(
+                    chunk,
+                    subchunk.index,
+                    lower,
+                    upper,
+                    bounds.start,
+                    bounds.end,
+                    subchunk.local,
+                );
+                let cells: Vec<Result<(usize, usize, usize)>> = subiter
+                    .map(|(instant, row, col)| Ok((instant, row + top, col + left)))
+                    .collect();
+
+                Ok(stream::iter(cells).boxed())
+            }
+            Reference::Local(index) => {
+                let subchunk = &chunk.local[index];
+                let cells: Vec<Result<(usize, usize, usize)>> = subchunk
+                    .iter_search(&bounds, lower, upper)
+                    .map(|(instant, row, col)| Ok((instant, row + top, col + left)))
+                    .collect();
+
+                Ok(stream::iter(cells).boxed())
+            }
+            Reference::External(index) => {
+                let external = chunk.external().await?;
+                let cid = &external[index];
+                let subchunk = chunk.resolver.get_mmarray3(&cid).await?;
+                let iter = subchunk
+                    .search(bounds, lower, upper)
+                    .map(move |r| {
+                        r.and_then(|(instant, row, col)| Ok((instant, row + top, col + left)))
+                    })
+                    .boxed();
+
+                Ok(iter)
+            }
+        }
+    }
 
     /// Get the subchunks that overlap a given window
     ///
@@ -597,27 +630,27 @@ struct WindowSubchunk {
     pub(crate) slice: geom::Rect,
 }
 
-struct SuperCellIter<N>
+struct SuperCellIter<'a, N>
 where
     N: Float + Debug + Send + Sync + 'static,
 {
-    superchunk: Arc<Superchunk<N>>,
+    superchunk: &'a Superchunk<N>,
     index: usize,
     stride: usize,
     remaining: usize,
 }
 
-impl<N> SuperCellIter<N>
+impl<'a, N> SuperCellIter<'a, N>
 where
     N: Float + Debug + Send + Sync,
 {
-    fn new(superchunk: &Arc<Superchunk<N>>, start: usize, end: usize, chunk_index: usize) -> Self {
+    fn new(superchunk: &'a Superchunk<N>, start: usize, end: usize, chunk_index: usize) -> Self {
         let stride = superchunk.subsidelen * superchunk.subsidelen;
         let index = chunk_index + start * stride;
         let remaining = end - start;
 
         Self {
-            superchunk: Arc::clone(superchunk),
+            superchunk,
             index,
             stride,
             remaining,
@@ -625,7 +658,7 @@ where
     }
 }
 
-impl<N> Iterator for SuperCellIter<N>
+impl<'a, N> Iterator for SuperCellIter<'a, N>
 where
     N: Float + Debug + Send + Sync,
 {
@@ -645,11 +678,11 @@ where
     }
 }
 
-struct SuperSearchIter<N>
+struct SuperSearchIter<'a, N>
 where
     N: Float + Debug + Send + Sync + 'static,
 {
-    chunk: Arc<Superchunk<N>>,
+    chunk: &'a Superchunk<N>,
     index: usize,
     lower: i64,
     upper: i64,
@@ -662,12 +695,12 @@ where
     col: usize,
 }
 
-impl<N> SuperSearchIter<N>
+impl<'a, N> SuperSearchIter<'a, N>
 where
     N: Float + Debug + Send + Sync,
 {
     fn new(
-        chunk: &Arc<Superchunk<N>>,
+        chunk: &'a Superchunk<N>,
         index: usize,
         lower: N,
         upper: N,
@@ -679,7 +712,7 @@ where
         let col = bounds.left;
 
         let mut iter = Self {
-            chunk: chunk.clone(),
+            chunk,
             index,
             lower: to_fixed(lower, chunk.fractional_bits, true),
             upper: to_fixed(upper, chunk.fractional_bits, true),
@@ -722,7 +755,7 @@ where
     }
 }
 
-impl<N> Iterator for SuperSearchIter<N>
+impl<'a, N> Iterator for SuperSearchIter<'a, N>
 where
     N: Float + Debug + Send + Sync,
 {
@@ -800,16 +833,11 @@ impl Cacheable for Reference {
 mod tests {
     use super::*;
 
-    use super::super::testing;
-    use crate::{
-        build::build_superchunk,
-        fixed::Fraction::Precise,
-    };
+    use crate::{build::build_superchunk, fixed::Fraction::Precise, testing};
 
     use std::collections::HashSet;
     use std::iter::zip;
 
-    use futures::{stream, StreamExt};
     use ndarray::Array2;
     use paste::paste;
 
@@ -819,8 +847,7 @@ mod tests {
                 #[tokio::test]
                 async fn [<$name _test_get>]() -> Result<()> {
                     let (data, chunk) = $name().await?;
-                    let chunk = Arc::new(chunk);
-                    let [instants, rows, cols] = chunk.shape;
+                    let [instants, rows, cols] = chunk.shape();
                     for instant in 0..instants {
                         for row in 0..rows {
                             for col in 0..cols {
@@ -836,8 +863,7 @@ mod tests {
                 #[tokio::test]
                 async fn [<$name _test_fill_cell>]() -> Result<()> {
                     let (data, chunk) = $name().await?;
-                    let chunk = Arc::new(chunk);
-                    let [instants, rows, cols] = chunk.shape;
+                    let [instants, rows, cols] = chunk.shape();
                     for row in 0..rows {
                         for col in 0..cols {
                             let start = row + col;
@@ -857,8 +883,7 @@ mod tests {
                 #[should_panic]
                 async fn [<$name _test_fill_cell_time_out_of_bounds>]() {
                     let (_, chunk) = $name().await.expect("this should work");
-                    let chunk = Arc::new(chunk);
-                    let [instants, rows, cols] = chunk.shape;
+                    let [instants, rows, cols] = chunk.shape();
 
                     let values = chunk.get_cell(0, instants + 1, rows, cols).await
                         .expect("This isn't what causes the panic");
@@ -869,8 +894,7 @@ mod tests {
                 #[should_panic]
                 async fn [<$name _test_fill_cell_row_out_of_bounds>]() {
                     let (_, chunk) = $name().await.expect("this should work");
-                    let chunk = Arc::new(chunk);
-                    let [instants, rows, cols] = chunk.shape;
+                    let [instants, rows, cols] = chunk.shape();
 
                     let values = chunk.get_cell(0, instants, rows + 1, cols).await
                         .expect("This isn't what causes the panic");
@@ -881,8 +905,7 @@ mod tests {
                 #[should_panic]
                 async fn [<$name _test_fill_cell_col_out_of_bounds>]() {
                     let (_, chunk) = $name().await.expect("this should work");
-                    let chunk = Arc::new(chunk);
-                    let [instants, rows, cols] = chunk.shape;
+                    let [instants, rows, cols] = chunk.shape();
 
                     let values = chunk.get_cell(0, instants, rows, cols + 1).await
                         .expect("This isn't what causes the panic");
@@ -892,8 +915,7 @@ mod tests {
                 #[tokio::test]
                 async fn [<$name _test_fill_window>]() -> Result<()> {
                     let (data, chunk) = $name().await?;
-                    let chunk = Arc::new(chunk);
-                    let [instants, rows, cols] = chunk.shape;
+                    let [instants, rows, cols] = chunk.shape();
                     for top in 0..rows / 2 {
                         let bottom = top + rows / 2;
                         for left in 0..cols / 2 {
@@ -922,8 +944,7 @@ mod tests {
                 #[should_panic]
                 async fn [<$name _test_fill_window_time_out_of_bounds>]() {
                     let (_, chunk) = $name().await.expect("this should work");
-                    let chunk = Arc::new(chunk);
-                    let [instants, rows, cols] = chunk.shape;
+                    let [instants, rows, cols] = chunk.shape();
                     let bounds = geom::Cube::new(0, instants + 1, 0, rows, 0, cols);
                     chunk.get_window(&bounds).await.expect("Unexpected error.");
                 }
@@ -932,8 +953,7 @@ mod tests {
                 #[should_panic]
                 async fn [<$name _test_fill_window_row_out_of_bounds>]() {
                     let (_, chunk) = $name().await.expect("this should work");
-                    let chunk = Arc::new(chunk);
-                    let [instants, rows, cols] = chunk.shape;
+                    let [instants, rows, cols] = chunk.shape();
                     let bounds = geom::Cube::new(0, instants, 0, rows + 1, 0, cols);
                     chunk.get_window(&bounds).await.expect("Unexpected error.");
                 }
@@ -942,8 +962,7 @@ mod tests {
                 #[should_panic]
                 async fn [<$name _test_fill_window_col_out_of_bounds>]() {
                     let (_, chunk) = $name().await.expect("this should work");
-                    let chunk = Arc::new(chunk);
-                    let [instants, rows, cols] = chunk.shape;
+                    let [instants, rows, cols] = chunk.shape();
                     let bounds = geom::Cube::new(0, instants, 0, rows, 0, cols + 1);
                     chunk.get_window(&bounds).await.expect("Unexpected error.");
                 }
@@ -951,8 +970,8 @@ mod tests {
                 #[tokio::test]
                 async fn [<$name _test_search>]() -> Result<()>{
                     let (data, chunk) = $name().await?;
-                    let chunk = Arc::new(chunk);
-                    let [instants, rows, cols] = chunk.shape;
+                    let chunk = Arc::new(MMArray3::Superchunk(chunk));
+                    let [instants, rows, cols] = chunk.shape();
                     for top in 0..rows / 2 {
                         let bottom = top + rows / 2;
                         for left in 0..cols / 2 {
@@ -979,9 +998,9 @@ mod tests {
                             }
 
                             let bounds = geom::Cube::new(start, end, top, bottom, left, right);
-                            let results: Vec<(usize, usize, usize)> = chunk
-                                .search(&bounds, lower, upper)
-                                .flat_map(|r| stream::iter(r.expect("I/O error")))
+                            let results: Vec<(usize, usize, usize)> = Superchunk::
+                                search(&chunk, bounds, lower, upper)
+                                .map(|r| r.unwrap())
                                 .collect().await;
 
                             let results: HashSet<(usize, usize, usize)> =
@@ -995,12 +1014,11 @@ mod tests {
                     Ok(())
                 }
 
- 
                 #[tokio::test]
                 async fn [<$name _test_search_rearrange>]() -> Result<()>{
                     let (data, chunk) = $name().await?;
-                    let chunk = Arc::new(chunk);
-                    let [instants, rows, cols] = chunk.shape;
+                    let chunk = Arc::new(MMArray3::Superchunk(chunk));
+                    let [instants, rows, cols] = chunk.shape();
                     for top in 0..rows / 2 {
                         let bottom = top + rows / 2;
                         for left in 0..cols / 2 {
@@ -1027,9 +1045,9 @@ mod tests {
                             }
 
                             let bounds = geom::Cube::new(end, start, bottom, top, right, left);
-                            let results: Vec<(usize, usize, usize)> = chunk
-                                .search(&bounds, upper, lower)
-                                .flat_map(|r| stream::iter(r.expect("I/O error")))
+                            let results: Vec<(usize, usize, usize)> = Superchunk::
+                                search(&chunk, bounds, upper, lower)
+                                .map(|r| r.unwrap())
                                 .collect().await;
 
                             let results: HashSet<(usize, usize, usize)> =
@@ -1048,10 +1066,10 @@ mod tests {
                 #[allow(unused_must_use)]
                 async fn [<$name _test_search_time_out_of_bounds>]() {
                     let (_, chunk) = $name().await.expect("this should work");
-                    let chunk = Arc::new(chunk);
-                    let [instants, rows, cols] = chunk.shape;
+                    let [instants, rows, cols] = chunk.shape();
                     let bounds = geom::Cube::new(0, instants + 1, 0, rows, 0, cols);
-                    chunk.search(&bounds, 0.0, 100.0);
+                    let chunk = Arc::new(MMArray3::Superchunk(chunk));
+                    Superchunk::search(&chunk, bounds, 0.0, 100.0);
                 }
 
                 #[tokio::test]
@@ -1059,10 +1077,10 @@ mod tests {
                 #[allow(unused_must_use)]
                 async fn [<$name _test_search_row_out_of_bounds>]() {
                     let (_, chunk) = $name().await.expect("this should work");
-                    let chunk = Arc::new(chunk);
-                    let [instants, rows, cols] = chunk.shape;
+                    let [instants, rows, cols] = chunk.shape();
                     let bounds = geom::Cube::new(0, instants, 0, rows + 1, 0, cols);
-                    chunk.search(&bounds, 0.0, 100.0);
+                    let chunk = Arc::new(MMArray3::Superchunk(chunk));
+                    Superchunk::search(&chunk, bounds, 0.0, 100.0);
                 }
 
                 #[tokio::test]
@@ -1070,10 +1088,10 @@ mod tests {
                 #[allow(unused_must_use)]
                 async fn [<$name _test_search_col_out_of_bounds>]() {
                     let (_, chunk) = $name().await.expect("this should work");
-                    let chunk = Arc::new(chunk);
-                    let [instants, rows, cols] = chunk.shape;
+                    let [instants, rows, cols] = chunk.shape();
                     let bounds = geom::Cube::new(0, instants, 0, rows, 0, cols + 1);
-                    chunk.search(&bounds, 0.0, 100.0);
+                    let chunk = Arc::new(MMArray3::Superchunk(chunk));
+                    Superchunk::search(&chunk, bounds, 0.0, 100.0);
                 }
 
                 #[tokio::test]
@@ -1083,7 +1101,7 @@ mod tests {
                     let cid = resolver.save(chunk).await?;
                     let chunk = resolver.get_superchunk(&cid).await?;
 
-                    let [instants, rows, cols] = chunk.shape;
+                    let [instants, rows, cols] = chunk.shape();
                     for row in 0..rows {
                         for col in 0..cols {
                             let start = row + col;
@@ -1127,7 +1145,7 @@ mod tests {
                     assert_eq!(ls.len(), external.len());
                     for (expected, entry) in zip(external.iter().enumerate(), ls) {
                         let (i, cid) = expected;
-                        let subchunk = resolver.get_subchunk(&cid).await?;
+                        let subchunk = resolver.get_mmarray3(&cid).await?;
                         assert_eq!(entry.name, i.to_string());
                         assert_eq!(entry.cid, cid.clone());
                         assert_eq!(entry.node_type.unwrap(), "Subchunk");
@@ -1174,7 +1192,8 @@ mod tests {
             2,
             Precise(3),
             0,
-        ).await?;
+        )
+        .await?;
         assert_eq!(build.data.references.len(), 64);
         for reference in &build.data.references {
             match reference {
@@ -1197,7 +1216,8 @@ mod tests {
             2,
             Precise(3),
             1 << 14,
-        ).await?;
+        )
+        .await?;
         assert_eq!(build.data.references.len(), 16);
         assert_eq!(build.data.local.len(), 4);
 

@@ -21,10 +21,7 @@ use num_traits::PrimInt;
 use crate::{
     cache::Cacheable,
     errors::Result,
-    extio::{
-        ExtendedAsyncRead, ExtendedAsyncWrite,
-        Serialize,
-    },
+    extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
 };
 
 use super::bitmap::{BitMap, BitMapBuilder};

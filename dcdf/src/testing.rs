@@ -15,19 +15,22 @@ use futures::{
     task::{Context, Poll},
 };
 use multihash::{Hasher, Sha2_256};
-use ndarray::{Array1, arr2, Array2, ArrayView2, Array3};
-use num_traits::{Float, Num};
+use ndarray::{arr2, Array1, Array2, Array3, ArrayView2};
+use num_traits::{Float, Num, PrimInt};
 use parking_lot::Mutex;
 
 use crate::{
+    build::{SubchunkBuild, SubchunkBuilder},
+    codec::{Log, Snapshot},
+    dag::{
+        mapper::{Mapper, StoreWrite},
+        mmarray::MMArray3,
+        resolver::Resolver,
+        superchunk::Superchunk,
+    },
     errors::Result,
+    fixed::Fraction,
     geom,
-};
-
-use super::{
-    mapper::{Mapper, StoreWrite},
-    resolver::Resolver,
-    superchunk::Superchunk,
 };
 
 pub(crate) type AioResult<T> = result::Result<T, AioError>;
@@ -221,6 +224,19 @@ pub(crate) fn array(sidelen: usize) -> Vec<Array2<f32>> {
         .collect()
 }
 
+pub(crate) fn build_subchunk<N, T>(mut instants: T, k: i32, fraction: Fraction) -> SubchunkBuild<N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+    T: Iterator<Item = Array2<N>>,
+{
+    let first = instants.next().expect("No time instants to encode");
+    let mut builder = SubchunkBuilder::new(first, k, fraction);
+    for instant in instants {
+        builder.push(instant);
+    }
+    builder.finish()
+}
+
 impl<N> Superchunk<N>
 where
     N: Float + Debug + Send + Sync + 'static,
@@ -228,7 +244,7 @@ where
     /// Get a cell's value across time instants. Convenience for calling fill_cell in tests.
     ///
     pub(crate) async fn get_cell(
-        self: &Arc<Self>,
+        &self,
         start: usize,
         end: usize,
         row: usize,
@@ -242,10 +258,96 @@ where
 
     /// Get a subarray of this Chunk.
     ///
-    pub(crate) async fn get_window(self: &Arc<Self>, bounds: &geom::Cube) -> Result<Array3<N>> {
+    pub(crate) async fn get_window(&self, bounds: &geom::Cube) -> Result<Array3<N>> {
         let mut window = Array3::zeros([bounds.instants(), bounds.rows(), bounds.cols()]);
-        self.fill_window(bounds.start, bounds.top, bounds.left, &mut window).await?;
+        self.fill_window(bounds.start, bounds.top, bounds.left, &mut window)
+            .await?;
 
         Ok(window)
+    }
+}
+
+impl<N> MMArray3<N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
+    /// Get a cell's value across time instants. Convenience for calling fill_cell in tests.
+    ///
+    pub(crate) async fn get_cell(
+        &self,
+        start: usize,
+        end: usize,
+        row: usize,
+        col: usize,
+    ) -> Result<Array1<N>> {
+        let mut values = Array1::zeros([end - start]);
+        self.fill_cell(start, row, col, &mut values).await?;
+
+        Ok(values)
+    }
+
+    /// Get a subarray of this Chunk.
+    ///
+    pub(crate) async fn get_window(&self, bounds: &geom::Cube) -> Result<Array3<N>> {
+        let mut window = Array3::zeros([bounds.instants(), bounds.rows(), bounds.cols()]);
+        self.fill_window(bounds.start, bounds.top, bounds.left, &mut window)
+            .await?;
+
+        Ok(window)
+    }
+}
+
+impl<I> Snapshot<I>
+where
+    I: PrimInt + Debug + Send + Sync,
+{
+    /// Wrap Snapshot.build with function that creates the `get` closure so that it doesn't have to
+    /// be repeated in every test of Snapshot.
+    pub(crate) fn from_array(data: ArrayView2<I>, k: i32) -> Self {
+        let get = |row, col| data[[row, col]].to_i64().unwrap();
+        let shape = data.shape();
+        let rows = shape[0];
+        let cols = shape[1];
+        Self::build(get, [rows, cols], k)
+    }
+
+    /// Wrap Snapshot.get_window with function that allocates an array and creates the `set`
+    /// enclosure, so it doesn't have to repeated in every test for `get_window`.
+    ///
+    pub(crate) fn get_window(&self, bounds: &geom::Rect) -> Array2<I> {
+        let mut window = Array2::zeros([bounds.rows(), bounds.cols()]);
+        let set = |row, col, value| window[[row, col]] = I::from(value).unwrap();
+
+        self.fill_window(set, bounds);
+
+        window
+    }
+}
+
+impl<I> Log<I>
+where
+    I: PrimInt + Debug + Send + Sync,
+{
+    /// Wrap Log.build with function that creates the `get_s` and `get_t` closures so that they
+    /// don't  have to be repeated in every test of Log.
+    pub(crate) fn from_arrays(snapshot: ArrayView2<I>, log: ArrayView2<I>, k: i32) -> Self {
+        let get_s = |row, col| snapshot[[row, col]].to_i64().unwrap();
+        let get_t = |row, col| log[[row, col]].to_i64().unwrap();
+        let shape = snapshot.shape();
+        let rows = shape[0];
+        let cols = shape[1];
+        Self::build(get_s, get_t, [rows, cols], k)
+    }
+
+    /// Wrap Log.get_window with function that allocates an array and creates the `set`
+    /// enclosure, so it doesn't have to repeated in every test for `get_window`.
+    ///
+    pub(crate) fn get_window(&self, snapshot: &Snapshot<I>, bounds: &geom::Rect) -> Array2<I> {
+        let mut window = Array2::zeros([bounds.rows(), bounds.cols()]);
+        let set = |row, col, value| window[[row, col]] = I::from(value).unwrap();
+
+        self.fill_window(set, snapshot, bounds);
+
+        window
     }
 }
