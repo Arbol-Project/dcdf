@@ -26,7 +26,7 @@ where
     /// Save an object into the DAG
     ///
     async fn save_to(
-        self,
+        &self,
         resolver: &Arc<Resolver<N>>,
         stream: &mut (impl AsyncWrite + Unpin + Send),
     ) -> Result<()>;
@@ -56,7 +56,7 @@ where
     }
 
     async fn save_to(
-        self,
+        &self,
         _resolver: &Arc<Resolver<N>>,
         stream: &mut (impl AsyncWrite + Unpin + Send),
     ) -> Result<()> {

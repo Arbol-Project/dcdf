@@ -8,7 +8,7 @@ use crate::{
     cache::{Cache, Cacheable},
     codec::FChunk,
     errors::Result,
-    extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
+    extio::{ExtendedAsyncRead, ExtendedAsyncWrite},
 };
 
 use super::{
@@ -152,9 +152,12 @@ where
 
     /// Compute the hash for a subchunk.
     ///
-    pub(crate) async fn hash_subchunk(self: &Arc<Resolver<N>>, object: &FChunk<N>) -> Result<Cid> {
+    pub(crate) async fn hash<O>(self: &Arc<Resolver<N>>, object: &O) -> Result<Cid>
+    where
+        O: Node<N>,
+    {
         let mut hasher = self.mapper.hash().await;
-        object.write_to(&mut hasher).await?;
+        object.save_to(self, &mut hasher).await?;
 
         Ok(hasher.finish().await)
     }

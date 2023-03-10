@@ -20,7 +20,7 @@ use num_traits::{Float, Num, PrimInt};
 use parking_lot::Mutex;
 
 use crate::{
-    build::{SubchunkBuild, SubchunkBuilder},
+    build::{MMArray3Build, SubchunkBuilder},
     codec::{Log, Snapshot},
     dag::{
         mapper::{Mapper, StoreWrite},
@@ -224,7 +224,7 @@ pub(crate) fn array(sidelen: usize) -> Vec<Array2<f32>> {
         .collect()
 }
 
-pub(crate) fn build_subchunk<N, T>(mut instants: T, k: i32, fraction: Fraction) -> SubchunkBuild<N>
+pub(crate) fn build_subchunk<N, T>(mut instants: T, k: i32, fraction: Fraction) -> MMArray3Build<N>
 where
     N: Float + Debug + Send + Sync + 'static,
     T: Iterator<Item = Array2<N>>,
@@ -234,7 +234,7 @@ where
     for instant in instants {
         builder.push(instant);
     }
-    builder.finish()
+    builder.finish().unwrap()
 }
 
 impl<N> Superchunk<N>

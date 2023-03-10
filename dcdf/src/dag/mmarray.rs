@@ -143,7 +143,7 @@ where
     /// Save an object into the DAG
     ///
     async fn save_to(
-        self,
+        &self,
         resolver: &Arc<Resolver<N>>,
         stream: &mut (impl AsyncWrite + Unpin + Send),
     ) -> Result<()> {
@@ -500,7 +500,7 @@ mod tests {
         let resolver = testing::resolver();
         let build = testing::build_subchunk(data.clone().into_iter(), 2, Precise(3));
 
-        Ok((resolver, data, MMArray3::Subchunk(build.data)))
+        Ok((resolver, data, build.data))
     }
 
     test_all_the_things!(subchunk);
@@ -511,14 +511,14 @@ mod tests {
         let build = build_superchunk(
             data.clone().into_iter(),
             Arc::clone(&resolver),
-            2,
+            &[2, 3],
             2,
             Precise(3),
             8000,
         )
         .await?;
 
-        Ok((resolver, data, MMArray3::Superchunk(build.data)))
+        Ok((resolver, data, build.data))
     }
 
     test_all_the_things!(superchunk);

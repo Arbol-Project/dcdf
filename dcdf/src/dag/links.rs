@@ -71,7 +71,7 @@ where
     }
 
     async fn save_to(
-        self,
+        &self,
         _resolver: &Arc<Resolver<N>>,
         stream: &mut (impl AsyncWrite + Unpin + Send),
     ) -> Result<()> {
