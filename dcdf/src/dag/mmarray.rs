@@ -19,8 +19,9 @@ use crate::{
 };
 
 use super::{
-    node::{Node, NODE_MMARRAY3, NODE_SUBCHUNK, NODE_SUPERCHUNK},
+    node::{Node, NODE_MMARRAY3, NODE_SPAN, NODE_SUBCHUNK, NODE_SUPERCHUNK},
     resolver::Resolver,
+    span::Span,
     superchunk::Superchunk,
 };
 
@@ -28,6 +29,7 @@ pub enum MMArray3<N>
 where
     N: Float + Debug + Send + Sync + 'static,
 {
+    Span(Span<N>),
     Subchunk(FChunk<N>),
     Superchunk(Superchunk<N>),
 }
@@ -40,6 +42,7 @@ where
     ///
     pub fn shape(&self) -> [usize; 3] {
         match self {
+            MMArray3::Span(span) => span.shape(),
             MMArray3::Subchunk(chunk) => chunk.shape(),
             MMArray3::Superchunk(chunk) => chunk.shape(),
         }
@@ -50,6 +53,7 @@ where
     #[async_recursion]
     pub async fn get(&self, instant: usize, row: usize, col: usize) -> Result<N> {
         match self {
+            MMArray3::Span(chunk) => chunk.get(instant, row, col).await,
             MMArray3::Subchunk(chunk) => Ok(chunk.get(instant, row, col)),
             MMArray3::Superchunk(chunk) => chunk.get(instant, row, col).await,
         }
@@ -70,6 +74,7 @@ where
     {
         let mut values = unsafe { values.raw_view_mut().deref_into_view_mut() };
         match self {
+            MMArray3::Span(chunk) => chunk.fill_cell(start, row, col, &mut values).await,
             MMArray3::Subchunk(chunk) => Ok(chunk.fill_cell(start, row, col, &mut values)),
             MMArray3::Superchunk(chunk) => chunk.fill_cell(start, row, col, &mut values).await,
         }
@@ -90,6 +95,7 @@ where
     {
         let mut window = unsafe { window.raw_view_mut().deref_into_view_mut() };
         match self {
+            MMArray3::Span(chunk) => chunk.fill_window(start, top, left, &mut window).await,
             MMArray3::Subchunk(chunk) => Ok(chunk.fill_window(start, top, left, &mut window)),
             MMArray3::Superchunk(chunk) => chunk.fill_window(start, top, left, &mut window).await,
         }
@@ -107,6 +113,7 @@ where
         upper: N,
     ) -> Pin<Box<dyn Stream<Item = Result<(usize, usize, usize)>> + Send>> {
         match &**self {
+            MMArray3::Span(chunk) => chunk.search(bounds, lower, upper),
             MMArray3::Subchunk(chunk) => stream::iter(
                 chunk
                     .iter_search(&bounds, lower, upper)
@@ -125,6 +132,7 @@ where
 {
     fn size(&self) -> u64 {
         let size = match self {
+            MMArray3::Span(chunk) => chunk.size(),
             MMArray3::Subchunk(chunk) => chunk.size(),
             MMArray3::Superchunk(chunk) => chunk.size(),
         };
@@ -148,6 +156,10 @@ where
         stream: &mut (impl AsyncWrite + Unpin + Send),
     ) -> Result<()> {
         match self {
+            MMArray3::Span(chunk) => {
+                stream.write_byte(NODE_SPAN).await?;
+                chunk.save_to(resolver, stream).await?;
+            }
             MMArray3::Subchunk(chunk) => {
                 stream.write_byte(NODE_SUBCHUNK).await?;
                 chunk.write_to(stream).await?;
@@ -168,6 +180,7 @@ where
     ) -> Result<Self> {
         let node_type = stream.read_byte().await?;
         let chunk = match node_type {
+            NODE_SPAN => Self::Span(Span::load_from(resolver, stream).await?),
             NODE_SUBCHUNK => Self::Subchunk(FChunk::read_from(stream).await?),
             NODE_SUPERCHUNK => Self::Superchunk(Superchunk::load_from(resolver, stream).await?),
             _ => {
@@ -181,6 +194,7 @@ where
     /// List other nodes contained by this node
     fn ls(&self) -> Vec<(String, Cid)> {
         match self {
+            Self::Span(chunk) => chunk.ls(),
             Self::Subchunk(chunk) => chunk.ls(),
             Self::Superchunk(chunk) => chunk.ls(),
         }
@@ -478,6 +492,7 @@ mod tests {
                     let (_, _, chunk) = $name().await?;
                     let ls = chunk.ls();
                     match chunk {
+                        MMArray3::Span(_) => { unimplemented!(); },
                         MMArray3::Subchunk(_) => {
                             assert_eq!(ls.len(), 0);
                         }

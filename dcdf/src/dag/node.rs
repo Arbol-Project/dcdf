@@ -13,6 +13,7 @@ pub(crate) const NODE_LINKS: u8 = 5;
 pub(crate) const NODE_MMARRAY3: u8 = 0;
 pub(crate) const NODE_SUBCHUNK: u8 = 1;
 pub(crate) const NODE_SUPERCHUNK: u8 = 2;
+pub(crate) const NODE_SPAN: u8 = 3;
 
 /// A DAG node.
 ///
