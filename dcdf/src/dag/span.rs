@@ -71,6 +71,14 @@ where
             );
         }
 
+        // Make sure subspan fits into one slot
+        if span_shape[0] > self.stride {
+            panic!(
+                "Attempt to add subspan with length ({}) greater than stride ({})",
+                span_shape[0], self.stride
+            )
+        }
+
         let shape = [self.shape[0] + span_shape[0], span_shape[1], span_shape[2]];
         let mut spans = self.spans;
         spans.push(self.resolver.save(span).await?);
@@ -457,7 +465,7 @@ mod tests {
                         let bottom = top + rows / 2;
                         for left in 0..cols / 2 {
                             let right = left + cols / 2;
-                            let start = top * 33;
+                            let start = top * 30;
                             let end = instants - start;
                             let bounds = geom::Cube::new(start, end, top, bottom, left, right);
                             let window = chunk.get_window(&bounds).await?;
@@ -513,7 +521,7 @@ mod tests {
                         let bottom = top + rows / 2;
                         for left in 0..cols / 2 {
                             let right = left + cols / 2;
-                            let start = top * 33;
+                            let start = top * 30;
                             let end = instants - start;
                             let lower = (start / 5) as f32;
                             let upper = (end / 10) as f32;
@@ -621,9 +629,13 @@ mod tests {
     }
 
     async fn superchunk(resolver: &Arc<Resolver<f32>>, length: usize) -> SuperchunkResult {
-        let data = testing::array(16);
+        let data = testing::array(16)
+            .into_iter()
+            .cycle()
+            .take(length)
+            .collect::<Vec<Array2<f32>>>();
         let build = build_superchunk(
-            data.clone().into_iter().take(length),
+            data.clone().into_iter(),
             Arc::clone(&resolver),
             &[2, 2],
             2,
@@ -673,4 +685,82 @@ mod tests {
     }
 
     test_all_the_things!(span_of_5);
+
+    async fn span_of_four_and_a_half() -> DataArray {
+        let resolver = testing::resolver();
+        let span = new(&resolver)?;
+        let (mut alldata, chunk) = superchunk(&resolver, 100).await?;
+        let mut span = span.append(chunk).await?;
+        for length in [100, 100, 100, 50] {
+            let (mut data, chunk) = superchunk(&resolver, length).await?;
+            span = span.append(chunk).await?;
+            alldata.append(&mut data);
+        }
+
+        assert_eq!(span.shape(), [450, 16, 16]);
+
+        Ok((resolver, alldata, MMArray3::Span(span)))
+    }
+
+    test_all_the_things!(span_of_four_and_a_half);
+
+    #[tokio::test]
+    #[should_panic]
+    async fn test_append_to_partially_filled_span() {
+        let resolver = testing::resolver();
+        let span = new(&resolver).unwrap();
+        let (_, chunk) = superchunk(&resolver, 10).await.unwrap();
+        let span = span.append(chunk).await.unwrap();
+
+        let (_, chunk) = superchunk(&resolver, 10).await.unwrap();
+        span.append(chunk).await.unwrap(); // Previous span isn't full
+    }
+
+    #[tokio::test]
+    #[should_panic]
+    async fn test_append_mismatched_shape() {
+        let resolver = testing::resolver();
+        let span = new(&resolver).unwrap();
+        let data = testing::array(15);
+        let build = build_superchunk(
+            data.clone().into_iter(),
+            Arc::clone(&resolver),
+            &[2, 2],
+            2,
+            Precise(3),
+            8000,
+        )
+        .await
+        .unwrap();
+
+        span.append(build.data).await.unwrap(); // Wrong shape
+    }
+
+    #[tokio::test]
+    #[should_panic]
+    async fn test_append_overly_large_chunk() {
+        let resolver = testing::resolver();
+        let span = new(&resolver).unwrap();
+        let (_, chunk) = superchunk(&resolver, 101).await.unwrap();
+        span.append(chunk).await.unwrap(); // too big
+    }
+
+    async fn nested_spans() -> DataArray {
+        let resolver = testing::resolver();
+        let mut data: Vec<Array2<f32>> = vec![];
+        let mut span = Span::new([16, 16], 100, Arc::clone(&resolver));
+        for _ in 0..10 {
+            let mut subspan = Span::new([16, 16], 10, Arc::clone(&resolver));
+            for _ in 0..10 {
+                let (mut subdata, chunk) = superchunk(&resolver, 10).await?;
+                data.append(&mut subdata);
+                subspan = subspan.append(chunk).await?;
+            }
+            span = span.append(MMArray3::Span(subspan)).await?;
+        }
+
+        Ok((resolver, data, MMArray3::Span(span)))
+    }
+
+    test_all_the_things!(nested_spans);
 }
