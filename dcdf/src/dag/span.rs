@@ -93,6 +93,22 @@ where
         })
     }
 
+    // Replace the last subspan with new data
+    //
+    pub async fn update(self, span: MMArray3<N>) -> Result<Self> {
+        let mut spans = self.spans;
+        spans.pop();
+
+        let tmp = Self {
+            shape: [spans.len() * self.stride, self.shape[1], self.shape[2]],
+            stride: self.stride,
+            spans,
+            resolver: self.resolver,
+        };
+
+        tmp.append(span).await
+    }
+
     /// Get the shape of the overall time series raster
     ///
     pub fn shape(&self) -> [usize; 3] {
@@ -763,4 +779,29 @@ mod tests {
     }
 
     test_all_the_things!(nested_spans);
+
+    async fn update() -> DataArray {
+        let resolver = testing::resolver();
+        let span = new(&resolver)?;
+        let (mut alldata, chunk) = superchunk(&resolver, 100).await?;
+        let mut span = span.append(chunk).await?;
+        for _ in 0..3 {
+            let (mut data, chunk) = superchunk(&resolver, 100).await?;
+            span = span.append(chunk).await?;
+            alldata.append(&mut data);
+        }
+
+        let (_, chunk) = superchunk(&resolver, 50).await?;
+        span = span.append(chunk).await?;
+
+        let (mut data, chunk) = superchunk(&resolver, 75).await?;
+        span = span.update(chunk).await?;
+        alldata.append(&mut data);
+
+        assert_eq!(span.shape(), [475, 16, 16]);
+
+        Ok((resolver, alldata, MMArray3::Span(span)))
+    }
+
+    test_all_the_things!(update);
 }
