@@ -9,8 +9,10 @@ use crate::{codec::FChunk, errors::Result, extio::Serialize};
 
 use super::resolver::Resolver;
 
-pub(crate) const NODE_LINKS: u8 = 5;
+pub(crate) const NODE_LINKS: u8 = 4;
+pub(crate) const NODE_MMARRAY1: u8 = 6;
 pub(crate) const NODE_MMARRAY3: u8 = 0;
+pub(crate) const NODE_RANGE: u8 = 5;
 pub(crate) const NODE_SUBCHUNK: u8 = 1;
 pub(crate) const NODE_SUPERCHUNK: u8 = 2;
 pub(crate) const NODE_SPAN: u8 = 3;

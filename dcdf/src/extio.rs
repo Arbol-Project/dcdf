@@ -32,8 +32,14 @@ pub(crate) trait ExtendedAsyncRead: aio::AsyncRead {
     /// Read a Big Endian encoded 32 bit signed integer from a stream
     async fn read_i32(&mut self) -> io::Result<i32>;
 
-    /// Read a Big Endian encoded 32 bit integer from a stream
+    /// Read a Big Endian encoded 32 bit unsigned integer from a stream
     async fn read_u32(&mut self) -> io::Result<u32>;
+
+    /// Read a Big Endian encoded 32 bit float from a stream
+    async fn read_f32(&mut self) -> io::Result<f32>;
+
+    /// Read a Big Endian encoded 64 bit float from a stream
+    async fn read_f64(&mut self) -> io::Result<f64>;
 
     /// Read a CID from a stream
     async fn read_cid(&mut self) -> Result<Cid>;
@@ -71,6 +77,22 @@ impl<R: aio::AsyncRead + Unpin + Send> ExtendedAsyncRead for R {
         self.read_exact(&mut buffer).await?;
 
         Ok(u32::from_be_bytes(buffer))
+    }
+
+    /// Read a Big Endian encoded 32 bit float from a stream
+    async fn read_f32(&mut self) -> io::Result<f32> {
+        let mut buffer = [0; 4];
+        self.read_exact(&mut buffer).await?;
+
+        Ok(f32::from_be_bytes(buffer))
+    }
+
+    /// Read a Big Endian encoded 64 bit float from a stream
+    async fn read_f64(&mut self) -> io::Result<f64> {
+        let mut buffer = [0; 8];
+        self.read_exact(&mut buffer).await?;
+
+        Ok(f64::from_be_bytes(buffer))
     }
 
     /// Read a CID from a stream
@@ -129,6 +151,12 @@ pub(crate) trait ExtendedAsyncWrite: aio::AsyncWrite {
     /// Write a Big Endian encoded 32 bit unsigned integer to a stream
     async fn write_u32(&mut self, word: u32) -> io::Result<()>;
 
+    /// Write a Big Endian encoded 32 bit float to a stream
+    async fn write_f32(&mut self, word: f32) -> io::Result<()>;
+
+    /// Write a Big Endian encoded 64 bit float to a stream
+    async fn write_f64(&mut self, word: f64) -> io::Result<()>;
+
     /// Write a Cid to a stream
     async fn write_cid(&mut self, cid: &Cid) -> Result<()>;
 }
@@ -167,6 +195,22 @@ impl<W: aio::AsyncWrite + Unpin + Send> ExtendedAsyncWrite for W {
         Ok(())
     }
 
+    /// Write a Big Endian encoded 32 bit float to a stream
+    async fn write_f32(&mut self, word: f32) -> io::Result<()> {
+        let buffer = word.to_be_bytes();
+        self.write_all(&buffer).await?;
+
+        Ok(())
+    }
+
+    /// Write a Big Endian encoded 64 bit float to a stream
+    async fn write_f64(&mut self, word: f64) -> io::Result<()> {
+        let buffer = word.to_be_bytes();
+        self.write_all(&buffer).await?;
+
+        Ok(())
+    }
+
     /// Write a Cid to a stream
     async fn write_cid(&mut self, cid: &Cid) -> Result<()> {
         let buffer = cid.to_bytes();
@@ -188,12 +232,16 @@ mod tests {
         buffer.write_u16(41968).await?;
         buffer.write_u32(31441968).await?;
         buffer.write_i32(-31441968).await?;
+        buffer.write_f32(3.141592).await?;
+        buffer.write_f64(6.283184).await?;
 
         let mut buffer = Cursor::new(buffer);
         assert_eq!(buffer.read_byte().await?, 42);
         assert_eq!(buffer.read_u16().await?, 41968);
         assert_eq!(buffer.read_u32().await?, 31441968);
         assert_eq!(buffer.read_i32().await?, -31441968);
+        assert_eq!(buffer.read_f32().await?, 3.141592);
+        assert_eq!(buffer.read_f64().await?, 6.283184);
 
         Ok(())
     }

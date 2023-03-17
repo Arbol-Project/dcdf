@@ -14,7 +14,7 @@ use crate::{
 use super::{
     links::Links,
     mapper::Mapper,
-    mmarray::MMArray3,
+    mmarray::{MMArray1, MMArray3},
     node::{self, Node},
     superchunk::Superchunk,
 };
@@ -44,6 +44,7 @@ where
     N: Float + Debug + Send + Sync + 'static,
 {
     Links(Arc<Links>),
+    MMArray1(Arc<MMArray1<N>>),
     MMArray3(Arc<MMArray3<N>>),
     Subchunk(Arc<FChunk<N>>),
     Superchunk(Arc<Superchunk<N>>),
@@ -58,6 +59,7 @@ where
             CacheItem::Links(links) => <Links as Node<N>>::ls(links),
             CacheItem::Subchunk(chunk) => chunk.ls(),
             CacheItem::Superchunk(chunk) => chunk.ls(),
+            CacheItem::MMArray1(chunk) => chunk.ls(),
             CacheItem::MMArray3(chunk) => chunk.ls(),
         }
     }
@@ -72,6 +74,7 @@ where
             CacheItem::Links(links) => links.size(),
             CacheItem::Subchunk(chunk) => chunk.size(),
             CacheItem::Superchunk(chunk) => chunk.size(),
+            CacheItem::MMArray1(chunk) => chunk.size(),
             CacheItem::MMArray3(chunk) => chunk.size(),
         }
     }
@@ -116,11 +119,25 @@ where
         }
     }
 
+    /// Get an `MMArray1` from the data store.
+    ///
+    /// # Arguments
+    ///
+    /// * `cid` - The CID of the array to retreive.
+    ///
+    pub async fn get_mmarray1(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<MMArray1<N>>> {
+        let item = self.check_cache(cid).await?;
+        match &*item {
+            CacheItem::MMArray1(chunk) => Ok(Arc::clone(&chunk)),
+            _ => panic!("Expecting 1 dimensional MM array."),
+        }
+    }
+
     /// Get an `MMArray3` from the data store.
     ///
     /// # Arguments
     ///
-    /// * `cid` - The CID of the superchunk to retreive.
+    /// * `cid` - The CID of the array to retreive.
     ///
     pub async fn get_mmarray3(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<MMArray3<N>>> {
         let item = self.check_cache(cid).await?;
@@ -196,6 +213,9 @@ where
                     node::NODE_SUPERCHUNK => CacheItem::Superchunk(Arc::new(
                         Superchunk::load_from(self, &mut stream).await?,
                     )),
+                    node::NODE_MMARRAY1 => {
+                        CacheItem::MMArray1(Arc::new(MMArray1::load_from(self, &mut stream).await?))
+                    }
                     node::NODE_MMARRAY3 => {
                         CacheItem::MMArray3(Arc::new(MMArray3::load_from(self, &mut stream).await?))
                     }

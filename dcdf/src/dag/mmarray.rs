@@ -7,7 +7,7 @@ use futures::{
     stream::{self, Stream, StreamExt},
     AsyncRead, AsyncWrite,
 };
-use ndarray::{ArrayBase, DataMut, Ix1, Ix3};
+use ndarray::{Array1, ArrayBase, DataMut, Ix1, Ix3};
 use num_traits::Float;
 
 use crate::{
@@ -19,7 +19,10 @@ use crate::{
 };
 
 use super::{
-    node::{Node, NODE_MMARRAY3, NODE_SPAN, NODE_SUBCHUNK, NODE_SUPERCHUNK},
+    node::{
+        Node, NODE_MMARRAY1, NODE_MMARRAY3, NODE_RANGE, NODE_SPAN, NODE_SUBCHUNK, NODE_SUPERCHUNK,
+    },
+    range::Range,
     resolver::Resolver,
     span::Span,
     superchunk::Superchunk,
@@ -101,7 +104,7 @@ where
         }
     }
 
-    /// Search a subarray for cells that fall in a given range.
+    /// Search a subarray for cells that fall in a given mmarray.
     ///
     /// Returns a boxed Stream that produces Vecs of coordinate triplets [instant, row, col] of
     /// matching cells.
@@ -201,6 +204,102 @@ where
     }
 }
 
+pub enum MMArray1<N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
+    Range(Range<N>),
+}
+
+impl<N> MMArray1<N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
+    pub fn get(&self, index: usize) -> N {
+        match self {
+            MMArray1::Range(mmarray) => mmarray.get(index),
+        }
+    }
+    pub fn slice(&self, start: usize, stop: usize) -> Array1<N> {
+        match self {
+            MMArray1::Range(mmarray) => mmarray.slice(start, stop),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            MMArray1::Range(mmarray) => mmarray.len(),
+        }
+    }
+
+    pub fn shape(&self) -> [usize; 1] {
+        match self {
+            MMArray1::Range(mmarray) => mmarray.shape(),
+        }
+    }
+}
+
+impl<N> Cacheable for MMArray1<N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
+    fn size(&self) -> u64 {
+        let size = match self {
+            Self::Range(range) => range.size(),
+        };
+
+        size + 1
+    }
+}
+
+#[async_trait]
+impl<N> Node<N> for MMArray1<N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
+    const NODE_TYPE: u8 = NODE_MMARRAY1;
+
+    /// Save an object into the DAG
+    ///
+    async fn save_to(
+        &self,
+        resolver: &Arc<Resolver<N>>,
+        stream: &mut (impl AsyncWrite + Unpin + Send),
+    ) -> Result<()> {
+        match self {
+            Self::Range(range) => {
+                stream.write_byte(NODE_RANGE).await?;
+                range.save_to(resolver, stream).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Load an object from a stream
+    async fn load_from(
+        resolver: &Arc<Resolver<N>>,
+        stream: &mut (impl AsyncRead + Unpin + Send),
+    ) -> Result<Self> {
+        let node_type = stream.read_byte().await?;
+        let chunk = match node_type {
+            NODE_RANGE => Self::Range(Range::load_from(resolver, stream).await?),
+            _ => {
+                panic!("Unkonwn MMArray1 type: {node_type}");
+            }
+        };
+
+        Ok(chunk)
+    }
+
+    /// List other nodes contained by this node
+    fn ls(&self) -> Vec<(String, Cid)> {
+        match self {
+            Self::Range(range) => range.ls(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,10 +310,10 @@ mod tests {
     use std::collections::HashSet;
 
     use futures::StreamExt;
-    use ndarray::{s, Array2};
+    use ndarray::{array, s, Array2};
     use paste::paste;
 
-    macro_rules! test_all_the_things {
+    macro_rules! mmarray3_tests {
         ($name:ident) => {
             paste! {
                 #[tokio::test]
@@ -508,9 +607,9 @@ mod tests {
         };
     }
 
-    type DataArray = Result<(Arc<Resolver<f32>>, Vec<Array2<f32>>, MMArray3<f32>)>;
+    type DataArray3 = Result<(Arc<Resolver<f32>>, Vec<Array2<f32>>, MMArray3<f32>)>;
 
-    async fn subchunk() -> DataArray {
+    async fn subchunk() -> DataArray3 {
         let data = testing::array8();
         let resolver = testing::resolver();
         let build = testing::build_subchunk(data.clone().into_iter(), 2, Precise(3));
@@ -518,9 +617,9 @@ mod tests {
         Ok((resolver, data, build.data))
     }
 
-    test_all_the_things!(subchunk);
+    mmarray3_tests!(subchunk);
 
-    async fn superchunk() -> DataArray {
+    async fn superchunk() -> DataArray3 {
         let data = testing::array(17);
         let resolver = testing::resolver();
         let build = build_superchunk(
@@ -536,5 +635,85 @@ mod tests {
         Ok((resolver, data, build.data))
     }
 
-    test_all_the_things!(superchunk);
+    mmarray3_tests!(superchunk);
+
+    macro_rules! mmarray1_tests {
+        ($name:ident) => {
+            paste! {
+                #[tokio::test]
+                async fn [<$name _test_get>]() -> Result<()> {
+                    let (_resolver, data, mmarray) = $name().await?;
+                    for i in 0..mmarray.len() {
+                        assert_eq!(mmarray.get(i), data[i]);
+                    }
+
+                    Ok(())
+                }
+
+                #[tokio::test]
+                #[should_panic]
+                async fn [<$name _test_get_out_bounds>]() {
+                    let (_resolver, _data, mmarray) = $name().await.unwrap();
+                    assert_eq!(mmarray.get(mmarray.len()), 130.0); // Out of bounds
+                }
+
+                #[tokio::test]
+                async fn [<$name _test_slice>]() -> Result<()> {
+                    let (_resolver, data, mmarray) = $name().await?;
+                    for i in 0..mmarray.len() / 2 {
+                        let (start, end) = (i, mmarray.len() - i);
+                        assert_eq!(mmarray.slice(start, end), data.slice(s![start..end]));
+                    }
+
+                    Ok(())
+                }
+
+                #[tokio::test]
+                #[should_panic]
+                async fn [<$name _test_slice_out_of_bounds>]() {
+                    let (_resolver, _data, mmarray) = $name().await.unwrap();
+                    let start = mmarray.len() - 1;
+                    let end = start + 2;
+                    assert_eq!(mmarray.slice(start, end), array![125.0, 130.0]);
+                }
+
+                #[tokio::test]
+                async fn [<$name _test_save_load>]() -> Result<()> {
+                    let (resolver, data, mmarray) = $name().await?;
+                    let cid = resolver.save(mmarray).await?;
+                    let mmarray = resolver.get_mmarray1(&cid).await?;
+
+                    for i in 0..mmarray.len() {
+                        assert_eq!(mmarray.get(i), data[i]);
+                    }
+
+                    Ok(())
+                }
+
+                #[tokio::test]
+                async fn [<$name _test_ls>]() -> Result<()> {
+                    let (_, _, mmarray) = $name().await?;
+                    assert_eq!(mmarray.ls(), vec![]);
+
+                    Ok(())
+                }
+            }
+        };
+    }
+
+    type DataArray1 = Result<(Arc<Resolver<f32>>, Array1<f32>, MMArray1<f32>)>;
+
+    async fn range() -> DataArray1 {
+        let resolver = testing::resolver();
+        let data = Array1::range(-20.0, 130.0, 5.0);
+        let range = MMArray1::Range(Range::new(-20.0, 5.0, 30));
+
+        assert_eq!(range.len(), 30);
+        assert_eq!(range.shape(), [30]);
+        assert_eq!(range.shape(), range.slice(0, 30).shape());
+
+        Ok((resolver, data, range))
+    }
+
+    mmarray1_tests!(range);
 }
