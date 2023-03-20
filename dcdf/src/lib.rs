@@ -22,6 +22,7 @@ pub use dag::resolver::LsEntry;
 pub use dag::resolver::Resolver;
 pub use dag::span::Span;
 pub use dag::superchunk::Superchunk;
+pub use dag::time::TimeRange;
 
 pub use errors::Error;
 pub use errors::Result;
