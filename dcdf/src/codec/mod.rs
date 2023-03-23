@@ -23,15 +23,9 @@
 //! [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
 //! [2]: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.69.9548&rep=rep1&type=pdf
 
-mod bitmap;
-mod block;
-mod chunk;
-mod dac;
-mod log;
-mod snapshot;
-
-pub(crate) use block::Block;
-pub(crate) use chunk::{Chunk, FChunk};
-pub(crate) use dac::Dac;
-pub(crate) use log::Log;
-pub(crate) use snapshot::Snapshot;
+pub mod bitmap;
+pub mod block;
+pub mod chunk;
+pub mod dac;
+pub mod log;
+pub mod snapshot;

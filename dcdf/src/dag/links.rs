@@ -1,5 +1,4 @@
 use std::{
-    fmt::Debug,
     io,
     ops::{Deref, DerefMut},
     sync::Arc,
@@ -8,7 +7,6 @@ use std::{
 use async_trait::async_trait;
 use cid::Cid;
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite};
-use num_traits::Float;
 
 use crate::{
     cache::Cacheable,
@@ -44,15 +42,12 @@ impl DerefMut for Links {
 }
 
 #[async_trait]
-impl<N> Node<N> for Links
-where
-    N: Float + Debug + Send + Sync + 'static, // # SMELL N is not used
-{
+impl Node for Links {
     const NODE_TYPE: u8 = NODE_LINKS;
 
     /// Load an object from a stream
     async fn load_from(
-        _resolver: &Arc<Resolver<N>>,
+        _resolver: &Arc<Resolver>,
         stream: &mut (impl AsyncRead + Unpin + Send),
     ) -> Result<Self> {
         let n = stream.read_u32().await? as usize;
@@ -72,7 +67,7 @@ where
 
     async fn save_to(
         &self,
-        _resolver: &Arc<Resolver<N>>,
+        _resolver: &Arc<Resolver>,
         stream: &mut (impl AsyncWrite + Unpin + Send),
     ) -> Result<()> {
         stream.write_u32(self.0.len() as u32).await?;
@@ -96,9 +91,7 @@ where
 
 impl Cacheable for Links {
     fn size(&self) -> u64 {
-        Resolver::<f32>::HEADER_SIZE
-            + 4
-            + self.0.iter().map(|l| l.encoded_len()).sum::<usize>() as u64
+        Resolver::HEADER_SIZE + 4 + self.0.iter().map(|l| l.encoded_len()).sum::<usize>() as u64
     }
 }
 
@@ -119,7 +112,7 @@ mod tests {
 
     #[tokio::test]
     async fn load_save() -> Result<()> {
-        let resolver: Arc<Resolver<f32>> = testing::resolver();
+        let resolver: Arc<Resolver> = testing::resolver();
         let links = make_one();
         let expected = links.0.clone();
 
@@ -133,7 +126,7 @@ mod tests {
     #[test]
     fn ls() {
         let links = make_one();
-        let ls = <Links as Node<f32>>::ls(&links);
+        let ls = links.ls();
         assert_eq!(ls[0], (String::from("0"), testing::cid_for("zero")));
         assert_eq!(ls[1], (String::from("1"), testing::cid_for("one")));
         assert_eq!(ls[2], (String::from("2"), testing::cid_for("two")));

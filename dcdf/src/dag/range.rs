@@ -78,32 +78,18 @@ where
 }
 
 #[async_trait]
-impl<N> Node<N> for Range<N>
-where
-    N: Float + Debug + Send + Sync + 'static,
-{
+impl Node for Range<f32> {
     const NODE_TYPE: u8 = NODE_MMARRAY1;
 
     /// Save an object into the DAG
     ///
     async fn save_to(
         &self,
-        _resolver: &Arc<Resolver<N>>,
+        _resolver: &Arc<Resolver>,
         stream: &mut (impl AsyncWrite + Unpin + Send),
     ) -> Result<()> {
-        match size_of::<N>() {
-            4 => {
-                stream.write_f32(cast(self.start).unwrap()).await?;
-                stream.write_f32(cast(self.step).unwrap()).await?;
-            }
-            8 => {
-                stream.write_f64(cast(self.start).unwrap()).await?;
-                stream.write_f64(cast(self.step).unwrap()).await?;
-            }
-            _ => {
-                panic!("floats should have 4 or 8 bytes");
-            }
-        }
+        stream.write_f32(cast(self.start).unwrap()).await?;
+        stream.write_f32(cast(self.step).unwrap()).await?;
         stream.write_u32(self.steps as u32).await?;
 
         Ok(())
@@ -111,22 +97,11 @@ where
 
     /// Load an object from a stream
     async fn load_from(
-        _resolver: &Arc<Resolver<N>>,
+        _resolver: &Arc<Resolver>,
         stream: &mut (impl AsyncRead + Unpin + Send),
     ) -> Result<Self> {
-        let (start, step) = match size_of::<N>() {
-            4 => (
-                N::from(stream.read_f32().await?).unwrap(),
-                N::from(stream.read_f32().await?).unwrap(),
-            ),
-            8 => (
-                N::from(stream.read_f64().await?).unwrap(),
-                N::from(stream.read_f64().await?).unwrap(),
-            ),
-            _ => {
-                panic!("floats should have 4 or 8 bytes");
-            }
-        };
+        let start = stream.read_f32().await?;
+        let step = stream.read_f32().await?;
         let steps = stream.read_u32().await? as usize;
 
         Ok(Self { start, step, steps })

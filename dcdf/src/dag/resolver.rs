@@ -1,29 +1,23 @@
-use std::{any::TypeId, fmt::Debug, io, sync::Arc};
+use std::{io, sync::Arc};
 
 use cid::Cid;
 use futures::{io::AsyncRead, FutureExt};
-use num_traits::Float;
 
 use crate::{
     cache::{Cache, Cacheable},
-    codec::FChunk,
-    errors::Result,
+    errors::{Error, Result},
     extio::{ExtendedAsyncRead, ExtendedAsyncWrite},
 };
 
 use super::{
     links::Links,
     mapper::Mapper,
-    mmarray::{MMArray1, MMArray3},
+    mmstruct::MMStruct3,
     node::{self, Node},
-    superchunk::Superchunk,
 };
 
 const MAGIC_NUMBER: u16 = 0xDCDF + 1;
 const FORMAT_VERSION: u32 = 0;
-
-const TYPE_F32: u8 = 32;
-const TYPE_F64: u8 = 64;
 
 /// The `Resolver` manages storage and retrieval of objects from an IPLD datastore
 ///
@@ -31,60 +25,36 @@ const TYPE_F64: u8 = 64;
 /// Loaded objects are stored in RAM in an LRU cache up to a specified size limit, for fast
 /// re-retrieval of recently used objects.
 ///
-pub struct Resolver<N>
-where
-    N: Float + Debug + Send + Sync + 'static,
-{
+pub struct Resolver {
     mapper: Box<dyn Mapper>,
-    async_cache: Cache<Cid, CacheItem<N>>,
+    cache: Cache<Cid, CacheItem>,
 }
 
-enum CacheItem<N>
-where
-    N: Float + Debug + Send + Sync + 'static,
-{
+enum CacheItem {
     Links(Arc<Links>),
-    MMArray1(Arc<MMArray1<N>>),
-    MMArray3(Arc<MMArray3<N>>),
-    Subchunk(Arc<FChunk<N>>),
-    Superchunk(Arc<Superchunk<N>>),
+    MMStruct3(Arc<MMStruct3>),
 }
 
-impl<N> CacheItem<N>
-where
-    N: Float + Debug + Send + Sync + 'static,
-{
+impl CacheItem {
     fn ls(&self) -> Vec<(String, Cid)> {
         match self {
-            CacheItem::Links(links) => <Links as Node<N>>::ls(links),
-            CacheItem::Subchunk(chunk) => chunk.ls(),
-            CacheItem::Superchunk(chunk) => chunk.ls(),
-            CacheItem::MMArray1(chunk) => chunk.ls(),
-            CacheItem::MMArray3(chunk) => chunk.ls(),
+            CacheItem::Links(links) => links.ls(),
+            CacheItem::MMStruct3(node) => node.ls(),
         }
     }
 }
 
-impl<N> Cacheable for CacheItem<N>
-where
-    N: Float + Debug + Send + Sync + 'static,
-{
+impl Cacheable for CacheItem {
     fn size(&self) -> u64 {
         match self {
             CacheItem::Links(links) => links.size(),
-            CacheItem::Subchunk(chunk) => chunk.size(),
-            CacheItem::Superchunk(chunk) => chunk.size(),
-            CacheItem::MMArray1(chunk) => chunk.size(),
-            CacheItem::MMArray3(chunk) => chunk.size(),
+            CacheItem::MMStruct3(chunk) => chunk.size(),
         }
     }
 }
 
-impl<N> Resolver<N>
-where
-    N: Float + Debug + Send + Sync + 'static,
-{
-    pub(crate) const HEADER_SIZE: u64 = 2 + 4 + 1 + 1;
+impl Resolver {
+    pub(crate) const HEADER_SIZE: u64 = 2 + 4 + 1;
 
     /// Create a new `Resolver`
     ///
@@ -98,52 +68,21 @@ where
     ///   by reporting the number of bytes in the serialized representation (close enough).
     ///
     pub fn new(mapper: Box<dyn Mapper>, cache_bytes: u64) -> Self {
-        let async_cache = Cache::new(cache_bytes);
-        Self {
-            mapper,
-            async_cache,
-        }
+        let cache = Cache::new(cache_bytes);
+        Self { mapper, cache }
     }
 
-    /// Get a `Superchunk` from the data store.
-    ///
-    /// # Arguments
-    ///
-    /// * `cid` - The CID of the superchunk to retreive.
-    ///
-    pub async fn get_superchunk(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<Superchunk<N>>> {
-        let item = self.check_cache(cid).await?;
-        match &*item {
-            CacheItem::Superchunk(chunk) => Ok(Arc::clone(&chunk)),
-            _ => panic!("Expecting superchunk."),
-        }
-    }
-
-    /// Get an `MMArray1` from the data store.
+    /// Get an `MMStruct3` from the data store.
     ///
     /// # Arguments
     ///
     /// * `cid` - The CID of the array to retreive.
     ///
-    pub async fn get_mmarray1(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<MMArray1<N>>> {
+    pub(crate) async fn get_mmstruct3(self: &Arc<Resolver>, cid: &Cid) -> Result<Arc<MMStruct3>> {
         let item = self.check_cache(cid).await?;
         match &*item {
-            CacheItem::MMArray1(chunk) => Ok(Arc::clone(&chunk)),
-            _ => panic!("Expecting 1 dimensional MM array."),
-        }
-    }
-
-    /// Get an `MMArray3` from the data store.
-    ///
-    /// # Arguments
-    ///
-    /// * `cid` - The CID of the array to retreive.
-    ///
-    pub async fn get_mmarray3(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<MMArray3<N>>> {
-        let item = self.check_cache(cid).await?;
-        match &*item {
-            CacheItem::MMArray3(chunk) => Ok(Arc::clone(&chunk)),
-            _ => panic!("Expecting 3 dimensional MM array."),
+            CacheItem::MMStruct3(chunk) => Ok(Arc::clone(&chunk)),
+            _ => panic!("Expecting 3 dimensional MM struct."),
         }
     }
 
@@ -153,7 +92,7 @@ where
     ///
     /// * `cid` - The CID of the links to retreive.
     ///
-    pub(crate) async fn get_links(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<Links>> {
+    pub(crate) async fn get_links(self: &Arc<Resolver>, cid: &Cid) -> Result<Arc<Links>> {
         let item = self.check_cache(cid).await?;
         match &*item {
             CacheItem::Links(links) => Ok(Arc::clone(&links)),
@@ -161,17 +100,17 @@ where
         }
     }
 
-    async fn check_cache(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Arc<CacheItem<N>>> {
+    async fn check_cache(self: &Arc<Resolver>, cid: &Cid) -> Result<Arc<CacheItem>> {
         let resolver = Arc::clone(self);
         let load = |cid: Cid| async move { resolver.retrieve(cid.clone()).await }.boxed();
-        self.async_cache.get(cid, load).await
+        self.cache.get(cid, load).await
     }
 
     /// Compute the hash for a subchunk.
     ///
-    pub(crate) async fn hash<O>(self: &Arc<Resolver<N>>, object: &O) -> Result<Cid>
+    pub(crate) async fn hash<O>(self: &Arc<Resolver>, object: &O) -> Result<Cid>
     where
-        O: Node<N>,
+        O: Node,
     {
         let mut hasher = self.mapper.hash().await;
         object.save_to(self, &mut hasher).await?;
@@ -181,14 +120,13 @@ where
 
     /// Store a node
     ///
-    pub(crate) async fn save<O>(self: &Arc<Resolver<N>>, node: O) -> Result<Cid>
+    pub(crate) async fn save<O>(self: &Arc<Resolver>, node: O) -> Result<Cid>
     where
-        O: Node<N>,
+        O: Node,
     {
         let mut stream = self.mapper.store().await;
         stream.write_u16(MAGIC_NUMBER).await?;
         stream.write_u32(FORMAT_VERSION).await?;
-        stream.write_byte(Self::type_code()).await?;
         stream.write_byte(O::NODE_TYPE).await?;
 
         node.save_to(&self, &mut stream).await?;
@@ -198,27 +136,18 @@ where
 
     /// Retrieve a node
     ///
-    async fn retrieve(self: &Arc<Resolver<N>>, cid: Cid) -> Result<Option<CacheItem<N>>> {
+    async fn retrieve(self: &Arc<Resolver>, cid: Cid) -> Result<Option<CacheItem>> {
         match self.mapper.load(&cid).await {
-            None => Ok(None),
+            None => Err(Error::NotFound(cid)), // Maybe a NotFound error here, instead?
             Some(mut stream) => {
                 let node_type = self.read_header(&mut stream).await?;
                 let item = match node_type {
                     node::NODE_LINKS => {
                         CacheItem::Links(Arc::new(Links::load_from(self, &mut stream).await?))
                     }
-                    node::NODE_SUBCHUNK => {
-                        CacheItem::Subchunk(Arc::new(FChunk::load_from(self, &mut stream).await?))
-                    }
-                    node::NODE_SUPERCHUNK => CacheItem::Superchunk(Arc::new(
-                        Superchunk::load_from(self, &mut stream).await?,
+                    node::NODE_MMSTRUCT3 => CacheItem::MMStruct3(Arc::new(
+                        MMStruct3::load_from(self, &mut stream).await?,
                     )),
-                    node::NODE_MMARRAY1 => {
-                        CacheItem::MMArray1(Arc::new(MMArray1::load_from(self, &mut stream).await?))
-                    }
-                    node::NODE_MMARRAY3 => {
-                        CacheItem::MMArray3(Arc::new(MMArray3::load_from(self, &mut stream).await?))
-                    }
                     _ => panic!("Unrecognized node type: {node_type}"),
                 };
 
@@ -238,16 +167,12 @@ where
             panic!("Unrecognized file format.");
         }
 
-        if Self::type_code() != stream.read_byte().await? {
-            panic!("Numeric type doesn't match.");
-        }
-
         stream.read_byte().await
     }
 
-    pub async fn ls(self: &Arc<Resolver<N>>, cid: &Cid) -> Result<Option<Vec<LsEntry>>> {
+    pub async fn ls(self: &Arc<Resolver>, cid: &Cid) -> Result<Vec<LsEntry>> {
         match self.retrieve(cid.clone()).await? {
-            None => Ok(None),
+            None => Err(Error::NotFound(cid.clone())),
             Some(object) => {
                 let mut ls = Vec::new();
                 for (name, cid) in object.ls() {
@@ -262,7 +187,7 @@ where
                     ls.push(entry)
                 }
 
-                Ok(Some(ls))
+                Ok(ls)
             }
         }
     }
@@ -272,28 +197,19 @@ where
             None => Ok(None),
             Some(mut stream) => {
                 let mut code = self.read_header(&mut stream).await?;
-                if code == node::NODE_MMARRAY3 {
+                if code == node::NODE_MMSTRUCT3 {
                     code = stream.read_byte().await?;
                 }
                 let node_type = match code {
                     node::NODE_LINKS => "Links",
                     node::NODE_SUBCHUNK => "Subchunk",
                     node::NODE_SUPERCHUNK => "Superchunk",
+                    node::NODE_SPAN => "Span",
                     _ => panic!("Unrecognized node type: {code}"),
                 };
 
                 Ok(Some(node_type))
             }
-        }
-    }
-
-    fn type_code() -> u8 {
-        if TypeId::of::<N>() == TypeId::of::<f32>() {
-            TYPE_F32
-        } else if TypeId::of::<N>() == TypeId::of::<f64>() {
-            TYPE_F64
-        } else {
-            panic!("Unsupported type: {:?}", TypeId::of::<N>())
         }
     }
 }

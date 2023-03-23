@@ -1,8 +1,7 @@
-use std::{cmp::min, collections::VecDeque, fmt::Debug, marker::PhantomData};
+use std::{cmp::min, collections::VecDeque};
 
 use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncWrite};
-use num_traits::PrimInt;
 
 use crate::{
     cache::Cacheable,
@@ -19,12 +18,7 @@ use super::dac::Dac;
 /// A Snapshot stores raster data for a particular time instant in a raster time series. Data is
 /// stored standalone without reference to any other time instant.
 ///
-pub(crate) struct Snapshot<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
-    _marker: PhantomData<I>,
-
+pub(crate) struct Snapshot {
     /// Bitmap of tree structure, known as T in Silva-Coira
     pub(crate) nodemap: BitMap,
 
@@ -49,10 +43,7 @@ where
 }
 
 #[async_trait]
-impl<I> Serialize for Snapshot<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
+impl Serialize for Snapshot {
     /// Write a snapshot to a stream
     ///
     async fn write_to(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
@@ -81,7 +72,6 @@ where
         let min = Dac::read_from(stream).await?;
 
         Ok(Self {
-            _marker: PhantomData,
             nodemap,
             max,
             min,
@@ -92,24 +82,18 @@ where
     }
 }
 
-impl<I> Cacheable for Snapshot<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
+impl Cacheable for Snapshot {
     /// Return number of bytes in serialized representation
     ///
     fn size(&self) -> u64 {
         1       // k
         + 4 + 4 // shape
-        + 4     // sidelen 
+        + 4     // sidelen
         + self.nodemap.size() + self.max.size() + self.min.size()
     }
 }
 
-impl<I> Snapshot<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
+impl Snapshot {
     /// Build a snapshot from a two-dimensional array.
     ///
     /// The notional two-dimensional array is represented by `get`, which is a function that takes
@@ -163,7 +147,6 @@ where
         }
 
         Snapshot {
-            _marker: PhantomData,
             nodemap: nodemap.finish(),
             max: Dac::from(max),
             min: Dac::from(min),
@@ -180,7 +163,7 @@ where
     /// [^note]: S. Ladra, J.R. Paramá, F. Silva-Coira, Scalable and queryable compressed storage
     ///     structure for raster data, Information Systems 72 (2017) 179-204.
     ///
-    pub(crate) fn get(&self, row: usize, col: usize) -> I {
+    pub(crate) fn get(&self, row: usize, col: usize) -> i64 {
         if !self.nodemap.get(0) {
             // Special case, single node tree
             return self.max.get(0);
@@ -189,7 +172,7 @@ where
         }
     }
 
-    fn _get(&self, sidelen: usize, row: usize, col: usize, index: usize, max_value: I) -> I {
+    fn _get(&self, sidelen: usize, row: usize, col: usize, index: usize, max_value: i64) -> i64 {
         let k = self.k as usize;
         let sidelen = sidelen / k;
         let index = 1 + self.nodemap.rank(index) * k * k;
@@ -284,7 +267,7 @@ where
                 let left_offset_ = left_offset + j * sidelen;
 
                 let index_ = index + i * k + j;
-                let max_value_ = max_value - self.max.get::<i64>(index_);
+                let max_value_ = max_value - self.max.get(index_);
 
                 if index_ >= self.nodemap.length || !self.nodemap.get(index_) {
                     // Leaf node
@@ -328,14 +311,14 @@ where
     pub(crate) fn search_window(
         &self,
         bounds: &geom::Rect,
-        lower: I,
-        upper: I,
+        lower: i64,
+        upper: i64,
     ) -> Vec<(usize, usize)> {
         let mut cells: Vec<(usize, usize)> = vec![];
 
         if !self.nodemap.get(0) {
             // Special case: single node tree
-            let value: I = self.max.get(0);
+            let value: i64 = self.max.get(0);
             if lower <= value && value <= upper {
                 for (row, col) in bounds.iter() {
                     cells.push((row, col));
@@ -369,11 +352,11 @@ where
         bottom: usize,
         left: usize,
         right: usize,
-        lower: I,
-        upper: I,
+        lower: i64,
+        upper: i64,
         index: usize,
-        min_value: I,
-        max_value: I,
+        min_value: i64,
+        max_value: i64,
         cells: &mut Vec<(usize, usize)>,
         top_offset: usize,
         left_offset: usize,
@@ -521,12 +504,12 @@ impl K2TreeNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::array_search_window;
+    use crate::testing::array_search_window2;
     use futures::io::Cursor;
     use ndarray::{arr2, s, Array2};
     use std::collections::HashSet;
 
-    fn array8() -> Array2<i32> {
+    fn array8() -> Array2<i64> {
         arr2(&[
             [9, 8, 7, 7, 6, 6, 3, 2],
             [7, 7, 7, 7, 6, 6, 3, 3],
@@ -539,7 +522,7 @@ mod tests {
         ])
     }
 
-    fn array9() -> Array2<i32> {
+    fn array9() -> Array2<i64> {
         arr2(&[
             [9, 8, 7, 7, 6, 6, 3, 2, 1],
             [7, 7, 7, 7, 6, 6, 3, 3, 3],
@@ -564,23 +547,20 @@ mod tests {
             vec![0b11110101001001011000000000000000]
         );
         assert_eq!(
-            snapshot.max.collect::<i32>(),
+            snapshot.max.collect(),
             vec![
                 9, 0, 3, 4, 5, 0, 2, 3, 3, 0, 3, 3, 3, 0, 0, 1, 0, 0, 1, 2, 2, 0, 0, 1, 1, 0, 1, 0,
                 0, 1, 0, 2, 2, 1, 1, 0, 0, 2, 0, 2, 1,
             ]
         );
-        assert_eq!(
-            snapshot.min.collect::<i32>(),
-            vec![2, 3, 0, 1, 2, 0, 0, 0, 0, 0,]
-        );
+        assert_eq!(snapshot.min.collect(), vec![2, 3, 0, 1, 2, 0, 0, 0, 0, 0,]);
 
         assert_eq!(snapshot.shape, [8, 8]);
     }
 
     #[test]
     fn build_make_sure_fill_values_match_local_nonfill_values_in_same_quadbox() {
-        let mut data: Array2<i32> = Array2::zeros([9, 9]) + 5;
+        let mut data: Array2<i64> = Array2::zeros([9, 9]) + 5;
         let mut slice = data.slice_mut(s![..8, ..8]);
         slice.assign(&array8());
         let snapshot = Snapshot::from_array(data.view(), 2);
@@ -606,7 +586,7 @@ mod tests {
 
     #[test]
     fn get_single_node_tree() {
-        let data: Array2<i32> = Array2::zeros([16, 16]) + 42;
+        let data: Array2<i64> = Array2::zeros([16, 16]) + 42;
         let snapshot = Snapshot::from_array(data.view(), 2);
         assert_eq!(snapshot.nodemap.bitmap.len(), 1);
         assert_eq!(snapshot.max.levels[0].1.len(), 1);
@@ -702,7 +682,7 @@ mod tests {
 
     #[test]
     fn get_window_single_node_tree() {
-        let data: Array2<i32> = Array2::zeros([16, 16]) + 42;
+        let data: Array2<i64> = Array2::zeros([16, 16]) + 42;
         let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..16 {
@@ -731,7 +711,7 @@ mod tests {
                         let window = geom::Rect::new(top, bottom, left, right);
                         for lower in 4..=9 {
                             for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
+                                let expected: Vec<(usize, usize)> = array_search_window2(
                                     data.view(),
                                     top,
                                     bottom,
@@ -767,7 +747,7 @@ mod tests {
                         let window = geom::Rect::new(top, bottom, left, right);
                         for lower in 4..=9 {
                             for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
+                                let expected: Vec<(usize, usize)> = array_search_window2(
                                     data.view(),
                                     top,
                                     bottom,
@@ -803,7 +783,7 @@ mod tests {
                         let window = geom::Rect::new(top, bottom, left, right);
                         for lower in 4..=9 {
                             for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
+                                let expected: Vec<(usize, usize)> = array_search_window2(
                                     data.view(),
                                     top,
                                     bottom,
@@ -829,7 +809,7 @@ mod tests {
 
     #[test]
     fn search_window_single_tree_node_in_range() {
-        let data: Array2<i32> = Array2::zeros([8, 8]) + 42;
+        let data: Array2<i64> = Array2::zeros([8, 8]) + 42;
         let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..8 {
@@ -855,7 +835,7 @@ mod tests {
 
     #[test]
     fn search_window_single_tree_node_out_of_range() {
-        let data: Array2<i32> = Array2::zeros([16, 16]) + 42;
+        let data: Array2<i64> = Array2::zeros([16, 16]) + 42;
         let snapshot = Snapshot::from_array(data.view(), 2);
 
         for top in 0..16 {
@@ -900,7 +880,7 @@ mod tests {
         assert_eq!(buffer.len(), snapshot.size() as usize);
 
         let mut buffer = Cursor::new(buffer);
-        let snapshot: Snapshot<i32> = Snapshot::read_from(&mut buffer).await?;
+        let snapshot = Snapshot::read_from(&mut buffer).await?;
 
         for row in 0..8 {
             for col in 0..8 {

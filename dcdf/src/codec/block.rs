@@ -1,9 +1,6 @@
-use std::fmt::Debug;
-
 use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncWrite};
 use ndarray::Array2;
-use num_traits::PrimInt;
 
 use crate::{
     cache::Cacheable,
@@ -17,24 +14,18 @@ use super::{log::Log, snapshot::Snapshot};
 /// A short series of time instants made up of one Snapshot encoding the first time instant and
 /// Logs encoding subsequent time instants.
 ///
-pub(crate) struct Block<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
+pub(crate) struct Block {
     /// Snapshot of first time instant
-    pub(crate) snapshot: Snapshot<I>,
+    pub(crate) snapshot: Snapshot,
 
     /// Successive time instants as logs
-    pub(crate) logs: Vec<Log<I>>,
+    pub(crate) logs: Vec<Log>,
 }
 
-impl<I> Block<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
+impl Block {
     /// Construct a Block from a Snapshot and a series of Logs based on the Snapshot
     ///
-    pub(crate) fn new(snapshot: Snapshot<I>, logs: Vec<Log<I>>) -> Self {
+    pub(crate) fn new(snapshot: Snapshot, logs: Vec<Log>) -> Self {
         if logs.len() > 254 {
             panic!(
                 "Too many logs in one block. Maximum is 254. {} passed.",
@@ -50,10 +41,7 @@ where
 
     /// Get the cell value at the given time instant, row, and column
     ///
-    pub(crate) fn get(&self, instant: usize, row: usize, col: usize) -> I
-    where
-        I: PrimInt + Debug + Send + Sync,
-    {
+    pub(crate) fn get(&self, instant: usize, row: usize, col: usize) -> i64 {
         match instant {
             0 => self.snapshot.get(row, col),
             _ => self.logs[instant - 1].get(&self.snapshot, row, col),
@@ -68,12 +56,10 @@ where
     /// and call `block.fill_window` for each instant of interest, which is the strategy used by
     /// `chunk::Chunk.get_window`.
     ///
-    pub(crate) fn get_window(&self, instant: usize, bounds: &geom::Rect) -> Array2<I>
-    where
-        I: PrimInt + Debug + Send + Sync,
-    {
+    #[deprecated(note = "should use fill_window at all layers except very top level")]
+    pub(crate) fn get_window(&self, instant: usize, bounds: &geom::Rect) -> Array2<i64> {
         let mut window = Array2::zeros([bounds.rows(), bounds.cols()]);
-        let set = |row, col, value| window[[row, col]] = I::from(value).unwrap();
+        let set = |row, col, value| window[[row, col]] = value;
 
         self.fill_window(set, instant, bounds);
 
@@ -105,12 +91,9 @@ where
         &self,
         instant: usize,
         bounds: &geom::Rect,
-        lower: I,
-        upper: I,
-    ) -> Vec<(usize, usize)>
-    where
-        I: PrimInt + Debug + Send + Sync,
-    {
+        lower: i64,
+        upper: i64,
+    ) -> Vec<(usize, usize)> {
         match instant {
             0 => self.snapshot.search_window(bounds, lower, upper),
             _ => self.logs[instant - 1].search_window(&self.snapshot, bounds, lower, upper),
@@ -119,10 +102,7 @@ where
 }
 
 #[async_trait]
-impl<I> Serialize for Block<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
+impl Serialize for Block {
     /// Write a block to a stream
     ///
     async fn write_to(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
@@ -139,7 +119,7 @@ where
     async fn read_from(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
         let n_instants = stream.read_byte().await? as usize;
         let snapshot = Snapshot::read_from(stream).await?;
-        let mut logs: Vec<Log<I>> = Vec::with_capacity(n_instants - 1);
+        let mut logs: Vec<Log> = Vec::with_capacity(n_instants - 1);
         for _ in 0..n_instants - 1 {
             let log = Log::read_from(stream).await?;
             logs.push(log);
@@ -149,10 +129,7 @@ where
     }
 }
 
-impl<I> Cacheable for Block<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
+impl Cacheable for Block {
     /// Return the number of bytes in the serialized representation of the block
     fn size(&self) -> u64 {
         1 // number of instants
@@ -164,12 +141,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::array_search_window;
+    use crate::testing::array_search_window2;
     use futures::io::Cursor;
     use ndarray::{arr3, s, Array3};
     use std::collections::HashSet;
 
-    fn array8() -> Array3<i32> {
+    fn array8() -> Array3<i64> {
         arr3(&[
             [
                 [9, 8, 7, 7, 6, 6, 3, 2],
@@ -215,7 +192,7 @@ mod tests {
         let logs = logs.into_iter().cycle().take(300);
 
         // This statement should panic, as the max number of logs for one block is 254
-        let block: Block<i32> = Block::new(
+        let block: Block = Block::new(
             Snapshot::from_array(snapshot, 2),
             logs.into_iter()
                 .map(|log| Log::from_arrays(snapshot, log, 2))
@@ -229,7 +206,7 @@ mod tests {
         // number lof logs we can actually store in this block is 254. If we're allowed to actually
         // create the block, then serializing and deserializing will lead to incorrect behavior.
         let mut file = Cursor::new(buffer);
-        let block: Block<i32> = Block::read_from(&mut file).await?;
+        let block: Block = Block::read_from(&mut file).await?;
         assert_eq!(block.logs.len(), 300);
 
         Ok(())
@@ -250,7 +227,7 @@ mod tests {
             data.slice(s![2, .., ..]),
         ];
 
-        let block: Block<i32> = Block::new(
+        let block: Block = Block::new(
             Snapshot::from_array(data[0], 2),
             vec![
                 Log::from_arrays(data[0], data[1], 2),
@@ -268,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn get_window() {
+    fn fill_window() {
         let data = array8();
         let data = vec![
             data.slice(s![0, .., ..]),
@@ -276,7 +253,7 @@ mod tests {
             data.slice(s![2, .., ..]),
         ];
 
-        let block: Block<i32> = Block::new(
+        let block: Block = Block::new(
             Snapshot::from_array(data[0], 2),
             vec![
                 Log::from_arrays(data[0], data[1], 2),
@@ -291,7 +268,12 @@ mod tests {
                         for right in left + 1..=8 {
                             let expected = data[t].slice(s![top..bottom, left..right]);
                             let bounds = geom::Rect::new(top, bottom, left, right);
-                            assert_eq!(block.get_window(t, &bounds), expected);
+
+                            let mut window = Array2::zeros([bounds.rows(), bounds.cols()]);
+                            let set = |row, col, value| window[[row, col]] = value;
+
+                            block.fill_window(set, t, &bounds);
+                            assert_eq!(window, expected);
                         }
                     }
                 }
@@ -323,7 +305,7 @@ mod tests {
                         for right in left + 1..=8 {
                             for lower in 0..10 {
                                 for upper in lower..10 {
-                                    let expected = array_search_window(
+                                    let expected = array_search_window2(
                                         data[t], top, bottom, left, right, lower, upper,
                                     );
                                     let expected: HashSet<(usize, usize)> =
@@ -350,7 +332,7 @@ mod tests {
             data.slice(s![2, .., ..]),
         ];
 
-        let block: Block<i32> = Block::new(
+        let block: Block = Block::new(
             Snapshot::from_array(data[0], 2),
             vec![
                 Log::from_arrays(data[0], data[1], 2),
@@ -363,7 +345,7 @@ mod tests {
         assert_eq!(buffer.len(), block.size() as usize);
 
         let mut buffer = Cursor::new(buffer);
-        let block: Block<i32> = Block::read_from(&mut buffer).await?;
+        let block: Block = Block::read_from(&mut buffer).await?;
 
         for t in 0..3 {
             for r in 0..8 {

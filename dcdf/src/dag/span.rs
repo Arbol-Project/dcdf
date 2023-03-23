@@ -1,4 +1,4 @@
-use std::{cmp, fmt::Debug, pin::Pin, sync::Arc};
+use std::{cmp, pin::Pin, sync::Arc};
 
 use async_recursion::async_recursion;
 use async_trait::async_trait;
@@ -8,8 +8,6 @@ use futures::{
     stream::{once, FuturesUnordered, Stream, StreamExt, TryStreamExt},
     AsyncRead, AsyncWrite,
 };
-use ndarray::{s, ArrayBase, DataMut, Ix1, Ix3};
-use num_traits::Float;
 
 use crate::{
     cache::Cacheable,
@@ -19,42 +17,44 @@ use crate::{
 };
 
 use super::{
-    mmarray::MMArray3,
+    mmbuffer::{MMBuffer0, MMBuffer1, MMBuffer3},
+    mmstruct::{MMEncoding, MMStruct3},
     node::{Node, NODE_SPAN},
     resolver::Resolver,
 };
 
 /// A span of time
 ///
-pub struct Span<N>
-where
-    N: Float + Debug + Send + Sync + 'static,
-{
+pub(crate) struct Span {
     shape: [usize; 3],
     stride: usize,
     spans: Vec<Cid>,
-    resolver: Arc<Resolver<N>>,
+    resolver: Arc<Resolver>,
+    pub encoding: MMEncoding,
 }
 
-impl<N> Span<N>
-where
-    N: Float + Debug + Send + Sync + 'static,
-{
-    pub fn new(shape: [usize; 2], stride: usize, resolver: Arc<Resolver<N>>) -> Self {
+impl Span {
+    pub fn new(
+        shape: [usize; 2],
+        stride: usize,
+        resolver: Arc<Resolver>,
+        encoding: MMEncoding,
+    ) -> Self {
         Self {
             shape: [0, shape[0], shape[1]],
             stride,
             spans: vec![],
             resolver,
+            encoding,
         }
     }
 
-    pub async fn append(self, span: MMArray3<N>) -> Result<Self> {
+    pub async fn append(self, span: MMStruct3) -> Result<Self> {
         // Can only append to this span if the last subspan is full
         if self.spans.len() > 0 {
             let last_span = self
                 .resolver
-                .get_mmarray3(&self.spans[self.spans.len() - 1])
+                .get_mmstruct3(&self.spans[self.spans.len() - 1])
                 .await?;
 
             if last_span.shape()[0] != self.stride {
@@ -89,13 +89,14 @@ where
                 stride: self.stride,
                 spans,
                 resolver: self.resolver,
+                encoding: self.encoding,
             }
         })
     }
 
     // Replace the last subspan with new data
     //
-    pub async fn update(self, span: MMArray3<N>) -> Result<Self> {
+    pub async fn update(self, span: MMStruct3) -> Result<Self> {
         let mut spans = self.spans;
         spans.pop();
 
@@ -104,6 +105,7 @@ where
             stride: self.stride,
             spans,
             resolver: self.resolver,
+            encoding: self.encoding,
         };
 
         tmp.append(span).await
@@ -118,44 +120,48 @@ where
     /// Get a cell's value at a particular time instant.
     ///
     #[async_recursion]
-    pub async fn get(&self, instant: usize, row: usize, col: usize) -> Result<N> {
-        self.check_bounds(instant, row, col);
-
+    pub async fn get(
+        &self,
+        instant: usize,
+        row: usize,
+        col: usize,
+        buffer: &mut MMBuffer0,
+    ) -> Result<()> {
         let (span, instant) = self.find_span(instant);
         let cid = &self.spans[span];
-        let chunk = self.resolver.get_mmarray3(cid).await?;
+        let chunk = self.resolver.get_mmstruct3(cid).await?;
+        buffer.set_fractional_bits(chunk.fractional_bits());
 
-        chunk.get(instant, row, col).await
+        chunk.get(instant, row, col, buffer).await
     }
 
     /// Fill in a preallocated array with a cell's value across time instants.
     ///
     #[async_recursion]
-    pub async fn fill_cell<S>(
+    pub(crate) async fn fill_cell(
         &self,
         start: usize,
+        end: usize,
         row: usize,
         col: usize,
-        window: &mut ArrayBase<S, Ix1>,
-    ) -> Result<()>
-    where
-        S: DataMut<Elem = N> + Send,
-    {
-        self.check_bounds(start + window.len() - 1, row, col);
-
+        buffer: &mut MMBuffer1,
+    ) -> Result<()> {
         let mut futures = FuturesUnordered::new();
+        let instants = end - start;
         let (mut span, mut instant) = self.find_span(start);
+
         let mut start = 0;
-        let instants = window.shape()[0];
         while start < instants {
             let span_len = cmp::min(self.stride - instant, instants - start);
-            let mut slice = window.slice_mut(s![start..start + span_len]);
-            let mut slice = unsafe { slice.raw_view_mut().deref_into_view_mut() };
+            let mut buffer = buffer.slice(start, start + span_len);
             let cid = &self.spans[span];
             let resolver = Arc::clone(&self.resolver);
             let future = async move {
-                let chunk = resolver.get_mmarray3(cid).await?;
-                chunk.fill_cell(instant, row, col, &mut slice).await
+                let chunk = resolver.get_mmstruct3(cid).await?;
+                buffer.set_fractional_bits(chunk.fractional_bits());
+                chunk
+                    .fill_cell(instant, instant + span_len, row, col, &mut buffer)
+                    .await
             };
             futures.push(future);
 
@@ -175,34 +181,36 @@ where
 
     /// Fill in a preallocated array with subarray from this chunk
     ///
+    /// Fill in a preallocated array with subarray from this chunk
+    ///
     #[async_recursion]
-    pub async fn fill_window<S>(
+    pub(crate) async fn fill_window(
         &self,
-        start: usize,
-        top: usize,
-        left: usize,
-        window: &mut ArrayBase<S, Ix3>,
-    ) -> Result<()>
-    where
-        S: DataMut<Elem = N> + Send,
-    {
-        let [instants, rows, cols]: [_; 3] = window.shape().try_into().unwrap();
-        self.check_bounds(start + instants - 1, top + rows - 1, left + cols - 1);
-
-        // SMELL: DRY: Implemntation nearly identical to fill_cell
+        bounds: geom::Cube,
+        buffer: &mut MMBuffer3<'_>,
+    ) -> Result<()> {
+        // SMELL: DRY: Implementation nearly identical to fill_cell
         let mut futures = FuturesUnordered::new();
-        let (mut span, mut instant) = self.find_span(start);
+        let (mut span, mut instant) = self.find_span(bounds.start);
         let mut start = 0;
-        let instants = window.shape()[0];
+        let [instants, rows, cols] = buffer.shape();
         while start < instants {
             let span_len = cmp::min(self.stride - instant, instants - start);
-            let mut slice = window.slice_mut(s![start..start + span_len, .., ..]);
-            let mut slice = unsafe { slice.raw_view_mut().deref_into_view_mut() };
+            let mut buffer = buffer.slice(start, start + span_len, 0, rows, 0, cols);
             let cid = &self.spans[span];
             let resolver = Arc::clone(&self.resolver);
             let future = async move {
-                let chunk = resolver.get_mmarray3(cid).await?;
-                chunk.fill_window(instant, top, left, &mut slice).await
+                let chunk = resolver.get_mmstruct3(cid).await?;
+                let span_bounds = geom::Cube::new(
+                    instant,
+                    instant + span_len,
+                    bounds.top,
+                    bounds.bottom,
+                    bounds.left,
+                    bounds.right,
+                );
+                buffer.set_fractional_bits(chunk.fractional_bits());
+                chunk.fill_window(span_bounds, &mut buffer).await
             };
             futures.push(future);
 
@@ -219,7 +227,7 @@ where
         Ok(())
     }
 
-    /// Search a subarray for cells that fall in a given range.
+    /// Search a subarray for cells that fall in a given mmarray.
     ///
     /// Returns a boxed Stream that produces Vecs of coordinate triplets [instant, row, col] of
     /// matching cells.
@@ -227,11 +235,9 @@ where
     pub fn search(
         &self,
         bounds: geom::Cube,
-        lower: N,
-        upper: N,
+        lower: i64,
+        upper: i64,
     ) -> Pin<Box<dyn Stream<Item = Result<(usize, usize, usize)>> + Send>> {
-        self.check_bounds(bounds.end - 1, bounds.bottom - 1, bounds.right - 1);
-
         let futures = FuturesUnordered::new();
         let (mut span, mut instant) = self.find_span(bounds.start);
         let mut start = 0;
@@ -250,7 +256,7 @@ where
             );
             let offset = span * self.stride;
             let future = async move {
-                let result = match resolver.get_mmarray3(&cid).await {
+                let result = match resolver.get_mmstruct3(&cid).await {
                     Ok(chunk) => chunk
                         .search(bounds, lower, upper)
                         .map(move |result| {
@@ -275,36 +281,20 @@ where
     fn find_span(&self, instant: usize) -> (usize, usize) {
         (instant / self.stride, instant % self.stride)
     }
-
-    /// Panics if given point is out of bounds for this chunk
-    fn check_bounds(&self, instant: usize, row: usize, col: usize) {
-        let [instants, rows, cols] = self.shape;
-        if instant >= instants || row >= rows || col >= cols {
-            panic!(
-                "dcdf::Span: index[{}, {}, {}] is out of bounds for array of shape {:?}",
-                instant,
-                row,
-                col,
-                [instants, rows, cols],
-            );
-        }
-    }
 }
 
 #[async_trait]
-impl<N> Node<N> for Span<N>
-where
-    N: Float + Debug + Send + Sync + 'static,
-{
+impl Node for Span {
     const NODE_TYPE: u8 = NODE_SPAN;
 
     /// Save an object into the DAG
     ///
     async fn save_to(
         &self,
-        _resolver: &Arc<Resolver<N>>,
+        _resolver: &Arc<Resolver>,
         stream: &mut (impl AsyncWrite + Unpin + Send),
     ) -> Result<()> {
+        stream.write_byte(self.encoding as u8).await?;
         stream.write_u32(self.shape[0] as u32).await?;
         stream.write_u32(self.shape[1] as u32).await?;
         stream.write_u32(self.shape[2] as u32).await?;
@@ -319,9 +309,10 @@ where
 
     /// Load an object from a stream
     async fn load_from(
-        resolver: &Arc<Resolver<N>>,
+        resolver: &Arc<Resolver>,
         stream: &mut (impl AsyncRead + Unpin + Send),
     ) -> Result<Self> {
+        let encoding = MMEncoding::try_from(stream.read_byte().await?)?;
         let instants = stream.read_u32().await? as usize;
         let rows = stream.read_u32().await? as usize;
         let cols = stream.read_u32().await? as usize;
@@ -338,6 +329,7 @@ where
             stride,
             spans,
             resolver: Arc::clone(resolver),
+            encoding,
         })
     }
 
@@ -350,12 +342,10 @@ where
     }
 }
 
-impl<N> Cacheable for Span<N>
-where
-    N: Float + Debug + Send + Sync + 'static,
-{
+impl Cacheable for Span {
     fn size(&self) -> u64 {
-        Resolver::<f32>::HEADER_SIZE
+        Resolver::HEADER_SIZE
+            + 1     // encoding
             + 4 * 3 // shape
             + 4     // stride
             + 4     // n_spans
@@ -367,13 +357,11 @@ where
 mod tests {
     use std::collections::HashSet;
 
-    use ndarray::Array2;
+    use ndarray::{s, Array1, Array3, Axis};
     use paste::paste;
 
     use super::*;
-    use crate::{build::build_superchunk, fixed::Precise, testing, MMArray3};
-
-    type SuperchunkResult = Result<(Vec<Array2<f32>>, MMArray3<f32>)>;
+    use crate::{dag::superchunk::Superchunk, testing};
 
     macro_rules! test_all_the_things {
         ($name:ident) => {
@@ -385,41 +373,12 @@ mod tests {
                     for instant in 0..instants {
                         let row = instant % rows;
                         let col = instant % cols;
-                        let value = chunk.get(instant, row, col).await?;
-                        assert_eq!(value, data[instant][[row, col]]);
+                        let mut buffer = MMBuffer0::I64(0);
+                        chunk.get(instant, row, col, &mut buffer).await?;
+                        assert_eq!(i64::from(buffer), data[[instant, row, col]]);
                     }
 
                     Ok(())
-                }
-
-                #[tokio::test]
-                #[should_panic]
-                async fn [<$name _test_get_time_out_of_bounds>]() {
-                    let (_, _, chunk) = $name().await.expect("this should work");
-                    let [instants, _rows, _cols] = chunk.shape();
-
-                    chunk.get(instants, 0, 0).await
-                        .expect("This isn't what causes the panic");
-                }
-
-                #[should_panic]
-                #[tokio::test]
-                async fn [<$name _test_get_row_out_of_bounds>]() {
-                    let (_, _, chunk) = $name().await.expect("this should work");
-                    let [_instants, rows, _cols] = chunk.shape();
-
-                    chunk.get(0, rows, 0).await
-                        .expect("This isn't what causes the panic");
-                }
-
-                #[should_panic]
-                #[tokio::test]
-                async fn [<$name _test_get_col_out_of_bounds>]() {
-                    let (_, _, chunk) = $name().await.expect("this should work");
-                    let [_instants, _rows, cols] = chunk.shape();
-
-                    chunk.get(0, 0, cols).await
-                        .expect("This isn't what causes the panic");
                 }
 
                 #[tokio::test]
@@ -430,47 +389,14 @@ mod tests {
                         let col = cols - row - 1;
                         let start = row * 15;
                         let end = instants - start;
-                        let values = chunk.get_cell(start, end, row, col).await?;
-                        assert_eq!(values.len(), end - start);
-                        for i in 0..values.len() {
-                            assert_eq!(values[i], data[i + start][[row, col]]);
-                        }
+                        let mut array = Array1::zeros([end - start]);
+                        let mut buffer = MMBuffer1::new_i64(array.view_mut());
+                        chunk.fill_cell(start, end, row, col, &mut buffer).await?;
+
+                        assert_eq!(array, data.slice(s![start..end, row, col]));
                     }
 
                     Ok(())
-                }
-
-                #[tokio::test]
-                #[should_panic]
-                async fn [<$name _test_fill_cell_time_out_of_bounds>]() {
-                    let (_, _, chunk) = $name().await.expect("this should work");
-                    let [instants, rows, cols] = chunk.shape();
-
-                    let values = chunk.get_cell(0, instants + 1, rows, cols).await
-                        .expect("This isn't what causes the panic");
-                    assert_eq!(values.len(), instants + 1);
-                }
-
-                #[should_panic]
-                #[tokio::test]
-                async fn [<$name _test_fill_cell_row_out_of_bounds>]() {
-                    let (_, _, chunk) = $name().await.expect("this should work");
-                    let [instants, rows, cols] = chunk.shape();
-
-                    let values = chunk.get_cell(0, instants, rows + 1, cols).await
-                        .expect("This isn't what causes the panic");
-                    assert_eq!(values.len(), instants + 1);
-                }
-
-                #[should_panic]
-                #[tokio::test]
-                async fn [<$name _test_fill_cell_col_out_of_bounds>]() {
-                    let (_, _, chunk) = $name().await.expect("this should work");
-                    let [instants, rows, cols] = chunk.shape();
-
-                    let values = chunk.get_cell(0, instants, rows, cols + 1).await
-                        .expect("This isn't what causes the panic");
-                    assert_eq!(values.len(), instants + 1);
                 }
 
                 #[tokio::test]
@@ -483,49 +409,17 @@ mod tests {
                             let right = left + cols / 2;
                             let start = top * 30;
                             let end = instants - start;
+
+                            let mut array = Array3::zeros([end - start, bottom - top, right - left]);
+                            let mut buffer = MMBuffer3::new_i64(array.view_mut());
                             let bounds = geom::Cube::new(start, end, top, bottom, left, right);
-                            let window = chunk.get_window(&bounds).await?;
+                            chunk.fill_window(bounds, &mut buffer).await?;
 
-                            assert_eq!(window.shape(),
-                                       [end - start, bottom - top, right - left]);
-
-                            for i in 0..end - start {
-                                assert_eq!(
-                                    window.slice(s![i, .., ..]),
-                                    data[start + i].slice(s![top..bottom, left..right])
-                                );
-                            }
+                            assert_eq!(array, data.slice(s![start..end, top..bottom, left..right]));
                         }
                     }
 
                     Ok(())
-                }
-
-                #[should_panic]
-                #[tokio::test]
-                async fn [<$name _test_fill_window_time_out_of_bounds>]() {
-                    let (_, _, chunk) = $name().await.expect("this should work");
-                    let [instants, rows, cols] = chunk.shape();
-                    let bounds = geom::Cube::new(0, instants + 1, 0, rows, 0, cols);
-                    chunk.get_window(&bounds).await.expect("Unexpected error.");
-                }
-
-                #[should_panic]
-                #[tokio::test]
-                async fn [<$name _test_fill_window_row_out_of_bounds>]() {
-                    let (_, _, chunk) = $name().await.expect("this should work");
-                    let [instants, rows, cols] = chunk.shape();
-                    let bounds = geom::Cube::new(0, instants, 0, rows + 1, 0, cols);
-                    chunk.get_window(&bounds).await.expect("Unexpected error.");
-                }
-
-                #[should_panic]
-                #[tokio::test]
-                async fn [<$name _test_fill_window_col_out_of_bounds>]() {
-                    let (_, _, chunk) = $name().await.expect("this should work");
-                    let [instants, rows, cols] = chunk.shape();
-                    let bounds = geom::Cube::new(0, instants, 0, rows, 0, cols + 1);
-                    chunk.get_window(&bounds).await.expect("Unexpected error.");
                 }
 
                 #[tokio::test]
@@ -539,88 +433,24 @@ mod tests {
                             let right = left + cols / 2;
                             let start = top * 30;
                             let end = instants - start;
-                            let lower = (start / 5) as f32;
-                            let upper = (end / 10) as f32;
-
-                            let mut expected: HashSet<(usize, usize, usize)> = HashSet::new();
-                            for i in start..end {
-                                let coords = testing::array_search_window(
-                                    data[i].view(),
-                                    top,
-                                    bottom,
-                                    left,
-                                    right,
-                                    lower,
-                                    upper,
-                                );
-                                for (row, col) in coords {
-                                    expected.insert((i, row, col));
-                                }
-                            }
+                            let lower = (start / 5) as i64;
+                            let upper = (end / 10) as i64;
 
                             let bounds = geom::Cube::new(start, end, top, bottom, left, right);
-                            let results: Vec<(usize, usize, usize)> = chunk
+                            let expected = testing::array_search_window3(
+                                data.view(),
+                                bounds,
+                                lower,
+                                upper,
+                            ).into_iter().collect::<HashSet<_>>();
+
+                            let results = chunk
                                 .search(bounds, lower, upper)
                                 .map(|r| r.unwrap())
-                                .collect().await;
-
-                            let results: HashSet<(usize, usize, usize)> =
-                                HashSet::from_iter(results.clone().into_iter());
+                                .collect::<HashSet<_>>().await;
 
                             assert_eq!(results.len(), expected.len());
                             assert_eq!(results, expected);
-                        }
-                    }
-
-                    Ok(())
-                }
-
-                #[tokio::test]
-                #[should_panic]
-                #[allow(unused_must_use)]
-                async fn [<$name _test_search_time_out_of_bounds>]() {
-                    let (_, _, chunk) = $name().await.expect("this should work");
-                    let [instants, rows, cols] = chunk.shape();
-                    let bounds = geom::Cube::new(0, instants + 1, 0, rows, 0, cols);
-                    Arc::new(chunk).search(bounds, 0.0, 100.0);
-                }
-
-                #[tokio::test]
-                #[should_panic]
-                #[allow(unused_must_use)]
-                async fn [<$name _test_search_row_out_of_bounds>]() {
-                    let (_, _, chunk) = $name().await.expect("this should work");
-                    let [instants, rows, cols] = chunk.shape();
-                    let bounds = geom::Cube::new(0, instants, 0, rows + 1, 0, cols);
-                    Arc::new(chunk).search(bounds, 0.0, 100.0);
-                }
-
-                #[tokio::test]
-                #[should_panic]
-                #[allow(unused_must_use)]
-                async fn [<$name _test_search_col_out_of_bounds>]() {
-                    let (_, _, chunk) = $name().await.expect("this should work");
-                    let [instants, rows, cols] = chunk.shape();
-                    let bounds = geom::Cube::new(0, instants, 0, rows, 0, cols + 1);
-                    Arc::new(chunk).search(bounds, 0.0, 100.0);
-                }
-
-                #[tokio::test]
-                async fn [<$name _test_save_load>]() -> Result<()> {
-                    let (resolver, data, chunk) = $name().await?;
-                    let cid = resolver.save(chunk).await?;
-                    let chunk = resolver.get_mmarray3(&cid).await?;
-
-                    let [instants, rows, cols] = chunk.shape();
-                    for row in 0..rows {
-                        for col in 0..cols {
-                            let start = row + col;
-                            let end = instants - start;
-                            let values = chunk.get_cell(start, end, row, col).await?;
-                            assert_eq!(values.len(), end - start);
-                            for i in 0..values.len() {
-                                assert_eq!(values[i], data[i + start][[row, col]]);
-                            }
                         }
                     }
 
@@ -633,7 +463,7 @@ mod tests {
                     let ls = chunk.ls();
 
                     let span = match chunk {
-                        MMArray3::Span(span) => span,
+                        MMStruct3::Span(span) => span,
                         _ => { panic!("not a span"); }
                     };
                     assert_eq!(ls.len(), span.spans.len());
@@ -644,28 +474,42 @@ mod tests {
         };
     }
 
-    async fn superchunk(resolver: &Arc<Resolver<f32>>, length: usize) -> SuperchunkResult {
-        let data = testing::array(16)
-            .into_iter()
-            .cycle()
-            .take(length)
-            .collect::<Vec<Array2<f32>>>();
-        let build = build_superchunk(
-            data.clone().into_iter(),
-            Arc::clone(&resolver),
-            &[2, 2],
-            2,
-            Precise(3),
-            8000,
-        )
-        .await
-        .unwrap();
+    type SuperchunkResult = Result<(Array3<i64>, MMStruct3)>;
 
-        Ok((data, build.data))
+    async fn superchunks(
+        resolver: &Arc<Resolver>,
+        lens: &[usize],
+    ) -> Result<(Array3<i64>, Vec<MMStruct3>)> {
+        let length = lens.iter().sum();
+        let data = testing::array(16);
+        let mut data = Array3::from_shape_fn((length, 16, 16), |(instant, row, col)| {
+            data[[instant % 100, row, col]]
+        });
+
+        let mut start = 0;
+        let mut chunks = vec![];
+        for len in lens {
+            let end = start + len;
+            let array = data.slice_mut(s![start..end, .., ..]);
+            let mut buffer = MMBuffer3::new_i64(array);
+            let build = Superchunk::build(
+                Arc::clone(resolver),
+                &mut buffer,
+                [*len, 16, 16],
+                &[2, 2],
+                2,
+            )
+            .await?;
+
+            chunks.push(build.data);
+            start = end;
+        }
+
+        Ok((data, chunks))
     }
 
-    fn new(resolver: &Arc<Resolver<f32>>) -> Result<Span<f32>> {
-        let span = Span::new([16, 16], 100, Arc::clone(resolver));
+    fn new(resolver: &Arc<Resolver>) -> Result<Span> {
+        let span = Span::new([16, 16], 100, Arc::clone(resolver), MMEncoding::I64);
 
         assert_eq!(span.shape(), [0, 16, 16]);
         assert_eq!(span.stride, 100);
@@ -682,40 +526,34 @@ mod tests {
         Ok(())
     }
 
-    type DataArray = Result<(Arc<Resolver<f32>>, Vec<Array2<f32>>, MMArray3<f32>)>;
+    type DataArray = Result<(Arc<Resolver>, Array3<i64>, MMStruct3)>;
 
     async fn span_of_5() -> DataArray {
         let resolver = testing::resolver();
-        let span = new(&resolver)?;
-        let (mut alldata, chunk) = superchunk(&resolver, 100).await?;
-        let mut span = span.append(chunk).await?;
-        for _ in 0..4 {
-            let (mut data, chunk) = superchunk(&resolver, 100).await?;
-            span = span.append(chunk).await?;
-            alldata.append(&mut data);
-        }
+        let mut span = new(&resolver)?;
 
+        let (data, chunks) = superchunks(&resolver, &[100; 5]).await?;
+        for chunk in chunks {
+            span = span.append(chunk).await?;
+        }
         assert_eq!(span.shape(), [500, 16, 16]);
 
-        Ok((resolver, alldata, MMArray3::Span(span)))
+        Ok((resolver, data, MMStruct3::Span(span)))
     }
 
     test_all_the_things!(span_of_5);
 
     async fn span_of_four_and_a_half() -> DataArray {
         let resolver = testing::resolver();
-        let span = new(&resolver)?;
-        let (mut alldata, chunk) = superchunk(&resolver, 100).await?;
-        let mut span = span.append(chunk).await?;
-        for length in [100, 100, 100, 50] {
-            let (mut data, chunk) = superchunk(&resolver, length).await?;
-            span = span.append(chunk).await?;
-            alldata.append(&mut data);
-        }
+        let mut span = new(&resolver)?;
 
+        let (data, chunks) = superchunks(&resolver, &[100, 100, 100, 100, 50]).await?;
+        for chunk in chunks {
+            span = span.append(chunk).await?;
+        }
         assert_eq!(span.shape(), [450, 16, 16]);
 
-        Ok((resolver, alldata, MMArray3::Span(span)))
+        Ok((resolver, data, MMStruct3::Span(span)))
     }
 
     test_all_the_things!(span_of_four_and_a_half);
@@ -725,11 +563,11 @@ mod tests {
     async fn test_append_to_partially_filled_span() {
         let resolver = testing::resolver();
         let span = new(&resolver).unwrap();
-        let (_, chunk) = superchunk(&resolver, 10).await.unwrap();
-        let span = span.append(chunk).await.unwrap();
+        let (_, chunks) = superchunks(&resolver, &[10]).await.unwrap();
+        let span = span.append(first(chunks)).await.unwrap();
 
-        let (_, chunk) = superchunk(&resolver, 10).await.unwrap();
-        span.append(chunk).await.unwrap(); // Previous span isn't full
+        let (_, chunks) = superchunks(&resolver, &[10]).await.unwrap();
+        span.append(first(chunks)).await.unwrap(); // Previous span isn't full
     }
 
     #[tokio::test]
@@ -737,14 +575,14 @@ mod tests {
     async fn test_append_mismatched_shape() {
         let resolver = testing::resolver();
         let span = new(&resolver).unwrap();
-        let data = testing::array(15);
-        let build = build_superchunk(
-            data.clone().into_iter(),
+        let mut data = testing::array(15);
+        let mut buffer = MMBuffer3::new_i64(data.view_mut());
+        let build = Superchunk::build(
             Arc::clone(&resolver),
+            &mut buffer,
+            [100, 15, 15],
             &[2, 2],
             2,
-            Precise(3),
-            8000,
         )
         .await
         .unwrap();
@@ -757,51 +595,79 @@ mod tests {
     async fn test_append_overly_large_chunk() {
         let resolver = testing::resolver();
         let span = new(&resolver).unwrap();
-        let (_, chunk) = superchunk(&resolver, 101).await.unwrap();
-        span.append(chunk).await.unwrap(); // too big
+        let (_, chunks) = superchunks(&resolver, &[101]).await.unwrap();
+        span.append(first(chunks)).await.unwrap(); // too big
     }
 
     async fn nested_spans() -> DataArray {
         let resolver = testing::resolver();
-        let mut data: Vec<Array2<f32>> = vec![];
-        let mut span = Span::new([16, 16], 100, Arc::clone(&resolver));
+        let (data, chunks) = superchunks(&resolver, &[10; 100]).await?;
+        let mut chunks = chunks.into_iter();
+
+        let mut span = Span::new([16, 16], 100, Arc::clone(&resolver), MMEncoding::I64);
         for _ in 0..10 {
-            let mut subspan = Span::new([16, 16], 10, Arc::clone(&resolver));
+            let mut subspan = Span::new([16, 16], 10, Arc::clone(&resolver), MMEncoding::I64);
             for _ in 0..10 {
-                let (mut subdata, chunk) = superchunk(&resolver, 10).await?;
-                data.append(&mut subdata);
+                let chunk = chunks.next().unwrap();
                 subspan = subspan.append(chunk).await?;
             }
-            span = span.append(MMArray3::Span(subspan)).await?;
+            span = span.append(MMStruct3::Span(subspan)).await?;
         }
 
-        Ok((resolver, data, MMArray3::Span(span)))
+        Ok((resolver, data, MMStruct3::Span(span)))
     }
 
     test_all_the_things!(nested_spans);
 
     async fn update() -> DataArray {
         let resolver = testing::resolver();
-        let span = new(&resolver)?;
-        let (mut alldata, chunk) = superchunk(&resolver, 100).await?;
-        let mut span = span.append(chunk).await?;
-        for _ in 0..3 {
-            let (mut data, chunk) = superchunk(&resolver, 100).await?;
+        let mut span = new(&resolver)?;
+        let (data, chunks) = superchunks(&resolver, &[100, 100, 100, 100, 50]).await?;
+        for chunk in chunks {
             span = span.append(chunk).await?;
-            alldata.append(&mut data);
         }
 
-        let (_, chunk) = superchunk(&resolver, 50).await?;
-        span = span.append(chunk).await?;
+        let (new_data, chunks) = superchunks(&resolver, &[75]).await?;
+        span = span.update(first(chunks)).await?;
 
-        let (mut data, chunk) = superchunk(&resolver, 75).await?;
-        span = span.update(chunk).await?;
-        alldata.append(&mut data);
+        let mut data = data.slice(s![..400, .., ..]).to_owned();
+        data.append(Axis(0), new_data.view()).ok();
 
         assert_eq!(span.shape(), [475, 16, 16]);
 
-        Ok((resolver, alldata, MMArray3::Span(span)))
+        Ok((resolver, data, MMStruct3::Span(span)))
     }
 
     test_all_the_things!(update);
+
+    #[tokio::test]
+    async fn test_high_level_ls() -> Result<()> {
+        let (resolver, _, span) = nested_spans().await?;
+        let cid = resolver.save(span).await?;
+        let ls = resolver.ls(&cid).await?;
+        assert_eq!(ls.len(), 10);
+        assert_eq!(ls[0].name, "0");
+        assert_eq!(ls[0].node_type.unwrap(), "Span");
+
+        let ls = resolver.ls(&ls[0].cid).await?;
+        assert_eq!(ls.len(), 10);
+        assert_eq!(ls[0].name, "0");
+        assert_eq!(ls[0].node_type.unwrap(), "Superchunk");
+
+        let ls = resolver.ls(&ls[0].cid).await?;
+        assert_eq!(ls.len(), 1);
+        assert_eq!(ls[0].name, "subchunks");
+        assert_eq!(ls[0].node_type.unwrap(), "Links");
+
+        let ls = resolver.ls(&ls[0].cid).await?;
+        assert_eq!(ls.len(), 4);
+        assert_eq!(ls[0].name, "0");
+        assert_eq!(ls[0].node_type.unwrap(), "Subchunk");
+
+        Ok(())
+    }
+
+    fn first<T>(a: Vec<T>) -> T {
+        a.into_iter().next().unwrap()
+    }
 }

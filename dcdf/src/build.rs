@@ -6,14 +6,16 @@ use futures::stream::{FuturesOrdered, StreamExt};
 use ndarray::{s, Array2};
 use num_traits::Float;
 
+use crate::dag::mmstruct::MMEncoding;
+
 use super::{
     cache::Cacheable,
     codec::{Block, Chunk, Dac, FChunk, Log, Snapshot},
     dag::{
         links::Links,
-        mmarray::MMArray3,
+        mmarray::MMDep3,
+        old_superchunk::{OldSuperchunk, Reference},
         resolver::Resolver,
-        superchunk::{Reference, Superchunk},
     },
     errors::Result,
     fixed::{to_fixed, Fraction, Precise, Round},
@@ -23,7 +25,7 @@ pub struct MMArray3Build<N>
 where
     N: Float + Debug + Send + Sync + 'static,
 {
-    pub data: MMArray3<N>,
+    pub data: MMDep3<N>,
     pub size: u64,
 
     pub elided: usize,
@@ -75,9 +77,9 @@ where
     count_snapshots: usize,
     count_logs: usize,
     snap_array: Array2<N>,
-    snapshot: Snapshot<i64>,
-    blocks: Vec<Block<i64>>,
-    logs: Vec<Log<i64>>,
+    snapshot: Snapshot,
+    blocks: Vec<Block>,
+    logs: Vec<Log>,
     rows: usize,
     cols: usize,
     k: i32,
@@ -148,7 +150,10 @@ where
             Precise(bits) => bits,
             Round(bits) => bits,
         };
-        let chunk = MMArray3::Subchunk(FChunk::new(Chunk::from(self.blocks), fractional_bits));
+        let chunk = MMDep3::Subchunk(FChunk::new(
+            Chunk::new(self.blocks, MMEncoding::F32, fractional_bits),
+            fractional_bits,
+        ));
         let size = chunk.size();
 
         Ok(MMArray3Build {
@@ -167,7 +172,7 @@ pub struct SuperchunkBuild<N>
 where
     N: Float + Debug + Send + Sync + 'static,
 {
-    pub data: Superchunk<N>,
+    pub data: OldSuperchunk<N>,
     pub size: u64,
     pub size_external: u64,
     pub sizes: Vec<u64>,
@@ -444,7 +449,7 @@ where
             .map(|n| to_fixed(n, bits, round))
             .collect();
 
-        let data = Superchunk::new(
+        let data = OldSuperchunk::new(
             [self.instants, self.rows, self.cols],
             self.sidelen,
             self.levels,
@@ -462,7 +467,7 @@ where
         let size = data.size();
 
         Ok(MMArray3Build {
-            data: MMArray3::Superchunk(data),
+            data: MMDep3::Superchunk(data),
             size: size + size_external + sizes.iter().sum::<u64>(),
             elided,
             local: local_len,

@@ -78,10 +78,7 @@ impl Cacheable for Dac {
 impl Dac {
     /// Get the value at the given index
     ///
-    pub(crate) fn get<I>(&self, index: usize) -> I
-    where
-        I: PrimInt + Debug,
-    {
+    pub(crate) fn get(&self, index: usize) -> i64 {
         let mut index = index;
         let mut n: u64 = 0;
         for (i, (bitmap, bytes)) in self.levels.iter().enumerate() {
@@ -93,8 +90,7 @@ impl Dac {
             }
         }
 
-        let n = zigzag_decode(n);
-        I::from(n).unwrap()
+        zigzag_decode(n)
     }
 }
 
@@ -160,30 +156,27 @@ mod tests {
         }
 
         /// Decompress back into Vector of integers
-        pub(crate) fn collect<I>(&self) -> Vec<I>
-        where
-            I: PrimInt + Debug,
-        {
+        pub(crate) fn collect(&self) -> Vec<i64> {
             (0..self.len()).into_iter().map(|i| self.get(i)).collect()
         }
     }
 
     #[test]
-    fn get_i32() {
+    fn get() {
         let data = vec![0, 2, -3, -2.pow(9), 2.pow(17) + 1, -2.pow(30) - 42];
         let dac = Dac::from(data.clone());
         for i in 0..data.len() {
-            assert_eq!(dac.get::<i32>(i), data[i]);
+            assert_eq!(dac.get(i), data[i]);
         }
         assert_eq!(dac.levels[0].0.get(2), false);
     }
 
     #[test]
     fn this_one() {
-        let data: Vec<i32> = vec![-512];
+        let data: Vec<i64> = vec![-512];
         let dac = Dac::from(data.clone());
         assert_eq!(zigzag_decode(zigzag_encode(-512)), -512);
-        assert_eq!(dac.get::<i32>(0), data[0]);
+        assert_eq!(dac.get(0), data[0]);
     }
 
     #[tokio::test]
@@ -199,7 +192,7 @@ mod tests {
         let dac = Dac::read_from(&mut buffer).await?;
 
         for i in 0..data.len() {
-            assert_eq!(dac.get::<i32>(i), data[i]);
+            assert_eq!(dac.get(i), data[i]);
         }
         assert_eq!(dac.levels[0].0.get(2), false);
 

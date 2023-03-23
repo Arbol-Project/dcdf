@@ -1,34 +1,34 @@
 use std::{
     cmp,
-    collections::HashMap,
     fmt::Debug,
     pin::Pin,
     sync::{Arc, Weak},
 };
 
-use async_recursion::async_recursion;
 use async_trait::async_trait;
 use cid::Cid;
 use futures::{
     future::{join_all, ready},
     io::{AsyncRead, AsyncWrite},
     lock::Mutex as AsyncMutex,
-    stream::{self, once, FuturesOrdered, FuturesUnordered, Stream, StreamExt},
+    stream::{self, once, FuturesUnordered, Stream, StreamExt},
 };
+use ndarray::{s, ArrayBase, DataMut, Ix1, Ix3};
+use num_traits::Float;
 
 use crate::{
     cache::Cacheable,
-    codec::{chunk::Chunk, dac::Dac},
+    codec::Dac,
     errors::{Error, Result},
     extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
+    fixed::{from_fixed, to_fixed},
     geom,
     helpers::rearrange,
 };
 
 use super::{
     links::Links,
-    mmbuffer::{MMBuffer0, MMBuffer1, MMBuffer3},
-    mmstruct::{MMEncoding, MMStruct3, MMStruct3Build},
+    mmarray::MMDep3,
     node::{Node, NODE_SUPERCHUNK},
     resolver::Resolver,
 };
@@ -38,7 +38,10 @@ use super::{
 /// The encoded subchunks are stored in some IPLD-like data store (represented by a concrete
 /// implementation of ``Mapper``.)
 ///
-pub(crate) struct Superchunk {
+pub struct OldSuperchunk<N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
     /// Shape of the encoded raster. Since K² matrix is grown to a square with sides whose length
     /// are a power of K, we need to keep track of the dimensions of the original raster so we can
     /// perform range checking.
@@ -63,21 +66,17 @@ pub(crate) struct Superchunk {
     min: Dac,
 
     /// Locally stored subchunks
-    local: Vec<Arc<MMStruct3>>,
+    local: Vec<Arc<MMDep3<N>>>,
 
     /// Hashes of externally stored subchunks
     external_cid: Cid,
     external: AsyncMutex<Option<Weak<Links>>>,
 
     /// Resolver for retrieving subchunks
-    pub(crate) resolver: Arc<Resolver>,
+    pub(crate) resolver: Arc<Resolver<N>>,
 
     /// Number of fractional bits stored in fixed point number representation
-    pub fractional_bits: usize,
-
-    /// The type of numeric data encoded in this structure.
-    ///
-    pub encoding: MMEncoding,
+    fractional_bits: usize,
 
     /// The side length of the subchunks stored in this superchunk
     chunks_sidelen: usize,
@@ -86,191 +85,10 @@ pub(crate) struct Superchunk {
     subsidelen: usize,
 }
 
-impl Superchunk {
-    #[async_recursion]
-    pub async fn build(
-        resolver: Arc<Resolver>,
-        buffer: &mut MMBuffer3<'_>,
-        shape: [usize; 3],
-        levels: &[u32],
-        k: i32,
-    ) -> Result<MMStruct3Build> {
-        let [instants, rows, cols] = shape;
-
-        // Find longest side
-        let sidelen = *shape[1..].iter().max().unwrap() as f64;
-
-        // Find total number of tree levels needed to represent this data
-        let total_levels = sidelen.log(k as f64).ceil() as u32;
-
-        // Make sure levels passed in by user match up to levels needed to encode array
-        let user_levels = levels.iter().sum::<u32>();
-        if user_levels != total_levels {
-            panic!(
-                "Need {total_levels} tree levels to encode array, but {user_levels} levels \
-                passed in."
-            );
-        }
-
-        // Adjust sidelen to be lowest power of k that is equal to or greater than the longest side
-        let sidelen = k.pow(total_levels) as usize;
-
-        let sublevels = &levels[1..];
-        let at_bottom = sublevels.len() == 1;
-        let levels = levels[0];
-
-        let subsidelen = k.pow(levels as u32) as usize;
-        let chunks_sidelen = sidelen / subsidelen;
-
-        // Compute subchunks in parallel, by iterating over subarrays
-        let mut futures = FuturesOrdered::new();
-        let mut elided = vec![]; // bitmap would be more compact but also more overhead. worth it?
-        let mut min_max = vec![];
-
-        for row in 0..subsidelen {
-            let top = row * chunks_sidelen;
-            let bottom = cmp::min(top + chunks_sidelen, rows);
-            for col in 0..subsidelen {
-                let left = col * chunks_sidelen;
-                let right = cmp::min(left + chunks_sidelen, cols);
-
-                if top >= rows || left >= cols {
-                    // This subarray is entirely outside the bounds of the actual array. This can
-                    // happen becaue the logical array is expanded to have a square shape with the
-                    // side lengths a power of k.
-                    elided.push(true);
-                    min_max.push(vec![(0, 0); instants]);
-                } else {
-                    let mut sub_buffer = buffer.slice(0, instants, top, bottom, left, right);
-                    let shape = [instants, bottom - top, right - left];
-
-                    let subchunk_min_max = sub_buffer.min_max();
-                    let can_elide = subchunk_min_max
-                        .iter()
-                        .all(|(min_value, max_value)| min_value == max_value);
-                    min_max.push(subchunk_min_max);
-
-                    if can_elide {
-                        elided.push(true);
-                    } else {
-                        let build_subchunk = at_bottom || {
-                            // Find out how many tree levels are needed to represent this subarray.
-                            // In cases where the array sides are greatly expanded to find a power
-                            // of K, we may wind up with a subarray (in the lower right quadrant)
-                            // that is is significantly smaller than other subarrays at the same
-                            // level and should be encoded as a subchunk instead of as a superchunk.
-                            let sidelen = *shape[1..].iter().max().unwrap() as f64;
-                            let needed_levels = sidelen.log(k as f64).ceil() as u32;
-
-                            needed_levels <= sublevels[0]
-                        };
-
-                        let resolver = Arc::clone(&resolver);
-                        let future = async move {
-                            if build_subchunk {
-                                Ok(Chunk::build(&mut sub_buffer, shape, k))
-                            } else {
-                                Superchunk::build(resolver, &mut sub_buffer, shape, sublevels, k)
-                                    .await
-                            }
-                        };
-
-                        futures.push_back(future);
-                        elided.push(false);
-                    }
-                }
-            }
-        }
-
-        let mut subchunks = futures
-            .collect::<Vec<Result<_>>>()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>>>()?
-            .into_iter();
-
-        let mut min = Vec::with_capacity(instants);
-        let mut max = Vec::with_capacity(instants);
-        for i in 0..instants {
-            for subchunk in &min_max {
-                let (subchunk_min, subchunk_max) = subchunk[i];
-                min.push(subchunk_min);
-                max.push(subchunk_max);
-            }
-        }
-        let mut external_references: HashMap<Cid, usize> = HashMap::new();
-        let mut external = Links::new();
-        let mut references = Vec::new();
-        let mut sizes = Vec::new();
-        let mut n_elided = 0;
-        let mut n_snapshots = 0;
-        let mut n_logs = 0;
-        let n_subchunks = subsidelen * subsidelen;
-        for i in 0..n_subchunks {
-            if elided[i] {
-                n_elided += 1;
-                references.push(Reference::Elided);
-            } else {
-                let build = subchunks.next().unwrap();
-                let can_elide = (i..n_subchunks * instants)
-                    .step_by(n_subchunks)
-                    .all(|n| max[n] == min[n]);
-                if can_elide {
-                    n_elided += 1;
-                    references.push(Reference::Elided);
-                } else {
-                    sizes.push(build.data.size());
-                    let cid = resolver.save(build.data).await?;
-                    let index = match external_references.get(&cid) {
-                        Some(index) => *index,
-                        None => {
-                            let index = external.len();
-                            external.push(cid);
-                            external_references.insert(cid, index);
-
-                            index
-                        }
-                    };
-                    references.push(Reference::External(index));
-                    n_snapshots += build.snapshots;
-                    n_logs += build.logs;
-                }
-            }
-        }
-
-        let size_external = external.size();
-        let external_len = external.len();
-        let external_cid = resolver.save(external).await?;
-
-        let data = Superchunk::new(
-            shape,
-            sidelen,
-            levels,
-            references,
-            Dac::from(max),
-            Dac::from(min),
-            vec![],
-            external_cid,
-            Arc::clone(&resolver),
-            buffer.fractional_bits(),
-            buffer.encoding(),
-            chunks_sidelen,
-            subsidelen,
-        );
-
-        let size = data.size();
-
-        Ok(MMStruct3Build {
-            data: MMStruct3::Superchunk(data),
-            size: size + size_external + sizes.iter().sum::<u64>(),
-            elided: n_elided,
-            local: 0,
-            external: external_len,
-            snapshots: n_snapshots,
-            logs: n_logs,
-        })
-    }
-
+impl<N> OldSuperchunk<N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
     pub(crate) fn new(
         shape: [usize; 3],
         sidelen: usize,
@@ -278,11 +96,10 @@ impl Superchunk {
         references: Vec<Reference>,
         max: Dac,
         min: Dac,
-        local: Vec<Arc<MMStruct3>>,
+        local: Vec<Arc<MMDep3<N>>>,
         external_cid: Cid,
-        resolver: Arc<Resolver>,
+        resolver: Arc<Resolver<N>>,
         fractional_bits: usize,
-        encoding: MMEncoding,
         chunks_sidelen: usize,
         subsidelen: usize,
     ) -> Self {
@@ -298,7 +115,6 @@ impl Superchunk {
             external: AsyncMutex::new(None),
             resolver,
             fractional_bits,
-            encoding,
             chunks_sidelen,
             subsidelen,
         }
@@ -312,13 +128,9 @@ impl Superchunk {
 
     /// Get a cell's value at a particular time instant.
     ///
-    pub async fn get(
-        &self,
-        instant: usize,
-        row: usize,
-        col: usize,
-        buffer: &mut MMBuffer0,
-    ) -> Result<()> {
+    pub async fn get(&self, instant: usize, row: usize, col: usize) -> Result<N> {
+        self.check_bounds(instant, row, col);
+
         // Theoretically compiler will optimize to single DIVREM instructions
         // https://stackoverflow.com/questions/69051429
         //      /what-is-the-function-to-get-the-quotient-and-remainder-divmod-for-rust
@@ -332,37 +144,38 @@ impl Superchunk {
             Reference::Elided => {
                 let stride = self.subsidelen * self.subsidelen;
                 let index = chunk + instant * stride;
+                let value = self.max.get(index);
 
-                buffer.set(self.max.get(index));
+                Ok(from_fixed(value, self.fractional_bits))
             }
             Reference::Local(index) => {
                 let chunk = &self.local[index];
-                buffer.set_fractional_bits(chunk.fractional_bits());
-                chunk.get(instant, local_row, local_col, buffer).await?;
+                Ok(chunk.get(instant, local_row, local_col).await?)
             }
             Reference::External(index) => {
                 let external = &self.external().await?;
                 let cid = &external[index];
-                let chunk = self.resolver.get_mmstruct3(cid).await?;
+                let chunk = self.resolver.get_mmdep3(cid).await?;
 
-                buffer.set_fractional_bits(chunk.fractional_bits());
-                chunk.get(instant, local_row, local_col, buffer).await?;
+                Ok(chunk.get(instant, local_row, local_col).await?)
             }
         }
-        Ok(())
     }
 
     /// Fill in a preallocated array with a cell's value across time instants.
     ///
-    #[async_recursion]
-    pub async fn fill_cell(
+    pub async fn fill_cell<S>(
         &self,
         start: usize,
-        end: usize,
         row: usize,
         col: usize,
-        buffer: &mut MMBuffer1,
-    ) -> Result<()> {
+        values: &mut ArrayBase<S, Ix1>,
+    ) -> Result<()>
+    where
+        S: DataMut<Elem = N> + Send,
+    {
+        self.check_bounds(start + values.len() - 1, row, col);
+
         // Theoretically compiler will optimize to single DIVREM instructions
         // https://stackoverflow.com/questions/69051429
         //      /what-is-the-function-to-get-the-quotient-and-remainder-divmod-for-rust
@@ -374,25 +187,21 @@ impl Superchunk {
         let chunk = chunk_row * self.subsidelen + chunk_col;
         match self.references[chunk] {
             Reference::Elided => {
-                for (i, value) in SuperCellIter::new(self, start, end, chunk).enumerate() {
-                    buffer.set(i, value);
+                for (i, value) in
+                    SuperCellIter::new(self, start, start + values.len(), chunk).enumerate()
+                {
+                    values[i] = value;
                 }
             }
             Reference::Local(index) => {
                 let chunk = &self.local[index];
-                buffer.set_fractional_bits(chunk.fractional_bits());
-                chunk
-                    .fill_cell(start, end, local_row, local_col, buffer)
-                    .await?;
+                chunk.fill_cell(start, local_row, local_col, values).await?;
             }
             Reference::External(index) => {
                 let external = &self.external().await?;
                 let cid = &external[index];
-                let chunk = self.resolver.get_mmstruct3(cid).await?;
-                buffer.set_fractional_bits(chunk.fractional_bits());
-                chunk
-                    .fill_cell(start, end, local_row, local_col, buffer)
-                    .await?;
+                let chunk = self.resolver.get_mmdep3(cid).await?;
+                chunk.fill_cell(start, local_row, local_col, values).await?;
             }
         }
 
@@ -401,24 +210,40 @@ impl Superchunk {
 
     /// Fill in a preallocated array with subarray from this chunk
     ///
-    #[async_recursion]
-    pub async fn fill_window(&self, window: geom::Cube, buffer: &mut MMBuffer3<'_>) -> Result<()> {
+    pub async fn fill_window<S>(
+        &self,
+        start: usize,
+        top: usize,
+        left: usize,
+        window: &mut ArrayBase<S, Ix3>,
+    ) -> Result<()>
+    where
+        S: DataMut<Elem = N> + Send,
+    {
         let mut futures = vec![];
-        let subchunks = self.subchunks_for(&window.rect());
+        let shape = window.shape();
+        let end = start + shape[0];
+        let bottom = top + shape[1];
+        let right = left + shape[2];
+        self.check_bounds(end - 1, bottom - 1, right - 1);
+
+        let subchunks = self.subchunks_for(&geom::Rect::new(top, bottom, left, right));
         for subchunk in subchunks {
-            let mut buffer = buffer.slice(
-                0,
-                window.end - window.start,
-                subchunk.slice.top,
-                subchunk.slice.bottom,
-                subchunk.slice.left,
-                subchunk.slice.right,
-            );
+            let mut subwindow = unsafe {
+                window
+                    .slice_mut(s![
+                        ..,
+                        subchunk.slice.top..subchunk.slice.bottom,
+                        subchunk.slice.left..subchunk.slice.right
+                    ])
+                    .raw_view_mut()
+                    .deref_into_view_mut()
+            };
 
             let future = async move {
                 let bounds = geom::Cube::new(
-                    window.start,
-                    window.end,
+                    start,
+                    end,
                     subchunk.local.top,
                     subchunk.local.bottom,
                     subchunk.local.left,
@@ -429,21 +254,26 @@ impl Superchunk {
                         let stride = self.subsidelen * self.subsidelen;
                         let mut index = subchunk.index + bounds.start * stride;
                         for i in 0..bounds.instants() {
-                            buffer.fill_instant(i, self.max.get(index));
+                            let value = self.max.get(index);
+                            let value = from_fixed(value, self.fractional_bits);
+                            let mut slice = subwindow.slice_mut(s![i, .., ..]);
+                            slice.fill(value);
                             index += stride;
                         }
                     }
                     Reference::Local(index) => {
                         let chunk = &self.local[index];
-                        buffer.set_fractional_bits(chunk.fractional_bits());
-                        chunk.fill_window(bounds, &mut buffer).await?;
+                        chunk
+                            .fill_window(bounds.start, bounds.top, bounds.left, &mut subwindow)
+                            .await?;
                     }
                     Reference::External(index) => {
                         let external = &self.external().await?;
                         let cid = &external[index];
-                        let chunk = self.resolver.get_mmstruct3(cid).await?;
-                        buffer.set_fractional_bits(chunk.fractional_bits());
-                        chunk.fill_window(bounds, &mut buffer).await?;
+                        let chunk = self.resolver.get_mmdep3(cid).await?;
+                        chunk
+                            .fill_window(bounds.start, bounds.top, bounds.left, &mut subwindow)
+                            .await?;
                     }
                 }
 
@@ -464,28 +294,31 @@ impl Superchunk {
     /// matching cells.
     ///
     pub fn search(
-        myself: &Arc<MMStruct3>,
+        myself: &Arc<MMDep3<N>>,
         bounds: geom::Cube,
-        lower: i64,
-        upper: i64,
+        lower: N,
+        upper: N,
     ) -> Pin<Box<dyn Stream<Item = Result<(usize, usize, usize)>> + Send>> {
         let myself = Arc::clone(myself);
         let chunk = match &*myself {
-            MMStruct3::Superchunk(chunk) => chunk,
+            MMDep3::Superchunk(chunk) => chunk,
             _ => {
                 panic!("not a superchunk");
             }
         };
         let (lower, upper) = rearrange(lower, upper);
+        chunk.check_bounds(bounds.end - 1, bounds.bottom - 1, bounds.right - 1);
 
         // Use local min and max to figure out which subchunks have cells in range
+        let lower_fixed = to_fixed(lower, chunk.fractional_bits, true);
+        let upper_fixed = to_fixed(upper, chunk.fractional_bits, true);
         let has_cells = |subchunk: &WindowSubchunk| {
             let stride = chunk.subsidelen * chunk.subsidelen;
             let mut index = subchunk.index + bounds.start * stride;
             for _ in bounds.start..bounds.end {
                 let min = chunk.min.get(index);
                 let max = chunk.max.get(index);
-                if upper >= min && lower <= max {
+                if upper_fixed > min && lower_fixed < max {
                     return true;
                 }
                 index += stride;
@@ -516,14 +349,14 @@ impl Superchunk {
     }
 
     async fn search_subchunk(
-        myself: Arc<MMStruct3>,
+        myself: Arc<MMDep3<N>>,
         bounds: geom::Cube,
-        lower: i64,
-        upper: i64,
+        lower: N,
+        upper: N,
         subchunk: WindowSubchunk,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<(usize, usize, usize)>> + Send>>> {
         let chunk = match &*myself {
-            MMStruct3::Superchunk(chunk) => chunk,
+            MMDep3::Superchunk(chunk) => chunk,
             _ => {
                 panic!("Not a superchunk");
             }
@@ -541,21 +374,18 @@ impl Superchunk {
         );
         match chunk.references[subchunk.index] {
             Reference::Elided => {
-                let mut cells = Vec::new();
-                let n_subchunks = chunk.subsidelen * chunk.subsidelen;
-                let start_index = subchunk.index + n_subchunks * bounds.start;
-                let end_index = start_index + (bounds.end - bounds.start) * n_subchunks;
-                for (instant, index) in (start_index..end_index).step_by(n_subchunks).enumerate() {
-                    let value = chunk.max.get(index);
-                    if lower <= value && value <= upper {
-                        let instant = instant + bounds.start;
-                        for row in bounds.top..bounds.bottom {
-                            for col in bounds.left..bounds.right {
-                                cells.push(Ok((instant, row + top, col + left)));
-                            }
-                        }
-                    }
-                }
+                let subiter = SuperSearchIter::new(
+                    chunk,
+                    subchunk.index,
+                    lower,
+                    upper,
+                    bounds.start,
+                    bounds.end,
+                    subchunk.local,
+                );
+                let cells: Vec<Result<(usize, usize, usize)>> = subiter
+                    .map(|(instant, row, col)| Ok((instant, row + top, col + left)))
+                    .collect();
 
                 Ok(stream::iter(cells).boxed())
             }
@@ -573,7 +403,7 @@ impl Superchunk {
             Reference::External(index) => {
                 let external = chunk.external().await?;
                 let cid = &external[index];
-                let subchunk = chunk.resolver.get_mmstruct3(&cid).await?;
+                let subchunk = chunk.resolver.get_mmdep3(&cid).await?;
                 let iter = subchunk
                     .search(bounds, lower, upper)
                     .map(move |r| {
@@ -634,6 +464,20 @@ impl Superchunk {
         subchunks
     }
 
+    /// Panics if given point is out of bounds for this chunk
+    fn check_bounds(&self, instant: usize, row: usize, col: usize) {
+        let [instants, rows, cols] = self.shape;
+        if instant >= instants || row >= rows || col >= cols {
+            panic!(
+                "dcdf::Superchunk: index[{}, {}, {}] is out of bounds for array of shape {:?}",
+                instant,
+                row,
+                col,
+                [instants, rows, cols],
+            );
+        }
+    }
+
     async fn external(&self) -> Result<Arc<Links>> {
         // Try to use cached version. Because we only store a weak reference locally, the LRU cache
         // is still in charge of whether an object is still available.
@@ -651,10 +495,13 @@ impl Superchunk {
     }
 }
 
-impl Cacheable for Superchunk {
+impl<N> Cacheable for OldSuperchunk<N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
     /// Return size of serialized superchunk in bytes
     fn size(&self) -> u64 {
-        Resolver::HEADER_SIZE +
+        Resolver::<N>::HEADER_SIZE +
         4 * 3  // shape
         + 4    // sidelen
         + 1    // levels
@@ -672,14 +519,17 @@ impl Cacheable for Superchunk {
 }
 
 #[async_trait]
-impl Node for Superchunk {
+impl<N> Node<N> for OldSuperchunk<N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
     const NODE_TYPE: u8 = NODE_SUPERCHUNK;
 
     /// Save an object into the DAG
     ///
     async fn save_to(
         &self,
-        resolver: &Arc<Resolver>,
+        resolver: &Arc<Resolver<N>>,
         stream: &mut (impl AsyncWrite + Unpin + Send),
     ) -> Result<()> {
         stream.write_u32(self.shape[0] as u32).await?;
@@ -691,7 +541,6 @@ impl Node for Superchunk {
         stream.write_u32(self.chunks_sidelen as u32).await?;
         stream.write_u32(self.subsidelen as u32).await?;
         stream.write_byte(self.fractional_bits as u8).await?;
-        stream.write_byte(self.encoding as u8).await?;
 
         stream.write_u32(self.references.len() as u32).await?;
         for reference in &self.references {
@@ -713,7 +562,7 @@ impl Node for Superchunk {
 
     /// Load an object from a stream
     async fn load_from(
-        resolver: &Arc<Resolver>,
+        resolver: &Arc<Resolver<N>>,
         stream: &mut (impl AsyncRead + Unpin + Send),
     ) -> Result<Self> {
         let instants = stream.read_u32().await? as usize;
@@ -726,7 +575,6 @@ impl Node for Superchunk {
         let chunks_sidelen = stream.read_u32().await? as usize;
         let subsidelen = stream.read_u32().await? as usize;
         let fractional_bits = stream.read_byte().await? as usize;
-        let encoding = MMEncoding::try_from(stream.read_byte().await?)?;
 
         let n_references = stream.read_u32().await? as usize;
         let mut references = Vec::with_capacity(n_references);
@@ -740,7 +588,7 @@ impl Node for Superchunk {
         let n_local = stream.read_u32().await? as usize;
         let mut local = Vec::with_capacity(n_local);
         for _ in 0..n_local {
-            let chunk = MMStruct3::load_from(resolver, stream).await?;
+            let chunk = MMDep3::load_from(resolver, stream).await?;
             local.push(Arc::new(chunk));
         }
 
@@ -754,7 +602,6 @@ impl Node for Superchunk {
             chunks_sidelen,
             subsidelen,
             fractional_bits,
-            encoding,
             references,
             local,
             external_cid,
@@ -786,15 +633,21 @@ struct WindowSubchunk {
     pub(crate) slice: geom::Rect,
 }
 
-struct SuperCellIter<'a> {
-    superchunk: &'a Superchunk,
+struct SuperCellIter<'a, N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
+    superchunk: &'a OldSuperchunk<N>,
     index: usize,
     stride: usize,
     remaining: usize,
 }
 
-impl<'a> SuperCellIter<'a> {
-    fn new(superchunk: &'a Superchunk, start: usize, end: usize, chunk_index: usize) -> Self {
+impl<'a, N> SuperCellIter<'a, N>
+where
+    N: Float + Debug + Send + Sync,
+{
+    fn new(superchunk: &'a OldSuperchunk<N>, start: usize, end: usize, chunk_index: usize) -> Self {
         let stride = superchunk.subsidelen * superchunk.subsidelen;
         let index = chunk_index + start * stride;
         let remaining = end - start;
@@ -808,8 +661,11 @@ impl<'a> SuperCellIter<'a> {
     }
 }
 
-impl<'a> Iterator for SuperCellIter<'a> {
-    type Item = i64;
+impl<'a, N> Iterator for SuperCellIter<'a, N>
+where
+    N: Float + Debug + Send + Sync,
+{
+    type Item = N;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.remaining {
@@ -819,8 +675,104 @@ impl<'a> Iterator for SuperCellIter<'a> {
                 self.index += self.stride;
                 self.remaining -= 1;
 
-                Some(value)
+                Some(from_fixed(value, self.superchunk.fractional_bits))
             }
+        }
+    }
+}
+
+struct SuperSearchIter<'a, N>
+where
+    N: Float + Debug + Send + Sync + 'static,
+{
+    chunk: &'a OldSuperchunk<N>,
+    index: usize,
+    lower: i64,
+    upper: i64,
+
+    end: usize,
+    bounds: geom::Rect,
+
+    instant: usize,
+    row: usize,
+    col: usize,
+}
+
+impl<'a, N> SuperSearchIter<'a, N>
+where
+    N: Float + Debug + Send + Sync,
+{
+    fn new(
+        chunk: &'a OldSuperchunk<N>,
+        index: usize,
+        lower: N,
+        upper: N,
+        start: usize,
+        end: usize,
+        bounds: geom::Rect,
+    ) -> Self {
+        let row = bounds.top;
+        let col = bounds.left;
+
+        let mut iter = Self {
+            chunk,
+            index,
+            lower: to_fixed(lower, chunk.fractional_bits, true),
+            upper: to_fixed(upper, chunk.fractional_bits, true),
+            end,
+            bounds,
+
+            instant: start,
+            row,
+            col,
+        };
+
+        iter.next_instant();
+
+        iter
+    }
+
+    fn advance(&mut self) {
+        self.col += 1;
+        if self.col == self.bounds.right {
+            self.col = self.bounds.left;
+            self.row += 1;
+            if self.row == self.bounds.bottom {
+                self.row = self.bounds.top; // Da capo
+                self.instant += 1;
+                self.next_instant();
+            }
+        }
+    }
+
+    fn next_instant(&mut self) {
+        // Search for next instant with value in bounds
+        let stride = self.chunk.subsidelen * self.chunk.subsidelen;
+        while self.instant < self.end {
+            let value: i64 = self.chunk.max.get(self.index + self.instant * stride);
+            if self.lower <= value && value <= self.upper {
+                break;
+            }
+            self.instant += 1;
+        }
+    }
+}
+
+impl<'a, N> Iterator for SuperSearchIter<'a, N>
+where
+    N: Float + Debug + Send + Sync,
+{
+    type Item = (usize, usize, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.instant < self.end {
+            let point = (self.instant, self.row, self.col);
+
+            self.advance();
+
+            Some(point)
+        } else {
+            None
         }
     }
 }
@@ -884,11 +836,12 @@ impl Cacheable for Reference {
 mod tests {
     use super::*;
 
-    use crate::testing;
+    use crate::{build::build_superchunk, fixed::Fraction::Precise, testing};
 
     use std::collections::HashSet;
+    use std::iter::zip;
 
-    use ndarray::{s, Array1, Array3};
+    use ndarray::Array2;
     use paste::paste;
 
     macro_rules! test_all_the_things {
@@ -901,9 +854,8 @@ mod tests {
                     for instant in 0..instants {
                         for row in 0..rows {
                             for col in 0..cols {
-                                let mut buffer = MMBuffer0::I64(0);
-                                chunk.get(instant, row, col, &mut buffer).await?;
-                                assert_eq!(i64::from(buffer), data[[instant, row, col]]);
+                                let value = chunk.get(instant, row, col).await?;
+                                assert_eq!(value, data[instant][[row, col]]);
                             }
                         }
                     }
@@ -919,15 +871,48 @@ mod tests {
                         for col in 0..cols {
                             let start = row + col;
                             let end = instants - start;
-                            let mut array = Array1::zeros([end - start]);
-                            let mut buffer = MMBuffer1::new_i64(array.view_mut());
-                            chunk.fill_cell(start, end, row, col, &mut buffer).await?;
-
-                            assert_eq!(array, data.slice(s![start..end, row, col]));
+                            let values = chunk.get_cell(start, end, row, col).await?;
+                            assert_eq!(values.len(), end - start);
+                            for i in 0..values.len() {
+                                assert_eq!(values[i], data[i + start][[row, col]]);
+                            }
                         }
                     }
 
                     Ok(())
+                }
+
+                #[tokio::test]
+                #[should_panic]
+                async fn [<$name _test_fill_cell_time_out_of_bounds>]() {
+                    let (_, chunk) = $name().await.expect("this should work");
+                    let [instants, rows, cols] = chunk.shape();
+
+                    let values = chunk.get_cell(0, instants + 1, rows, cols).await
+                        .expect("This isn't what causes the panic");
+                    assert_eq!(values.len(), instants + 1);
+                }
+
+                #[tokio::test]
+                #[should_panic]
+                async fn [<$name _test_fill_cell_row_out_of_bounds>]() {
+                    let (_, chunk) = $name().await.expect("this should work");
+                    let [instants, rows, cols] = chunk.shape();
+
+                    let values = chunk.get_cell(0, instants, rows + 1, cols).await
+                        .expect("This isn't what causes the panic");
+                    assert_eq!(values.len(), instants + 1);
+                }
+
+                #[tokio::test]
+                #[should_panic]
+                async fn [<$name _test_fill_cell_col_out_of_bounds>]() {
+                    let (_, chunk) = $name().await.expect("this should work");
+                    let [instants, rows, cols] = chunk.shape();
+
+                    let values = chunk.get_cell(0, instants, rows, cols + 1).await
+                        .expect("This isn't what causes the panic");
+                    assert_eq!(values.len(), instants + 1);
                 }
 
                 #[tokio::test]
@@ -940,13 +925,18 @@ mod tests {
                             let right = left + cols / 2;
                             let start = top + bottom;
                             let end = instants - start;
-
-                            let mut array = Array3::zeros([end - start, bottom - top, right - left]);
-                            let mut buffer = MMBuffer3::new_i64(array.view_mut());
                             let bounds = geom::Cube::new(start, end, top, bottom, left, right);
-                            chunk.fill_window(bounds, &mut buffer).await?;
+                            let window = chunk.get_window(&bounds).await?;
 
-                            assert_eq!(array, data.slice(s![start..end, top..bottom, left..right]));
+                            assert_eq!(window.shape(),
+                                       [end - start, bottom - top, right - left]);
+
+                            for i in 0..end - start {
+                                assert_eq!(
+                                    window.slice(s![i, .., ..]),
+                                    data[start + i].slice(s![top..bottom, left..right])
+                                );
+                            }
                         }
                     }
 
@@ -954,9 +944,36 @@ mod tests {
                 }
 
                 #[tokio::test]
+                #[should_panic]
+                async fn [<$name _test_fill_window_time_out_of_bounds>]() {
+                    let (_, chunk) = $name().await.expect("this should work");
+                    let [instants, rows, cols] = chunk.shape();
+                    let bounds = geom::Cube::new(0, instants + 1, 0, rows, 0, cols);
+                    chunk.get_window(&bounds).await.expect("Unexpected error.");
+                }
+
+                #[tokio::test]
+                #[should_panic]
+                async fn [<$name _test_fill_window_row_out_of_bounds>]() {
+                    let (_, chunk) = $name().await.expect("this should work");
+                    let [instants, rows, cols] = chunk.shape();
+                    let bounds = geom::Cube::new(0, instants, 0, rows + 1, 0, cols);
+                    chunk.get_window(&bounds).await.expect("Unexpected error.");
+                }
+
+                #[tokio::test]
+                #[should_panic]
+                async fn [<$name _test_fill_window_col_out_of_bounds>]() {
+                    let (_, chunk) = $name().await.expect("this should work");
+                    let [instants, rows, cols] = chunk.shape();
+                    let bounds = geom::Cube::new(0, instants, 0, rows, 0, cols + 1);
+                    chunk.get_window(&bounds).await.expect("Unexpected error.");
+                }
+
+                #[tokio::test]
                 async fn [<$name _test_search>]() -> Result<()>{
                     let (data, chunk) = $name().await?;
-                    let chunk = Arc::new(MMStruct3::Superchunk(chunk));
+                    let chunk = Arc::new(MMDep3::Superchunk(chunk));
                     let [instants, rows, cols] = chunk.shape();
                     for top in 0..rows / 2 {
                         let bottom = top + rows / 2;
@@ -964,24 +981,139 @@ mod tests {
                             let right = left + cols / 2;
                             let start = top + bottom;
                             let end = instants - start;
-                            let lower = (start / 5) as i64;
-                            let upper = (end / 10) as i64;
+                            let lower = (start / 5) as f32;
+                            let upper = (end / 10) as f32;
+
+                            let mut expected: HashSet<(usize, usize, usize)> = HashSet::new();
+                            for i in start..end {
+                                let coords = testing::float_array_search_window(
+                                    data[i].view(),
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    lower,
+                                    upper,
+                                );
+                                for (row, col) in coords {
+                                    expected.insert((i, row, col));
+                                }
+                            }
 
                             let bounds = geom::Cube::new(start, end, top, bottom, left, right);
-                            let expected = testing::array_search_window3(
-                                data.view(),
-                                bounds,
-                                lower,
-                                upper,
-                            ).into_iter().collect::<HashSet<_>>();
-
-                            let results = chunk
-                                .search(bounds, lower, upper)
+                            let results: Vec<(usize, usize, usize)> = OldSuperchunk::
+                                search(&chunk, bounds, lower, upper)
                                 .map(|r| r.unwrap())
-                                .collect::<HashSet<_>>().await;
+                                .collect().await;
+
+                            let results: HashSet<(usize, usize, usize)> =
+                                HashSet::from_iter(results.clone().into_iter());
 
                             assert_eq!(results.len(), expected.len());
                             assert_eq!(results, expected);
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                #[tokio::test]
+                async fn [<$name _test_search_rearrange>]() -> Result<()>{
+                    let (data, chunk) = $name().await?;
+                    let chunk = Arc::new(MMDep3::Superchunk(chunk));
+                    let [instants, rows, cols] = chunk.shape();
+                    for top in 0..rows / 2 {
+                        let bottom = top + rows / 2;
+                        for left in 0..cols / 2 {
+                            let right = left + cols / 2;
+                            let start = top + bottom;
+                            let end = instants - start;
+                            let lower = (start / 5) as f32;
+                            let upper = (end / 10) as f32;
+
+                            let mut expected: HashSet<(usize, usize, usize)> = HashSet::new();
+                            for i in start..end {
+                                let coords = testing::float_array_search_window(
+                                    data[i].view(),
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    lower,
+                                    upper,
+                                );
+                                for (row, col) in coords {
+                                    expected.insert((i, row, col));
+                                }
+                            }
+
+                            let bounds = geom::Cube::new(end, start, bottom, top, right, left);
+                            let results: Vec<(usize, usize, usize)> = OldSuperchunk::
+                                search(&chunk, bounds, upper, lower)
+                                .map(|r| r.unwrap())
+                                .collect().await;
+
+                            let results: HashSet<(usize, usize, usize)> =
+                                HashSet::from_iter(results.clone().into_iter());
+
+                            assert_eq!(results.len(), expected.len());
+                            assert_eq!(results, expected);
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                #[tokio::test]
+                #[should_panic]
+                #[allow(unused_must_use)]
+                async fn [<$name _test_search_time_out_of_bounds>]() {
+                    let (_, chunk) = $name().await.expect("this should work");
+                    let [instants, rows, cols] = chunk.shape();
+                    let bounds = geom::Cube::new(0, instants + 1, 0, rows, 0, cols);
+                    let chunk = Arc::new(MMDep3::Superchunk(chunk));
+                    OldSuperchunk::search(&chunk, bounds, 0.0, 100.0);
+                }
+
+                #[tokio::test]
+                #[should_panic]
+                #[allow(unused_must_use)]
+                async fn [<$name _test_search_row_out_of_bounds>]() {
+                    let (_, chunk) = $name().await.expect("this should work");
+                    let [instants, rows, cols] = chunk.shape();
+                    let bounds = geom::Cube::new(0, instants, 0, rows + 1, 0, cols);
+                    let chunk = Arc::new(MMDep3::Superchunk(chunk));
+                    OldSuperchunk::search(&chunk, bounds, 0.0, 100.0);
+                }
+
+                #[tokio::test]
+                #[should_panic]
+                #[allow(unused_must_use)]
+                async fn [<$name _test_search_col_out_of_bounds>]() {
+                    let (_, chunk) = $name().await.expect("this should work");
+                    let [instants, rows, cols] = chunk.shape();
+                    let bounds = geom::Cube::new(0, instants, 0, rows, 0, cols + 1);
+                    let chunk = Arc::new(MMDep3::Superchunk(chunk));
+                    OldSuperchunk::search(&chunk, bounds, 0.0, 100.0);
+                }
+
+                #[tokio::test]
+                async fn [<$name _test_save_load>]() -> Result<()> {
+                    let (data, chunk) = $name().await?;
+                    let resolver = Arc::clone(&chunk.resolver);
+                    let cid = resolver.save(chunk).await?;
+                    let chunk = resolver.get_superchunk(&cid).await?;
+
+                    let [instants, rows, cols] = chunk.shape();
+                    for row in 0..rows {
+                        for col in 0..cols {
+                            let start = row + col;
+                            let end = instants - start;
+                            let values = chunk.get_cell(start, end, row, col).await?;
+                            assert_eq!(values.len(), end - start);
+                            for i in 0..values.len() {
+                                assert_eq!(values[i], data[i + start][[row, col]]);
+                            }
                         }
                     }
 
@@ -997,19 +1129,52 @@ mod tests {
 
                     Ok(())
                 }
+
+                #[tokio::test]
+                async fn [<$name _test_high_level_ls>]() -> Result<()> {
+                    let (_, chunk) = $name().await?;
+                    let resolver = Arc::clone(&chunk.resolver);
+                    let chunk_cid = resolver.save(chunk).await?;
+                    let chunk = resolver.get_superchunk(&chunk_cid).await?;
+                    let external = chunk.external().await?;
+                    let ls = resolver.ls(&chunk_cid).await?.expect("Can't ls superchunk");
+                    assert_eq!(ls.len(), 1);
+                    assert_eq!(ls[0].name, String::from("subchunks"));
+                    assert_eq!(ls[0].cid, chunk.external_cid);
+                    assert_eq!(ls[0].node_type.unwrap(), "Links");
+                    assert_eq!(ls[0].size.unwrap(), external.size());
+
+                    let ls = resolver.ls(&ls[0].cid).await?.expect("Can't ls links");
+                    assert_eq!(ls.len(), external.len());
+                    for (expected, entry) in zip(external.iter().enumerate(), ls) {
+                        let (i, cid) = expected;
+                        let subchunk = resolver.get_mmdep3(&cid).await?;
+                        assert_eq!(entry.name, i.to_string());
+                        assert_eq!(entry.cid, cid.clone());
+                        assert_eq!(entry.size.unwrap(), subchunk.size());
+                    }
+
+                    Ok(())
+                }
             }
         };
     }
 
-    type DataChunk = Result<(Array3<i64>, Superchunk)>;
+    type DataChunk = Result<(Vec<Array2<f32>>, OldSuperchunk<f32>)>;
 
     async fn no_subchunks() -> DataChunk {
-        let mut data = testing::array8();
-        let mut buffer = MMBuffer3::new_i64(data.view_mut());
-        let build =
-            Superchunk::build(testing::resolver(), &mut buffer, [100, 8, 8], &[3, 0], 2).await?;
+        let data = testing::oldfarray8();
+        let build = build_superchunk(
+            data.clone().into_iter(),
+            testing::resolver(),
+            &[3, 0],
+            2,
+            Precise(3),
+            0,
+        )
+        .await?;
         let superchunk = match build.data {
-            MMStruct3::Superchunk(chunk) => chunk,
+            MMDep3::Superchunk(chunk) => chunk,
             _ => {
                 panic!("not a superchunk")
             }
@@ -1022,15 +1187,23 @@ mod tests {
     test_all_the_things!(no_subchunks);
 
     async fn no_subchunks_coarse() -> DataChunk {
-        let data = testing::array8();
-        let mut data = Array3::from_shape_fn((100, 16, 16), |(instant, row, col)| {
-            data[[instant, row / 2, col / 2]]
-        });
-        let mut buffer = MMBuffer3::new_i64(data.view_mut());
-        let build =
-            Superchunk::build(testing::resolver(), &mut buffer, [100, 16, 16], &[3, 1], 2).await?;
+        let data = testing::oldfarray8();
+        let data: Vec<Array2<f32>> = data
+            .into_iter()
+            .map(|a| Array2::from_shape_fn((16, 16), |(row, col)| a[[row / 2, col / 2]]))
+            .collect();
+
+        let build = build_superchunk(
+            data.clone().into_iter(),
+            testing::resolver(),
+            &[3, 1],
+            2,
+            Precise(3),
+            0,
+        )
+        .await?;
         let superchunk = match build.data {
-            MMStruct3::Superchunk(chunk) => chunk,
+            MMDep3::Superchunk(chunk) => chunk,
             _ => {
                 panic!("not a superchunk")
             }
@@ -1048,13 +1221,44 @@ mod tests {
 
     test_all_the_things!(no_subchunks_coarse);
 
-    async fn external_subchunks() -> DataChunk {
-        let mut data = testing::array(16);
-        let mut buffer = MMBuffer3::new_i64(data.view_mut());
-        let build =
-            Superchunk::build(testing::resolver(), &mut buffer, [100, 16, 16], &[2, 2], 2).await?;
+    async fn local_subchunks() -> DataChunk {
+        let data = testing::oldfarray(16);
+        let build = build_superchunk(
+            data.clone().into_iter(),
+            testing::resolver(),
+            &[2, 2],
+            2,
+            Precise(3),
+            1 << 14,
+        )
+        .await?;
         let superchunk = match build.data {
-            MMStruct3::Superchunk(chunk) => chunk,
+            MMDep3::Superchunk(chunk) => chunk,
+            _ => {
+                panic!("not a superchunk")
+            }
+        };
+        assert_eq!(superchunk.references.len(), 16);
+        assert_eq!(superchunk.local.len(), 4);
+
+        Ok((data, superchunk))
+    }
+
+    test_all_the_things!(local_subchunks);
+
+    async fn external_subchunks() -> DataChunk {
+        let data = testing::oldfarray(16);
+        let build = build_superchunk(
+            data.clone().into_iter(),
+            testing::resolver(),
+            &[2, 2],
+            2,
+            Precise(3),
+            0,
+        )
+        .await?;
+        let superchunk = match build.data {
+            MMDep3::Superchunk(chunk) => chunk,
             _ => {
                 panic!("not a superchunk")
             }
@@ -1078,12 +1282,18 @@ mod tests {
     test_all_the_things!(external_subchunks);
 
     async fn mixed_subchunks() -> DataChunk {
-        let mut data = testing::array(17);
-        let mut buffer = MMBuffer3::new_i64(data.view_mut());
-        let build =
-            Superchunk::build(testing::resolver(), &mut buffer, [100, 17, 17], &[2, 3], 2).await?;
+        let data = testing::oldfarray(17);
+        let build = build_superchunk(
+            data.clone().into_iter(),
+            testing::resolver(),
+            &[2, 3],
+            2,
+            Precise(3),
+            8000,
+        )
+        .await?;
         let superchunk = match build.data {
-            MMStruct3::Superchunk(chunk) => chunk,
+            MMDep3::Superchunk(chunk) => chunk,
             _ => {
                 panic!("not a superchunk")
             }
@@ -1106,8 +1316,8 @@ mod tests {
                 }
             }
         }
-        assert_eq!(external_count, 8);
-        assert_eq!(local_count, 0);
+        assert_eq!(external_count, 4);
+        assert_eq!(local_count, 4);
         assert_eq!(elided_count, 8);
 
         Ok((data, superchunk))
@@ -1117,17 +1327,25 @@ mod tests {
 
     async fn elide_everything() -> DataChunk {
         let length = 100;
-        let mut data = Array3::zeros([100, 16, 16]);
+        let shape = (16, 16);
+        let mut data = vec![];
 
         for i in 0..length {
-            data.slice_mut(s![i as usize, .., ..]).fill(i);
+            let slice = Array2::from_elem(shape, i as f32);
+            data.push(slice);
         }
 
-        let mut buffer = MMBuffer3::new_i64(data.view_mut());
-        let build =
-            Superchunk::build(testing::resolver(), &mut buffer, [100, 16, 16], &[2, 2], 2).await?;
+        let build = build_superchunk(
+            data.clone().into_iter(),
+            testing::resolver(),
+            &[2, 2],
+            2,
+            Precise(3),
+            0,
+        )
+        .await?;
         let superchunk = match build.data {
-            MMStruct3::Superchunk(chunk) => chunk,
+            MMDep3::Superchunk(chunk) => chunk,
             _ => {
                 panic!("not a superchunk")
             }
@@ -1158,18 +1376,18 @@ mod tests {
     test_all_the_things!(elide_everything);
 
     async fn nested_superchunks() -> DataChunk {
-        let mut data = testing::array(17);
-        let mut buffer = MMBuffer3::new_i64(data.view_mut());
-        let build = Superchunk::build(
+        let data = testing::oldfarray(17);
+        let build = build_superchunk(
+            data.clone().into_iter(),
             testing::resolver(),
-            &mut buffer,
-            [100, 17, 17],
             &[1, 2, 2],
             2,
+            Precise(3),
+            0,
         )
         .await?;
         let superchunk = match build.data {
-            MMStruct3::Superchunk(chunk) => chunk,
+            MMDep3::Superchunk(chunk) => chunk,
             _ => {
                 panic!("not a superchunk")
             }
