@@ -18,19 +18,16 @@ use futures::{
 
 use crate::{
     cache::Cacheable,
-    codec::{chunk::Chunk, dac::Dac},
     errors::{Error, Result},
     extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
     geom,
     helpers::rearrange,
-};
-
-use super::{
     links::Links,
     mmbuffer::{MMBuffer0, MMBuffer1, MMBuffer3},
     mmstruct::{MMEncoding, MMStruct3, MMStruct3Build},
     node::{Node, NODE_SUPERCHUNK},
     resolver::Resolver,
+    {chunk::Chunk, dac::Dac},
 };
 
 /// A time series raster subdivided into a number of K²-Raster encoded chunks.

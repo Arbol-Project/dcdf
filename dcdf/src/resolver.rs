@@ -7,9 +7,6 @@ use crate::{
     cache::{Cache, Cacheable},
     errors::{Error, Result},
     extio::{ExtendedAsyncRead, ExtendedAsyncWrite},
-};
-
-use super::{
     links::Links,
     mapper::Mapper,
     mmstruct::MMStruct3,

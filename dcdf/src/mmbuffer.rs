@@ -1,9 +1,10 @@
 use ndarray::{s, ArrayBase, ArrayViewMut1, ArrayViewMut3, Data, Ix3};
 use num_traits::Num;
 
-use crate::fixed::{from_fixed, to_fixed};
-
-use super::mmstruct::MMEncoding;
+use crate::{
+    fixed::{from_fixed, to_fixed},
+    mmstruct::MMEncoding,
+};
 
 pub(crate) enum MMBuffer0 {
     I32(i32),

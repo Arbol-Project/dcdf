@@ -5,18 +5,17 @@ use cid::Cid;
 use futures::io::{AsyncRead, AsyncWrite};
 
 use crate::{
+    block::Block,
     cache::Cacheable,
-    dag::{
-        mmbuffer::{MMBuffer0, MMBuffer1, MMBuffer3},
-        mmstruct::{MMEncoding, MMStruct3, MMStruct3Build},
-    },
     errors::Result,
     extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
     geom,
     helpers::rearrange,
+    log::Log,
+    mmbuffer::{MMBuffer0, MMBuffer1, MMBuffer3},
+    mmstruct::{MMEncoding, MMStruct3, MMStruct3Build},
+    snapshot::Snapshot,
 };
-
-use super::{block::Block, log::Log, snapshot::Snapshot};
 
 /// A series of time instants stored in a single file on disk.
 ///
@@ -385,10 +384,12 @@ impl<'a> Iterator for SearchIter<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::log::Log;
-    use super::super::snapshot::Snapshot;
     use super::*;
-    use crate::testing::{array8, array_search_window2};
+    use crate::{
+        log::Log,
+        snapshot::Snapshot,
+        testing::{array8, array_search_window2},
+    };
     use futures::io::Cursor;
     use ndarray::{s, Array1, Array3};
     use std::collections::HashSet;

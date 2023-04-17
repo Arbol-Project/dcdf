@@ -10,13 +10,10 @@ use futures::{
 
 use crate::{
     cache::Cacheable,
-    codec::chunk::Chunk,
+    chunk::Chunk,
     errors::{Error, Result},
     extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
     geom,
-};
-
-use super::{
     mmbuffer::{MMBuffer0, MMBuffer1, MMBuffer3},
     node::{Node, NODE_MMSTRUCT3, NODE_SPAN, NODE_SUBCHUNK, NODE_SUPERCHUNK},
     resolver::Resolver,
@@ -257,11 +254,7 @@ impl Node for MMStruct3 {
 mod tests {
     use super::*;
 
-    use super::super::resolver::Resolver;
-    use crate::{
-        dag::{mmbuffer::MMBuffer3, node::Node},
-        testing,
-    };
+    use crate::{mmbuffer::MMBuffer3, node::Node, resolver::Resolver, testing};
 
     use std::collections::HashSet;
 

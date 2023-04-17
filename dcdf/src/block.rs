@@ -7,9 +7,8 @@ use crate::{
     errors::Result,
     extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
     geom,
+    {log::Log, snapshot::Snapshot},
 };
-
-use super::{log::Log, snapshot::Snapshot};
 
 /// A short series of time instants made up of one Snapshot encoding the first time instant and
 /// Logs encoding subsequent time instants.

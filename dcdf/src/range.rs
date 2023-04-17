@@ -10,9 +10,6 @@ use crate::{
     cache::Cacheable,
     errors::Result,
     extio::{ExtendedAsyncRead, ExtendedAsyncWrite},
-};
-
-use super::{
     node::{Node, NODE_MMARRAY1},
     resolver::Resolver,
 };

@@ -4,14 +4,13 @@ use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncWrite};
 
 use crate::{
+    bitmap::{BitMap, BitMapBuilder},
     cache::Cacheable,
+    dac::Dac,
     errors::Result,
     extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
     geom,
 };
-
-use super::bitmap::{BitMap, BitMapBuilder};
-use super::dac::Dac;
 
 /// K²-Raster encoded Snapshot
 ///

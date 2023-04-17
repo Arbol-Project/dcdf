@@ -1,4 +1,4 @@
-use super::helpers::rearrange;
+use crate::helpers::rearrange;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Rect {

@@ -12,9 +12,6 @@ use crate::{
     cache::Cacheable,
     errors::Result,
     extio::{ExtendedAsyncRead, ExtendedAsyncWrite},
-};
-
-use super::{
     node::{Node, NODE_LINKS},
     resolver::Resolver,
 };

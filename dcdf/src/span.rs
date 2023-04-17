@@ -14,9 +14,6 @@ use crate::{
     errors::Result,
     extio::{ExtendedAsyncRead, ExtendedAsyncWrite},
     geom,
-};
-
-use super::{
     mmbuffer::{MMBuffer0, MMBuffer1, MMBuffer3},
     mmstruct::{MMEncoding, MMStruct3},
     node::{Node, NODE_SPAN},
@@ -361,7 +358,7 @@ mod tests {
     use paste::paste;
 
     use super::*;
-    use crate::{dag::superchunk::Superchunk, testing};
+    use crate::{superchunk::Superchunk, testing};
 
     macro_rules! test_all_the_things {
         ($name:ident) => {

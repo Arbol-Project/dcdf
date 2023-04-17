@@ -10,7 +10,7 @@ use unsigned_varint::{
     encode::{u64 as varint_encode_u64, u64_buffer as varint_u64_buffer},
 };
 
-use super::errors::Result;
+use crate::errors::Result;
 
 #[async_trait]
 pub(crate) trait Serialize: Sized {

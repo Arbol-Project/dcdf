@@ -20,12 +20,12 @@ use num_traits::Num;
 use parking_lot::Mutex;
 
 use crate::{
-    codec::{log::Log, snapshot::Snapshot},
-    dag::{
+    geom,
+    {log::Log, snapshot::Snapshot},
+    {
         mapper::{Mapper, StoreWrite},
         resolver::Resolver,
     },
-    geom,
 };
 
 pub(crate) type AioResult<T> = result::Result<T, AioError>;

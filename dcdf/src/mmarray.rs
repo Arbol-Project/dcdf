@@ -11,9 +11,6 @@ use crate::{
     errors::Result,
     extio::{ExtendedAsyncRead, ExtendedAsyncWrite},
     geom,
-};
-
-use super::{
     mmbuffer::{MMBuffer0, MMBuffer1, MMBuffer3},
     mmstruct::{MMEncoding, MMStruct3},
     node::{Node, NODE_MMARRAY1, NODE_RANGE},
@@ -518,10 +515,8 @@ impl Node for MMArray1<f32> {
 mod tests {
     use super::*;
 
-    use super::super::resolver::Resolver;
     use crate::{
-        codec::chunk::Chunk,
-        dag::{mmbuffer::MMBuffer3, span::Span, superchunk::Superchunk},
+        chunk::Chunk, mmbuffer::MMBuffer3, resolver::Resolver, span::Span, superchunk::Superchunk,
         testing,
     };
 

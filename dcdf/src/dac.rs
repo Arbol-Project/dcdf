@@ -19,12 +19,11 @@ use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use num_traits::PrimInt;
 
 use crate::{
+    bitmap::{BitMap, BitMapBuilder},
     cache::Cacheable,
     errors::Result,
     extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
 };
-
-use super::bitmap::{BitMap, BitMapBuilder};
 
 /// Compact storage for integers (Directly Addressable Codes)
 pub(crate) struct Dac {

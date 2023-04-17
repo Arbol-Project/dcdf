@@ -4,9 +4,7 @@ use async_trait::async_trait;
 use cid::Cid;
 use futures::io::{AsyncRead, AsyncWrite};
 
-use crate::errors::Result;
-
-use super::resolver::Resolver;
+use crate::{errors::Result, resolver::Resolver};
 
 pub(crate) const NODE_LINKS: u8 = 4;
 pub(crate) const NODE_MMARRAY1: u8 = 6;
