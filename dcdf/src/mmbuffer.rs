@@ -1,8 +1,10 @@
+use std::cmp;
+
 use ndarray::{s, ArrayBase, ArrayViewMut1, ArrayViewMut3, Data, Ix3};
 use num_traits::Num;
 
 use crate::{
-    fixed::{from_fixed, to_fixed},
+    fixed::{from_fixed, suggest_fraction, to_fixed, Fraction},
     mmstruct::MMEncoding,
 };
 
@@ -392,6 +394,7 @@ impl<'a> MMBuffer3<'a> {
         fractional_bits: usize,
         round: bool,
     ) -> Self {
+        if round && fractional_bits == 0 {}
         Self::F32(MMBuffer3F32 {
             array: array,
             fractional_bits: fractional_bits,
@@ -483,7 +486,7 @@ impl<'a> MMBuffer3<'a> {
 
     pub(crate) fn fractional_bits(&self) -> usize {
         match self {
-            Self::I32(_) | Self::I64(_) => 0,
+            Self::I32(_) | Self::I64(_) => 42,
             Self::F32(buffer) => buffer.fractional_bits,
             Self::F64(buffer) => buffer.fractional_bits,
         }
@@ -507,6 +510,14 @@ impl<'a> MMBuffer3<'a> {
         };
 
         shape.try_into().unwrap()
+    }
+
+    pub(crate) fn compute_fractional_bits(&mut self) {
+        match self {
+            Self::I32(_) | Self::I64(_) => {}
+            Self::F32(buffer) => buffer.compute_fractional_bits(),
+            Self::F64(buffer) => buffer.compute_fractional_bits(),
+        }
     }
 }
 
@@ -635,6 +646,25 @@ impl<'a> MMBuffer3F32<'a> {
             round: self.round,
         }
     }
+
+    fn compute_fractional_bits(&mut self) {
+        let suggestion = suggest_fraction(self.array.view());
+        let (round, computed_bits) = match suggestion {
+            Fraction::Precise(computed_bits) => (false, computed_bits),
+            Fraction::Round(computed_bits) => (true, computed_bits),
+        };
+        let computed_bits = if self.round {
+            cmp::min(computed_bits, self.fractional_bits)
+        } else {
+            if round {
+                panic!("loss of precision");
+            } else {
+                computed_bits
+            }
+        };
+
+        self.fractional_bits = computed_bits;
+    }
 }
 
 pub(crate) struct MMBuffer3F64<'a> {
@@ -677,6 +707,25 @@ impl<'a> MMBuffer3F64<'a> {
             fractional_bits: self.fractional_bits,
             round: self.round,
         }
+    }
+
+    fn compute_fractional_bits(&mut self) {
+        let suggestion = suggest_fraction(self.array.view());
+        let (round, computed_bits) = match suggestion {
+            Fraction::Precise(computed_bits) => (false, computed_bits),
+            Fraction::Round(computed_bits) => (true, computed_bits),
+        };
+        let computed_bits = if self.round {
+            cmp::min(computed_bits, self.fractional_bits)
+        } else {
+            if round {
+                panic!("loss of precision");
+            } else {
+                computed_bits
+            }
+        };
+
+        self.fractional_bits = computed_bits;
     }
 }
 

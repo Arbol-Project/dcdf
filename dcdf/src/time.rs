@@ -1,8 +1,9 @@
 use ndarray::Array1;
 
+#[derive(Clone)]
 pub struct TimeRange {
-    start: i64,
-    step: i64,
+    pub start: i64,
+    pub step: i64,
 }
 
 impl TimeRange {

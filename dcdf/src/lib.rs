@@ -5,6 +5,7 @@ mod block;
 mod cache;
 mod chunk;
 mod dac;
+mod dataset;
 mod errors;
 mod extio;
 mod fixed;

@@ -22,10 +22,11 @@ use crate::{
 
 /// A span of time
 ///
+
 pub(crate) struct Span {
-    shape: [usize; 3],
-    stride: usize,
-    spans: Vec<Cid>,
+    pub(crate) shape: [usize; 3],
+    pub(crate) stride: usize,
+    pub(crate) spans: Vec<Cid>,
     resolver: Arc<Resolver>,
     pub encoding: MMEncoding,
 }
@@ -46,7 +47,7 @@ impl Span {
         }
     }
 
-    pub async fn append(self, span: MMStruct3) -> Result<Self> {
+    pub async fn append(&self, span: &MMStruct3) -> Result<Self> {
         // Can only append to this span if the last subspan is full
         if self.spans.len() > 0 {
             let last_span = self
@@ -77,7 +78,7 @@ impl Span {
         }
 
         let shape = [self.shape[0] + span_shape[0], span_shape[1], span_shape[2]];
-        let mut spans = self.spans;
+        let mut spans = self.spans.clone();
         spans.push(self.resolver.save(span).await?);
 
         Ok({
@@ -85,7 +86,7 @@ impl Span {
                 shape,
                 stride: self.stride,
                 spans,
-                resolver: self.resolver,
+                resolver: Arc::clone(&self.resolver),
                 encoding: self.encoding,
             }
         })
@@ -93,15 +94,15 @@ impl Span {
 
     // Replace the last subspan with new data
     //
-    pub async fn update(self, span: MMStruct3) -> Result<Self> {
-        let mut spans = self.spans;
+    pub async fn update(&self, span: &MMStruct3) -> Result<Self> {
+        let mut spans = self.spans.clone();
         spans.pop();
 
         let tmp = Self {
             shape: [spans.len() * self.stride, self.shape[1], self.shape[2]],
             stride: self.stride,
             spans,
-            resolver: self.resolver,
+            resolver: Arc::clone(&self.resolver),
             encoding: self.encoding,
         };
 
@@ -531,7 +532,7 @@ mod tests {
 
         let (data, chunks) = superchunks(&resolver, &[100; 5]).await?;
         for chunk in chunks {
-            span = span.append(chunk).await?;
+            span = span.append(&chunk).await?;
         }
         assert_eq!(span.shape(), [500, 16, 16]);
 
@@ -546,7 +547,7 @@ mod tests {
 
         let (data, chunks) = superchunks(&resolver, &[100, 100, 100, 100, 50]).await?;
         for chunk in chunks {
-            span = span.append(chunk).await?;
+            span = span.append(&chunk).await?;
         }
         assert_eq!(span.shape(), [450, 16, 16]);
 
@@ -561,10 +562,10 @@ mod tests {
         let resolver = testing::resolver();
         let span = new(&resolver).unwrap();
         let (_, chunks) = superchunks(&resolver, &[10]).await.unwrap();
-        let span = span.append(first(chunks)).await.unwrap();
+        let span = span.append(&first(chunks)).await.unwrap();
 
         let (_, chunks) = superchunks(&resolver, &[10]).await.unwrap();
-        span.append(first(chunks)).await.unwrap(); // Previous span isn't full
+        span.append(&first(chunks)).await.unwrap(); // Previous span isn't full
     }
 
     #[tokio::test]
@@ -584,7 +585,7 @@ mod tests {
         .await
         .unwrap();
 
-        span.append(build.data).await.unwrap(); // Wrong shape
+        span.append(&build.data).await.unwrap(); // Wrong shape
     }
 
     #[tokio::test]
@@ -593,7 +594,7 @@ mod tests {
         let resolver = testing::resolver();
         let span = new(&resolver).unwrap();
         let (_, chunks) = superchunks(&resolver, &[101]).await.unwrap();
-        span.append(first(chunks)).await.unwrap(); // too big
+        span.append(&first(chunks)).await.unwrap(); // too big
     }
 
     async fn nested_spans() -> DataArray {
@@ -606,9 +607,9 @@ mod tests {
             let mut subspan = Span::new([16, 16], 10, Arc::clone(&resolver), MMEncoding::I64);
             for _ in 0..10 {
                 let chunk = chunks.next().unwrap();
-                subspan = subspan.append(chunk).await?;
+                subspan = subspan.append(&chunk).await?;
             }
-            span = span.append(MMStruct3::Span(subspan)).await?;
+            span = span.append(&MMStruct3::Span(subspan)).await?;
         }
 
         Ok((resolver, data, MMStruct3::Span(span)))
@@ -621,11 +622,11 @@ mod tests {
         let mut span = new(&resolver)?;
         let (data, chunks) = superchunks(&resolver, &[100, 100, 100, 100, 50]).await?;
         for chunk in chunks {
-            span = span.append(chunk).await?;
+            span = span.append(&chunk).await?;
         }
 
         let (new_data, chunks) = superchunks(&resolver, &[75]).await?;
-        span = span.update(first(chunks)).await?;
+        span = span.update(&first(chunks)).await?;
 
         let mut data = data.slice(s![..400, .., ..]).to_owned();
         data.append(Axis(0), new_data.view()).ok();
@@ -640,7 +641,7 @@ mod tests {
     #[tokio::test]
     async fn test_high_level_ls() -> Result<()> {
         let (resolver, _, span) = nested_spans().await?;
-        let cid = resolver.save(span).await?;
+        let cid = resolver.save(&span).await?;
         let ls = resolver.ls(&cid).await?;
         assert_eq!(ls.len(), 10);
         assert_eq!(ls[0].name, "0");

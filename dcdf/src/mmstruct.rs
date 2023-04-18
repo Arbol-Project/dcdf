@@ -35,6 +35,7 @@ pub struct MMStruct3Build {
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum MMEncoding {
+    TIME = 0,
     I32 = 4,
     I64 = 8,
     F32 = 32,
@@ -46,6 +47,7 @@ impl TryFrom<u8> for MMEncoding {
 
     fn try_from(value: u8) -> Result<Self> {
         match value {
+            0 => Ok(MMEncoding::TIME),
             4 => Ok(MMEncoding::I32),
             8 => Ok(MMEncoding::I64),
             32 => Ok(MMEncoding::F32),
@@ -56,6 +58,7 @@ impl TryFrom<u8> for MMEncoding {
         }
     }
 }
+
 pub(crate) enum MMStruct3 {
     Span(Span),
     Subchunk(Chunk),
@@ -365,7 +368,7 @@ mod tests {
                     assert_eq!(chunk.encoding(), MMEncoding::I64);
                     assert_eq!(chunk.fractional_bits(), 0);
 
-                    let cid = resolver.save(chunk).await?;
+                    let cid = resolver.save(&chunk).await?;
                     let chunk = resolver.get_mmstruct3(&cid).await?;
                     assert_eq!(chunk.encoding(), MMEncoding::I64);
                     assert_eq!(chunk.fractional_bits(), 0);
@@ -411,12 +414,12 @@ mod tests {
                     let (resolver, _, chunk) = $name().await?;
                     match chunk {
                         MMStruct3::Subchunk(_) => {
-                            let cid = resolver.save(chunk).await?;
+                            let cid = resolver.save(&chunk).await?;
                             let ls = resolver.ls(&cid).await?;
                             assert_eq!(ls.len(), 0);
                         }
                         MMStruct3::Superchunk(_) => {
-                            let cid = resolver.save(chunk).await?;
+                            let cid = resolver.save(&chunk).await?;
                             let ls = resolver.ls(&cid).await?;
                             assert_eq!(ls.len(), 1);
                             assert_eq!(ls[0].name, "subchunks");
@@ -429,7 +432,7 @@ mod tests {
 
                         }
                         MMStruct3::Span(_) => {
-                            let cid = resolver.save(chunk).await?;
+                            let cid = resolver.save(&chunk).await?;
                             let ls = resolver.ls(&cid).await?;
                             assert_eq!(ls.len(), 5);
                             assert_eq!(ls[0].name, "0");
@@ -490,7 +493,7 @@ mod tests {
             )
             .await?;
 
-            span = span.append(build.data).await?;
+            span = span.append(&build.data).await?;
         }
 
         Ok((resolver, data, MMStruct3::Span(span)))

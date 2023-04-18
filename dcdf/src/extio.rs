@@ -32,6 +32,9 @@ pub(crate) trait ExtendedAsyncRead: aio::AsyncRead {
     /// Read a Big Endian encoded 32 bit signed integer from a stream
     async fn read_i32(&mut self) -> io::Result<i32>;
 
+    /// Read a Big Endian encoded 64 bit signed integer from a stream
+    async fn read_i64(&mut self) -> io::Result<i64>;
+
     /// Read a Big Endian encoded 32 bit unsigned integer from a stream
     async fn read_u32(&mut self) -> io::Result<u32>;
 
@@ -43,6 +46,9 @@ pub(crate) trait ExtendedAsyncRead: aio::AsyncRead {
 
     /// Read a CID from a stream
     async fn read_cid(&mut self) -> Result<Cid>;
+
+    /// Read a string from a stream
+    async fn read_str(&mut self) -> Result<String>;
 }
 
 #[async_trait]
@@ -69,6 +75,14 @@ impl<R: aio::AsyncRead + Unpin + Send> ExtendedAsyncRead for R {
         self.read_exact(&mut buffer).await?;
 
         Ok(i32::from_be_bytes(buffer))
+    }
+
+    /// Read a Big Endian encoded 64 bit signed integer from a stream
+    async fn read_i64(&mut self) -> io::Result<i64> {
+        let mut buffer = [0; 8];
+        self.read_exact(&mut buffer).await?;
+
+        Ok(i64::from_be_bytes(buffer))
     }
 
     /// Read a Big Endian encoded 32 bit unsigned integer from a stream
@@ -135,6 +149,15 @@ impl<R: aio::AsyncRead + Unpin + Send> ExtendedAsyncRead for R {
             Ok(Cid::try_from(bytes)?)
         }
     }
+
+    /// Read a string from a stream
+    async fn read_str(&mut self) -> Result<String> {
+        let len = self.read_byte().await? as usize;
+        let mut buf = String::with_capacity(len);
+        self.take(len as u64).read_to_string(&mut buf).await?;
+
+        Ok(buf)
+    }
 }
 
 #[async_trait]
@@ -148,6 +171,9 @@ pub(crate) trait ExtendedAsyncWrite: aio::AsyncWrite {
     /// Write a Big Endian encoded 32 bit signed integer to a stream
     async fn write_i32(&mut self, word: i32) -> io::Result<()>;
 
+    /// Write a Big Endian encoded 64 bit signed integer to a stream
+    async fn write_i64(&mut self, word: i64) -> io::Result<()>;
+
     /// Write a Big Endian encoded 32 bit unsigned integer to a stream
     async fn write_u32(&mut self, word: u32) -> io::Result<()>;
 
@@ -159,6 +185,9 @@ pub(crate) trait ExtendedAsyncWrite: aio::AsyncWrite {
 
     /// Write a Cid to a stream
     async fn write_cid(&mut self, cid: &Cid) -> Result<()>;
+
+    /// Write a string to a stream
+    async fn write_str(&mut self, s: &str) -> Result<()>;
 }
 
 #[async_trait]
@@ -181,6 +210,14 @@ impl<W: aio::AsyncWrite + Unpin + Send> ExtendedAsyncWrite for W {
 
     /// Write a Big Endian encoded 32 bit signed integer to a stream
     async fn write_i32(&mut self, word: i32) -> io::Result<()> {
+        let buffer = word.to_be_bytes();
+        self.write_all(&buffer).await?;
+
+        Ok(())
+    }
+
+    /// Write a Big Endian encoded 64 bit signed integer to a stream
+    async fn write_i64(&mut self, word: i64) -> io::Result<()> {
         let buffer = word.to_be_bytes();
         self.write_all(&buffer).await?;
 
@@ -218,6 +255,14 @@ impl<W: aio::AsyncWrite + Unpin + Send> ExtendedAsyncWrite for W {
 
         Ok(())
     }
+
+    /// Write a string to a stream
+    async fn write_str(&mut self, s: &str) -> Result<()> {
+        self.write_byte(s.len() as u8).await?;
+        self.write_all(s.as_bytes()).await?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -226,22 +271,26 @@ mod tests {
     use futures::io::Cursor;
 
     #[tokio::test]
-    async fn test_all_of_it() -> io::Result<()> {
+    async fn test_all_of_it() -> Result<()> {
         let mut buffer: Vec<u8> = Vec::new();
         buffer.write_byte(42).await?;
         buffer.write_u16(41968).await?;
         buffer.write_u32(31441968).await?;
         buffer.write_i32(-31441968).await?;
+        buffer.write_i64(-3144196876).await?;
         buffer.write_f32(3.141592).await?;
         buffer.write_f64(6.283184).await?;
+        buffer.write_str("Hi Mom!").await?;
 
         let mut buffer = Cursor::new(buffer);
         assert_eq!(buffer.read_byte().await?, 42);
         assert_eq!(buffer.read_u16().await?, 41968);
         assert_eq!(buffer.read_u32().await?, 31441968);
         assert_eq!(buffer.read_i32().await?, -31441968);
+        assert_eq!(buffer.read_i64().await?, -3144196876);
         assert_eq!(buffer.read_f32().await?, 3.141592);
         assert_eq!(buffer.read_f64().await?, 6.283184);
+        assert_eq!(buffer.read_str().await?, String::from("Hi Mom!"));
 
         Ok(())
     }

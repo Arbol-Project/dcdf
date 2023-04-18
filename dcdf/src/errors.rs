@@ -13,6 +13,7 @@ pub enum Error {
     Load,
     BadValue,
     NotFound(cid::Cid),
+    BadName(String),
 }
 
 impl From<io::Error> for Error {

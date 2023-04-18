@@ -1,25 +1,133 @@
-use std::{fmt::Debug, pin::Pin, sync::Arc};
+use std::{pin::Pin, sync::Arc};
 
-use async_trait::async_trait;
-use cid::Cid;
-use futures::{stream::Stream, AsyncRead, AsyncWrite};
+use futures::stream::Stream;
 use ndarray::{Array1, Array3};
-use num_traits::Float;
 
 use crate::{
-    cache::Cacheable,
     errors::Result,
-    extio::{ExtendedAsyncRead, ExtendedAsyncWrite},
     geom,
     mmbuffer::{MMBuffer0, MMBuffer1, MMBuffer3},
     mmstruct::{MMEncoding, MMStruct3},
-    node::{Node, NODE_MMARRAY1, NODE_RANGE},
-    range::Range,
-    resolver::Resolver,
+    range::{FloatRange, IntRange},
 };
 
+pub enum MMArray1I32 {
+    Range(IntRange<i32>),
+}
+
+impl MMArray1I32 {
+    pub fn get(&self, index: usize) -> i32 {
+        match self {
+            Self::Range(mmarray) => mmarray.get(index),
+        }
+    }
+    pub fn slice(&self, start: usize, stop: usize) -> Array1<i32> {
+        match self {
+            Self::Range(mmarray) => mmarray.slice(start, stop),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Range(mmarray) => mmarray.len(),
+        }
+    }
+
+    pub fn shape(&self) -> [usize; 1] {
+        match self {
+            Self::Range(mmarray) => mmarray.shape(),
+        }
+    }
+}
+pub enum MMArray1I64 {
+    Range(IntRange<i64>),
+}
+
+impl MMArray1I64 {
+    pub fn get(&self, index: usize) -> i64 {
+        match self {
+            Self::Range(mmarray) => mmarray.get(index),
+        }
+    }
+    pub fn slice(&self, start: usize, stop: usize) -> Array1<i64> {
+        match self {
+            Self::Range(mmarray) => mmarray.slice(start, stop),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Range(mmarray) => mmarray.len(),
+        }
+    }
+
+    pub fn shape(&self) -> [usize; 1] {
+        match self {
+            Self::Range(mmarray) => mmarray.shape(),
+        }
+    }
+}
+
+pub enum MMArray1F32 {
+    Range(FloatRange<f32>),
+}
+
+impl MMArray1F32 {
+    pub fn get(&self, index: usize) -> f32 {
+        match self {
+            Self::Range(mmarray) => mmarray.get(index),
+        }
+    }
+    pub fn slice(&self, start: usize, stop: usize) -> Array1<f32> {
+        match self {
+            Self::Range(mmarray) => mmarray.slice(start, stop),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Range(mmarray) => mmarray.len(),
+        }
+    }
+
+    pub fn shape(&self) -> [usize; 1] {
+        match self {
+            Self::Range(mmarray) => mmarray.shape(),
+        }
+    }
+}
+
+pub enum MMArray1F64 {
+    Range(FloatRange<f64>),
+}
+
+impl MMArray1F64 {
+    pub fn get(&self, index: usize) -> f64 {
+        match self {
+            Self::Range(mmarray) => mmarray.get(index),
+        }
+    }
+    pub fn slice(&self, start: usize, stop: usize) -> Array1<f64> {
+        match self {
+            Self::Range(mmarray) => mmarray.slice(start, stop),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Range(mmarray) => mmarray.len(),
+        }
+    }
+
+    pub fn shape(&self) -> [usize; 1] {
+        match self {
+            Self::Range(mmarray) => mmarray.shape(),
+        }
+    }
+}
+
 pub struct MMArray3I32 {
-    data: Arc<MMStruct3>,
+    pub(crate) data: Arc<MMStruct3>,
 }
 
 impl MMArray3I32 {
@@ -213,7 +321,7 @@ impl MMArray3I64 {
 }
 
 pub struct MMArray3F32 {
-    data: Arc<MMStruct3>,
+    pub(crate) data: Arc<MMStruct3>,
     fractional_bits: usize,
 }
 
@@ -418,99 +526,6 @@ impl MMArray3F64 {
     }
 }
 
-pub enum MMArray1<N>
-where
-    N: Float + Debug + Send + Sync + 'static,
-{
-    Range(Range<N>),
-}
-
-impl<N> MMArray1<N>
-where
-    N: Float + Debug + Send + Sync + 'static,
-{
-    pub fn get(&self, index: usize) -> N {
-        match self {
-            MMArray1::Range(mmarray) => mmarray.get(index),
-        }
-    }
-    pub fn slice(&self, start: usize, stop: usize) -> Array1<N> {
-        match self {
-            MMArray1::Range(mmarray) => mmarray.slice(start, stop),
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        match self {
-            MMArray1::Range(mmarray) => mmarray.len(),
-        }
-    }
-
-    pub fn shape(&self) -> [usize; 1] {
-        match self {
-            MMArray1::Range(mmarray) => mmarray.shape(),
-        }
-    }
-}
-
-impl<N> Cacheable for MMArray1<N>
-where
-    N: Float + Debug + Send + Sync + 'static,
-{
-    fn size(&self) -> u64 {
-        let size = match self {
-            Self::Range(range) => range.size(),
-        };
-
-        size + 1
-    }
-}
-
-#[async_trait]
-impl Node for MMArray1<f32> {
-    const NODE_TYPE: u8 = NODE_MMARRAY1;
-
-    /// Save an object into the DAG
-    ///
-    async fn save_to(
-        &self,
-        resolver: &Arc<Resolver>,
-        stream: &mut (impl AsyncWrite + Unpin + Send),
-    ) -> Result<()> {
-        match self {
-            Self::Range(range) => {
-                stream.write_byte(NODE_RANGE).await?;
-                range.save_to(resolver, stream).await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Load an object from a stream
-    async fn load_from(
-        resolver: &Arc<Resolver>,
-        stream: &mut (impl AsyncRead + Unpin + Send),
-    ) -> Result<Self> {
-        let node_type = stream.read_byte().await?;
-        let chunk = match node_type {
-            NODE_RANGE => Self::Range(Range::load_from(resolver, stream).await?),
-            _ => {
-                panic!("Unkonwn MMArray1 type: {node_type}");
-            }
-        };
-
-        Ok(chunk)
-    }
-
-    /// List other nodes contained by this node
-    fn ls(&self) -> Vec<(String, Cid)> {
-        match self {
-            Self::Range(range) => range.ls(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,7 +541,82 @@ mod tests {
     use ndarray::{array, s, Array3};
     use paste::paste;
 
-    macro_rules! mmarray1_tests {
+    macro_rules! mmarray1_int_tests {
+        ($name:ident) => {
+            paste! {
+                #[tokio::test]
+                async fn [<$name _test_get>]() -> Result<()> {
+                    let (_resolver, data, mmarray) = $name().await?;
+                    for i in 0..mmarray.len() {
+                        assert_eq!(mmarray.get(i), data[i]);
+                    }
+
+                    Ok(())
+                }
+
+                #[tokio::test]
+                #[should_panic]
+                async fn [<$name _test_get_out_bounds>]() {
+                    let (_resolver, _data, mmarray) = $name().await.unwrap();
+                    assert_eq!(mmarray.get(mmarray.len()), 130); // Out of bounds
+                }
+
+                #[tokio::test]
+                async fn [<$name _test_slice>]() -> Result<()> {
+                    let (_resolver, data, mmarray) = $name().await?;
+                    for i in 0..mmarray.len() / 2 {
+                        let (start, end) = (i, mmarray.len() - i);
+                        assert_eq!(mmarray.slice(start, end), data.slice(s![start..end]));
+                    }
+
+                    Ok(())
+                }
+
+                #[tokio::test]
+                #[should_panic]
+                async fn [<$name _test_slice_out_of_bounds>]() {
+                    let (_resolver, _data, mmarray) = $name().await.unwrap();
+                    let start = mmarray.len() - 1;
+                    let end = start + 2;
+                    assert_eq!(mmarray.slice(start, end), array![125, 130]);
+                }
+            }
+        };
+    }
+
+    type DataArray1I32 = Result<(Arc<Resolver>, Array1<i32>, MMArray1I32)>;
+
+    async fn range_i32() -> DataArray1I32 {
+        let resolver = testing::resolver();
+        let data = Array1::from_iter((-20..130).step_by(5));
+        let range = MMArray1I32::Range(IntRange::new(-20, 5, 30));
+
+        assert_eq!(range.len(), 30);
+        assert_eq!(range.shape(), [30]);
+        assert_eq!(range.shape(), range.slice(0, 30).shape());
+
+        Ok((resolver, data, range))
+    }
+
+    mmarray1_int_tests!(range_i32);
+
+    type DataArray1I64 = Result<(Arc<Resolver>, Array1<i64>, MMArray1I64)>;
+
+    async fn range_i64() -> DataArray1I64 {
+        let resolver = testing::resolver();
+        let data = Array1::from_iter((-20..130).step_by(5));
+        let range = MMArray1I64::Range(IntRange::new(-20, 5, 30));
+
+        assert_eq!(range.len(), 30);
+        assert_eq!(range.shape(), [30]);
+        assert_eq!(range.shape(), range.slice(0, 30).shape());
+
+        Ok((resolver, data, range))
+    }
+
+    mmarray1_int_tests!(range_i64);
+
+    macro_rules! mmarray1_float_tests {
         ($name:ident) => {
             paste! {
                 #[tokio::test]
@@ -565,24 +655,16 @@ mod tests {
                     let end = start + 2;
                     assert_eq!(mmarray.slice(start, end), array![125.0, 130.0]);
                 }
-
-                #[tokio::test]
-                async fn [<$name _test_ls>]() -> Result<()> {
-                    let (_, _, mmarray) = $name().await?;
-                    assert_eq!(mmarray.ls(), vec![]);
-
-                    Ok(())
-                }
             }
         };
     }
 
-    type DataArray1 = Result<(Arc<Resolver>, Array1<f32>, MMArray1<f32>)>;
+    type DataArray1F32 = Result<(Arc<Resolver>, Array1<f32>, MMArray1F32)>;
 
-    async fn range() -> DataArray1 {
+    async fn range_f32() -> DataArray1F32 {
         let resolver = testing::resolver();
         let data = Array1::range(-20.0, 130.0, 5.0);
-        let range = MMArray1::Range(Range::new(-20.0, 5.0, 30));
+        let range = MMArray1F32::Range(FloatRange::new(-20.0, 5.0, 30));
 
         assert_eq!(range.len(), 30);
         assert_eq!(range.shape(), [30]);
@@ -591,7 +673,23 @@ mod tests {
         Ok((resolver, data, range))
     }
 
-    mmarray1_tests!(range);
+    mmarray1_float_tests!(range_f32);
+
+    type DataArray1F64 = Result<(Arc<Resolver>, Array1<f64>, MMArray1F64)>;
+
+    async fn range_f64() -> DataArray1F64 {
+        let resolver = testing::resolver();
+        let data = Array1::range(-20.0, 130.0, 5.0);
+        let range = MMArray1F64::Range(FloatRange::new(-20.0, 5.0, 30));
+
+        assert_eq!(range.len(), 30);
+        assert_eq!(range.shape(), [30]);
+        assert_eq!(range.shape(), range.slice(0, 30).shape());
+
+        Ok((resolver, data, range))
+    }
+
+    mmarray1_float_tests!(range_f64);
 
     macro_rules! mmarray3_tests {
         ($name:ident) => {
@@ -907,10 +1005,10 @@ mod tests {
                 )
                 .await?;
 
-                subspan = subspan.append(build.data).await?;
+                subspan = subspan.append(&build.data).await?;
             }
 
-            span = span.append(MMStruct3::Span(subspan)).await?;
+            span = span.append(&MMStruct3::Span(subspan)).await?;
         }
 
         Ok((data, MMArray3I32::new(Arc::new(MMStruct3::Span(span)))))
@@ -951,10 +1049,10 @@ mod tests {
                 )
                 .await?;
 
-                subspan = subspan.append(build.data).await?;
+                subspan = subspan.append(&build.data).await?;
             }
 
-            span = span.append(MMStruct3::Span(subspan)).await?;
+            span = span.append(&MMStruct3::Span(subspan)).await?;
         }
 
         Ok((data, MMArray3I32::new(Arc::new(MMStruct3::Span(span)))))
@@ -1021,10 +1119,10 @@ mod tests {
                 )
                 .await?;
 
-                subspan = subspan.append(build.data).await?;
+                subspan = subspan.append(&build.data).await?;
             }
 
-            span = span.append(MMStruct3::Span(subspan)).await?;
+            span = span.append(&MMStruct3::Span(subspan)).await?;
         }
 
         Ok((data, MMArray3I64::new(Arc::new(MMStruct3::Span(span)))))
@@ -1064,10 +1162,10 @@ mod tests {
                 )
                 .await?;
 
-                subspan = subspan.append(build.data).await?;
+                subspan = subspan.append(&build.data).await?;
             }
 
-            span = span.append(MMStruct3::Span(subspan)).await?;
+            span = span.append(&MMStruct3::Span(subspan)).await?;
         }
 
         Ok((data, MMArray3I64::new(Arc::new(MMStruct3::Span(span)))))
@@ -1136,10 +1234,10 @@ mod tests {
                 )
                 .await?;
 
-                subspan = subspan.append(build.data).await?;
+                subspan = subspan.append(&build.data).await?;
             }
 
-            span = span.append(MMStruct3::Span(subspan)).await?;
+            span = span.append(&MMStruct3::Span(subspan)).await?;
         }
 
         Ok((data, MMArray3F32::new(Arc::new(MMStruct3::Span(span)))))
@@ -1180,10 +1278,10 @@ mod tests {
                 )
                 .await?;
 
-                subspan = subspan.append(build.data).await?;
+                subspan = subspan.append(&build.data).await?;
             }
 
-            span = span.append(MMStruct3::Span(subspan)).await?;
+            span = span.append(&MMStruct3::Span(subspan)).await?;
         }
 
         Ok((data, MMArray3F32::new(Arc::new(MMStruct3::Span(span)))))
@@ -1251,10 +1349,10 @@ mod tests {
                 )
                 .await?;
 
-                subspan = subspan.append(build.data).await?;
+                subspan = subspan.append(&build.data).await?;
             }
 
-            span = span.append(MMStruct3::Span(subspan)).await?;
+            span = span.append(&MMStruct3::Span(subspan)).await?;
         }
 
         Ok((data, MMArray3F64::new(Arc::new(MMStruct3::Span(span)))))
@@ -1295,10 +1393,10 @@ mod tests {
                 )
                 .await?;
 
-                subspan = subspan.append(build.data).await?;
+                subspan = subspan.append(&build.data).await?;
             }
 
-            span = span.append(MMStruct3::Span(subspan)).await?;
+            span = span.append(&MMStruct3::Span(subspan)).await?;
         }
 
         Ok((data, MMArray3F64::new(Arc::new(MMStruct3::Span(span)))))

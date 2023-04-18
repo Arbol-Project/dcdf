@@ -164,6 +164,7 @@ impl Superchunk {
 
                         let resolver = Arc::clone(&resolver);
                         let future = async move {
+                            sub_buffer.compute_fractional_bits();
                             if build_subchunk {
                                 Ok(Chunk::build(&mut sub_buffer, shape, k))
                             } else {
@@ -217,7 +218,7 @@ impl Superchunk {
                     references.push(Reference::Elided);
                 } else {
                     sizes.push(build.data.size());
-                    let cid = resolver.save(build.data).await?;
+                    let cid = resolver.save(&build.data).await?;
                     let index = match external_references.get(&cid) {
                         Some(index) => *index,
                         None => {
@@ -237,7 +238,7 @@ impl Superchunk {
 
         let size_external = external.size();
         let external_len = external.len();
-        let external_cid = resolver.save(external).await?;
+        let external_cid = resolver.save(&external).await?;
 
         let data = Superchunk::new(
             shape,
@@ -1017,6 +1018,24 @@ mod tests {
     }
 
     test_all_the_things!(no_subchunks);
+
+    async fn no_subchunks_four_levels() -> DataChunk {
+        let mut data = testing::array(16);
+        let mut buffer = MMBuffer3::new_i64(data.view_mut());
+        let build =
+            Superchunk::build(testing::resolver(), &mut buffer, [100, 16, 16], &[4, 0], 2).await?;
+        let superchunk = match build.data {
+            MMStruct3::Superchunk(chunk) => chunk,
+            _ => {
+                panic!("not a superchunk")
+            }
+        };
+        assert_eq!(superchunk.references.len(), 256);
+
+        Ok((data, superchunk))
+    }
+
+    test_all_the_things!(no_subchunks_four_levels);
 
     async fn no_subchunks_coarse() -> DataChunk {
         let data = testing::array8();

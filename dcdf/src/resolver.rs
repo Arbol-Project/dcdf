@@ -5,6 +5,7 @@ use futures::{io::AsyncRead, FutureExt};
 
 use crate::{
     cache::{Cache, Cacheable},
+    dataset::Dataset,
     errors::{Error, Result},
     extio::{ExtendedAsyncRead, ExtendedAsyncWrite},
     links::Links,
@@ -28,6 +29,7 @@ pub struct Resolver {
 }
 
 enum CacheItem {
+    Dataset(Arc<Dataset>),
     Links(Arc<Links>),
     MMStruct3(Arc<MMStruct3>),
 }
@@ -35,6 +37,9 @@ enum CacheItem {
 impl CacheItem {
     fn ls(&self) -> Vec<(String, Cid)> {
         match self {
+            CacheItem::Dataset(_dataset) => {
+                todo!();
+            }
             CacheItem::Links(links) => links.ls(),
             CacheItem::MMStruct3(node) => node.ls(),
         }
@@ -44,6 +49,7 @@ impl CacheItem {
 impl Cacheable for CacheItem {
     fn size(&self) -> u64 {
         match self {
+            CacheItem::Dataset(dataset) => dataset.size(),
             CacheItem::Links(links) => links.size(),
             CacheItem::MMStruct3(chunk) => chunk.size(),
         }
@@ -67,6 +73,20 @@ impl Resolver {
     pub fn new(mapper: Box<dyn Mapper>, cache_bytes: u64) -> Self {
         let cache = Cache::new(cache_bytes);
         Self { mapper, cache }
+    }
+
+    /// Get an `Dataset` from the data store.
+    ///
+    /// # Arguments
+    ///
+    /// * `cid` - The CID of the dataset to retreive.
+    ///
+    pub(crate) async fn get_dataset(self: &Arc<Resolver>, cid: &Cid) -> Result<Arc<Dataset>> {
+        let item = self.check_cache(cid).await?;
+        match &*item {
+            CacheItem::Dataset(chunk) => Ok(Arc::clone(&chunk)),
+            _ => panic!("Expecting 3 dimensional MM struct."),
+        }
     }
 
     /// Get an `MMStruct3` from the data store.
@@ -117,7 +137,7 @@ impl Resolver {
 
     /// Store a node
     ///
-    pub(crate) async fn save<O>(self: &Arc<Resolver>, node: O) -> Result<Cid>
+    pub(crate) async fn save<O>(self: &Arc<Resolver>, node: &O) -> Result<Cid>
     where
         O: Node,
     {
@@ -139,6 +159,9 @@ impl Resolver {
             Some(mut stream) => {
                 let node_type = self.read_header(&mut stream).await?;
                 let item = match node_type {
+                    node::NODE_DATASET => {
+                        CacheItem::Dataset(Arc::new(Dataset::load_from(self, &mut stream).await?))
+                    }
                     node::NODE_LINKS => {
                         CacheItem::Links(Arc::new(Links::load_from(self, &mut stream).await?))
                     }

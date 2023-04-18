@@ -113,7 +113,7 @@ mod tests {
         let links = make_one();
         let expected = links.0.clone();
 
-        let cid = resolver.save(links).await?;
+        let cid = resolver.save(&links).await?;
         let links = resolver.get_links(&cid).await?;
         assert_eq!(expected, links.0);
 
