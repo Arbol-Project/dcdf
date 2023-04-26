@@ -9,7 +9,6 @@ mod dataset;
 mod errors;
 mod extio;
 mod fixed;
-mod geom;
 mod helpers;
 mod links;
 mod log;
@@ -27,3 +26,13 @@ mod time;
 
 #[cfg(test)]
 mod testing;
+
+// Public facing API
+pub use dataset::{Coordinate, Dataset, Variable};
+pub use errors::{Error, Result};
+pub use fixed::{from_fixed, to_fixed};
+pub use mapper::{Mapper, StoreWrite};
+pub mod geom;
+pub use mmarray::*;
+pub use mmstruct::MMEncoding;
+pub use resolver::Resolver;

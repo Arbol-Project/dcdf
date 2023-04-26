@@ -75,13 +75,13 @@ impl Resolver {
         Self { mapper, cache }
     }
 
-    /// Get an `Dataset` from the data store.
+    /// Get a `Dataset` from the data store.
     ///
     /// # Arguments
     ///
     /// * `cid` - The CID of the dataset to retreive.
     ///
-    pub(crate) async fn get_dataset(self: &Arc<Resolver>, cid: &Cid) -> Result<Arc<Dataset>> {
+    pub async fn get_dataset(self: &Arc<Resolver>, cid: &Cid) -> Result<Arc<Dataset>> {
         let item = self.check_cache(cid).await?;
         match &*item {
             CacheItem::Dataset(chunk) => Ok(Arc::clone(&chunk)),

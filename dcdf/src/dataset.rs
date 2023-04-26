@@ -107,6 +107,10 @@ impl Dataset {
         }
     }
 
+    pub async fn save(&self) -> Result<Cid> {
+        self.resolver.save(self).await
+    }
+
     pub async fn add_variable<S: Into<String>>(
         &self,
         name: S,
@@ -1139,7 +1143,7 @@ mod tests {
 
         assert!(dataset.prev.is_none());
         let resolver = Arc::clone(&dataset.resolver);
-        let cid = resolver.save(&dataset).await?;
+        let cid = dataset.save().await?;
         let dataset = resolver.get_dataset(&cid).await?;
         assert_eq!(dataset.cid, Some(cid));
 
@@ -1223,7 +1227,7 @@ mod tests {
             populate(dataset).await?;
         assert_eq!(dataset.variables.len(), 6);
 
-        let cid = resolver.save(&dataset).await?;
+        let cid = dataset.save().await?;
         let dataset = resolver.get_dataset(&cid).await?;
 
         let apples = dataset.get_variable("apples").unwrap();
