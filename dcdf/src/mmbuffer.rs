@@ -106,24 +106,6 @@ impl<'a> MMBuffer1<'a> {
         }
     }
 
-    pub(crate) fn get(&self, index: usize) -> i64 {
-        match self {
-            Self::I32(buffer) => buffer.0[[index]] as i64,
-            Self::I64(buffer) => buffer.0[[index]],
-            Self::F32(buffer) => buffer.get(index),
-            Self::F64(buffer) => buffer.get(index),
-        }
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        match self {
-            Self::I32(buffer) => buffer.0.len(),
-            Self::I64(buffer) => buffer.0.len(),
-            Self::F32(buffer) => buffer.array.len(),
-            Self::F64(buffer) => buffer.array.len(),
-        }
-    }
-
     pub(crate) fn slice(&mut self, start: usize, end: usize) -> Self {
         match self {
             Self::I32(buffer) => Self::I32(buffer.slice(start, end)),
@@ -149,24 +131,8 @@ impl<'a> MMBuffer1<'a> {
         Self::I32(MMBuffer1I32(array))
     }
 
-    pub(crate) fn unwrap_i32(self) -> ArrayViewMut1<'a, i32> {
-        if let Self::I32(buffer) = self {
-            buffer.0
-        } else {
-            panic!("Not the i32 variant");
-        }
-    }
-
     pub(crate) fn new_i64(array: ArrayViewMut1<'a, i64>) -> Self {
         Self::I64(MMBuffer1I64(array))
-    }
-
-    pub(crate) fn unwrap_i64(self) -> ArrayViewMut1<'a, i64> {
-        if let Self::I64(buffer) = self {
-            buffer.0
-        } else {
-            panic!("Not the i64 variant");
-        }
     }
 
     pub(crate) fn new_f32(
@@ -181,14 +147,6 @@ impl<'a> MMBuffer1<'a> {
         })
     }
 
-    pub(crate) fn unwrap_f32(self) -> ArrayViewMut1<'a, f32> {
-        if let Self::F32(buffer) = self {
-            buffer.array
-        } else {
-            panic!("Not the f32 variant");
-        }
-    }
-
     pub(crate) fn new_f64(
         array: ArrayViewMut1<'a, f64>,
         fractional_bits: usize,
@@ -199,14 +157,6 @@ impl<'a> MMBuffer1<'a> {
             fractional_bits: fractional_bits,
             round: round,
         })
-    }
-
-    pub(crate) fn unwrap_f64(self) -> ArrayViewMut1<'a, f64> {
-        if let Self::F64(buffer) = self {
-            buffer.array
-        } else {
-            panic!("Not the f64 variant");
-        }
     }
 }
 
@@ -259,10 +209,6 @@ impl<'a> MMBuffer1F32<'a> {
         self.array[[index]] = from_fixed(value, self.fractional_bits);
     }
 
-    fn get(&self, index: usize) -> i64 {
-        to_fixed(self.array[[index]], self.fractional_bits, self.round)
-    }
-
     fn slice(&mut self, start: usize, end: usize) -> Self {
         let subarray = unsafe {
             self.array
@@ -288,10 +234,6 @@ pub(crate) struct MMBuffer1F64<'a> {
 impl<'a> MMBuffer1F64<'a> {
     fn set(&mut self, index: usize, value: i64) {
         self.array[[index]] = from_fixed(value, self.fractional_bits);
-    }
-
-    fn get(&self, index: usize) -> i64 {
-        to_fixed(self.array[[index]], self.fractional_bits, self.round)
     }
 
     fn slice(&mut self, start: usize, end: usize) -> Self {
@@ -369,24 +311,8 @@ impl<'a> MMBuffer3<'a> {
         Self::I32(MMBuffer3I32(array))
     }
 
-    pub(crate) fn unwrap_i32(self) -> ArrayViewMut3<'a, i32> {
-        if let Self::I32(buffer) = self {
-            buffer.0
-        } else {
-            panic!("Not the i32 variant");
-        }
-    }
-
     pub(crate) fn new_i64(array: ArrayViewMut3<'a, i64>) -> Self {
         Self::I64(MMBuffer3I64(array))
-    }
-
-    pub(crate) fn unwrap_i64(self) -> ArrayViewMut3<'a, i64> {
-        if let Self::I64(buffer) = self {
-            buffer.0
-        } else {
-            panic!("Not the i64 variant");
-        }
     }
 
     pub(crate) fn new_f32(
@@ -402,14 +328,6 @@ impl<'a> MMBuffer3<'a> {
         })
     }
 
-    pub(crate) fn unwrap_f32(self) -> ArrayViewMut3<'a, f32> {
-        if let Self::F32(buffer) = self {
-            buffer.array
-        } else {
-            panic!("Not the f32 variant");
-        }
-    }
-
     pub(crate) fn new_f64(
         array: ArrayViewMut3<'a, f64>,
         fractional_bits: usize,
@@ -420,14 +338,6 @@ impl<'a> MMBuffer3<'a> {
             fractional_bits: fractional_bits,
             round: round,
         })
-    }
-
-    pub(crate) fn unwrap_f64(self) -> ArrayViewMut3<'a, f64> {
-        if let Self::F64(buffer) = self {
-            buffer.array
-        } else {
-            panic!("Not the f64 variant");
-        }
     }
 
     pub(crate) fn fill_instant(&mut self, i: usize, value: i64) {
@@ -774,38 +684,6 @@ mod tests {
             buf.set(1, to_fixed(1.625_f64, 3, false));
 
             assert_eq!(a[[1]], 1.625);
-        }
-
-        #[test]
-        fn get_i32() {
-            let mut a = Array1::zeros([8]);
-            a[[1]] = 42;
-            let buf = MMBuffer1::new_i32(a.view_mut());
-            assert_eq!(buf.get(1), 42);
-        }
-
-        #[test]
-        fn get_i64() {
-            let mut a = Array1::zeros([8]);
-            a[[1]] = 42;
-            let buf = MMBuffer1::new_i64(a.view_mut());
-            assert_eq!(buf.get(1), 42);
-        }
-
-        #[test]
-        fn get_f32() {
-            let mut a = Array1::zeros([8]);
-            a[[1]] = 1.625;
-            let buf = MMBuffer1::new_f32(a.view_mut(), 3, false);
-            assert_eq!(buf.get(1), to_fixed(1.625, 3, false));
-        }
-
-        #[test]
-        fn get_f64() {
-            let mut a = Array1::zeros([8]);
-            a[[1]] = 1.625;
-            let buf = MMBuffer1::new_f64(a.view_mut(), 3, false);
-            assert_eq!(buf.get(1), to_fixed(1.625, 3, false));
         }
     }
 

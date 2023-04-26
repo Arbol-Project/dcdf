@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncWrite};
-use ndarray::Array2;
 
 use crate::{
     cache::Cacheable,
@@ -45,24 +44,6 @@ impl Block {
             0 => self.snapshot.get(row, col),
             _ => self.logs[instant - 1].get(&self.snapshot, row, col),
         }
-    }
-
-    /// Get a subarray of the given instant
-    ///
-    /// This will allocate a new `ndarray::Array2` to hold the subarray. This is called by
-    /// `chunk::Chunk.iter_window` to iterate over time instants one at a time. To retrieve all
-    /// time instants of interest at once, it is more efficient to preallocate an `ndarray::Array3`
-    /// and call `block.fill_window` for each instant of interest, which is the strategy used by
-    /// `chunk::Chunk.get_window`.
-    ///
-    #[deprecated(note = "should use fill_window at all layers except very top level")]
-    pub(crate) fn get_window(&self, instant: usize, bounds: &geom::Rect) -> Array2<i64> {
-        let mut window = Array2::zeros([bounds.rows(), bounds.cols()]);
-        let set = |row, col, value| window[[row, col]] = value;
-
-        self.fill_window(set, instant, bounds);
-
-        window
     }
 
     /// Retrieve a subarray of the given instant and write it to a preallocated array.
@@ -142,7 +123,7 @@ mod tests {
     use super::*;
     use crate::testing::array_search_window2;
     use futures::io::Cursor;
-    use ndarray::{arr3, s, Array3};
+    use ndarray::{arr3, s, Array2, Array3};
     use std::collections::HashSet;
 
     fn array8() -> Array3<i64> {

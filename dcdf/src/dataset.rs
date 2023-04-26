@@ -84,6 +84,8 @@ macro_rules! Coordinate {
             #[derive(Clone)]
             pub enum [<Coordinate $type>] {
                 Range([<MMArray1 $type>]),
+
+                #[allow(dead_code)]
                 External(Cid),  // For use in a hypothetical future, for arbitrary mappings
             }
         }
@@ -474,15 +476,6 @@ impl MMStruct3 {
     async fn update(&self, chunk: &MMStruct3) -> Result<Span> {
         match self {
             MMStruct3::Span(span) => span.update(chunk).await,
-            _ => {
-                panic!("not a span");
-            }
-        }
-    }
-
-    fn spans(&self) -> Vec<Cid> {
-        match self {
-            MMStruct3::Span(span) => span.spans.clone(),
             _ => {
                 panic!("not a span");
             }
@@ -881,13 +874,6 @@ impl Variable {
             // Last chunk is full, no need to do anything with it
             Ok(None)
         }
-    }
-
-    /// Returns rightmost span of bottom level, ie span where new chunks should be added.
-    ///
-    async fn tail_span(&self) -> Result<Arc<MMStruct3>> {
-        let mut tail_spans = self.tail_spans().await?;
-        Ok(tail_spans.remove(tail_spans.len() - 1))
     }
 
     /// Returns all spans traversed in the tree to get to the last span in the dataset.

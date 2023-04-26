@@ -123,18 +123,6 @@ impl Resolver {
         self.cache.get(cid, load).await
     }
 
-    /// Compute the hash for a subchunk.
-    ///
-    pub(crate) async fn hash<O>(self: &Arc<Resolver>, object: &O) -> Result<Cid>
-    where
-        O: Node,
-    {
-        let mut hasher = self.mapper.hash().await;
-        object.save_to(self, &mut hasher).await?;
-
-        Ok(hasher.finish().await)
-    }
-
     /// Store a node
     ///
     pub(crate) async fn save<O>(self: &Arc<Resolver>, node: &O) -> Result<Cid>

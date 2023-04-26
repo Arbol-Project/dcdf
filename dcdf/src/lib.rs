@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod bitmap;
 mod block;
 mod cache;

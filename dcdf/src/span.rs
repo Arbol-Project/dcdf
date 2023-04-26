@@ -472,8 +472,6 @@ mod tests {
         };
     }
 
-    type SuperchunkResult = Result<(Array3<i64>, MMStruct3)>;
-
     async fn superchunks(
         resolver: &Arc<Resolver>,
         lens: &[usize],
