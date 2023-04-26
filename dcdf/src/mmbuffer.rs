@@ -396,7 +396,7 @@ impl<'a> MMBuffer3<'a> {
 
     pub(crate) fn fractional_bits(&self) -> usize {
         match self {
-            Self::I32(_) | Self::I64(_) => 42,
+            Self::I32(_) | Self::I64(_) => 0,
             Self::F32(buffer) => buffer.fractional_bits,
             Self::F64(buffer) => buffer.fractional_bits,
         }
