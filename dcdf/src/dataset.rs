@@ -36,6 +36,7 @@ pub struct Dataset {
     resolver: Arc<Resolver>,
 }
 
+#[derive(Clone)]
 pub struct Coordinate {
     name: String,
     kind: CoordinateKind,
@@ -68,6 +69,7 @@ pub struct Variable {
     resolver: Arc<Resolver>,
 }
 
+#[derive(Clone)]
 pub enum CoordinateKind {
     Time(TimeRange),
     I32(CoordinateI32),
@@ -79,6 +81,7 @@ pub enum CoordinateKind {
 macro_rules! Coordinate {
     ($type:ident) => {
         paste! {
+            #[derive(Clone)]
             pub enum [<Coordinate $type>] {
                 Range([<MMArray1 $type>]),
                 External(Cid),  // For use in a hypothetical future, for arbitrary mappings
@@ -105,7 +108,7 @@ impl Dataset {
     }
 
     pub async fn add_variable<S: Into<String>>(
-        self,
+        &self,
         name: S,
         round: Option<usize>,
         span_size: usize,
@@ -129,7 +132,7 @@ impl Dataset {
             resolver: Arc::clone(&self.resolver),
         };
 
-        let mut variables = self.variables;
+        let mut variables = self.variables.clone();
         variables.push(var);
 
         let prev = if let Some(cid) = self.cid {
@@ -141,7 +144,10 @@ impl Dataset {
         Ok(Self {
             variables,
             prev,
-            ..self
+            coordinates: self.coordinates.clone(),
+            shape: self.shape,
+            cid: None,
+            resolver: Arc::clone(&self.resolver),
         })
     }
 
@@ -1105,6 +1111,8 @@ mod tests {
         Array3<f64>,
         Dataset,
     )> {
+        assert!(dataset.cid.is_none());
+
         let dataset = dataset
             .add_variable("apples", None, 10, 20, vec![2, 2], MMEncoding::F32)
             .await?;
@@ -1129,12 +1137,22 @@ mod tests {
         let grape_data = make_int_data::<i64>(365);
         let dataset = dataset.append_i64("grapes", grape_data.clone()).await?;
 
+        assert!(dataset.prev.is_none());
+        let resolver = Arc::clone(&dataset.resolver);
+        let cid = resolver.save(&dataset).await?;
+        let dataset = resolver.get_dataset(&cid).await?;
+        assert_eq!(dataset.cid, Some(cid));
+
         let dataset = dataset
             .add_variable("dates", Some(2), 10, 20, vec![2, 2], MMEncoding::F32)
             .await?;
+
         let mut date_data = make_float_data::<f32>(489);
         let dataset = dataset.append_f32("dates", date_data.clone()).await?;
         date_data.mapv_inplace(|v| from_fixed(to_fixed(v, 2, true), 2));
+
+        assert!(dataset.cid.is_none());
+        assert_eq!(dataset.prev, Some(cid));
 
         let dataset = dataset
             .add_variable("melons", Some(2), 10, 20, vec![2, 2], MMEncoding::F64)
@@ -1142,6 +1160,9 @@ mod tests {
         let mut melon_data = make_float_data::<f64>(275);
         let dataset = dataset.append_f64("melons", melon_data.clone()).await?;
         melon_data.mapv_inplace(|v| from_fixed(to_fixed(v, 2, true), 2));
+
+        assert!(dataset.cid.is_none());
+        assert_eq!(dataset.prev, Some(cid));
 
         Ok((
             apple_data,

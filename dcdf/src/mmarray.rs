@@ -11,6 +11,7 @@ use crate::{
     range::{FloatRange, IntRange},
 };
 
+#[derive(Clone)]
 pub enum MMArray1I32 {
     Range(IntRange<i32>),
 }
@@ -39,6 +40,7 @@ impl MMArray1I32 {
         }
     }
 }
+#[derive(Clone)]
 pub enum MMArray1I64 {
     Range(IntRange<i64>),
 }
@@ -68,6 +70,7 @@ impl MMArray1I64 {
     }
 }
 
+#[derive(Clone)]
 pub enum MMArray1F32 {
     Range(FloatRange<f32>),
 }
@@ -97,6 +100,7 @@ impl MMArray1F32 {
     }
 }
 
+#[derive(Clone)]
 pub enum MMArray1F64 {
     Range(FloatRange<f64>),
 }

@@ -160,7 +160,9 @@ impl Resolver {
                 let node_type = self.read_header(&mut stream).await?;
                 let item = match node_type {
                     node::NODE_DATASET => {
-                        CacheItem::Dataset(Arc::new(Dataset::load_from(self, &mut stream).await?))
+                        let mut dataset = Dataset::load_from(self, &mut stream).await?;
+                        dataset.cid = Some(cid);
+                        CacheItem::Dataset(Arc::new(dataset))
                     }
                     node::NODE_LINKS => {
                         CacheItem::Links(Arc::new(Links::load_from(self, &mut stream).await?))

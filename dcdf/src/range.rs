@@ -3,6 +3,7 @@ use std::fmt::Debug;
 use ndarray::Array1;
 use num_traits::{cast, Float, PrimInt};
 
+#[derive(Clone)]
 pub struct FloatRange<N>
 where
     N: Float + Debug + Send + Sync + 'static,
@@ -51,6 +52,7 @@ where
     }
 }
 
+#[derive(Clone)]
 pub struct IntRange<N>
 where
     N: PrimInt + Debug + Send + Sync + 'static,
