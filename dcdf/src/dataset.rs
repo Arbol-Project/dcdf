@@ -3,7 +3,7 @@ use std::{cmp, sync::Arc};
 use async_trait::async_trait;
 use cid::Cid;
 use futures::{AsyncRead, AsyncWrite};
-use ndarray::{Array3, Axis};
+use ndarray::{Array3, ArrayViewMut3, Axis};
 use paste::paste;
 
 use crate::{
@@ -38,8 +38,8 @@ pub struct Dataset {
 
 #[derive(Clone)]
 pub struct Coordinate {
-    name: String,
-    kind: CoordinateKind,
+    pub name: String,
+    pub kind: CoordinateKind,
 }
 
 #[derive(Clone)]
@@ -109,7 +109,7 @@ impl Dataset {
         }
     }
 
-    pub async fn save(&self) -> Result<Cid> {
+    pub async fn commit(&self) -> Result<Cid> {
         self.resolver.save(self).await
     }
 
@@ -159,7 +159,7 @@ impl Dataset {
 
     // SMELL: DRY: use macro for append_XX?
 
-    pub async fn append_i32(self, name: &str, mut data: Array3<i32>) -> Result<Self> {
+    pub async fn append_i32(&self, name: &str, data: ArrayViewMut3<'_, i32>) -> Result<Self> {
         let variable = self
             .variables
             .iter()
@@ -169,8 +169,7 @@ impl Dataset {
             .clone();
 
         // Extract data from last, incomplete span and prepend to passed in data
-        let mut update = false;
-        if let Some(tail_data) = variable.tail_data().await? {
+        let variable = if let Some(tail_data) = variable.tail_data().await? {
             let [instants, rows, cols] = tail_data.shape();
             let mut tail_array = Array3::zeros([instants, rows, cols]);
             let mut tail_buffer = MMBuffer3::new_i32(tail_array.view_mut());
@@ -181,13 +180,15 @@ impl Dataset {
                 )
                 .await?;
             tail_array.append(Axis(0), data.view()).unwrap();
-            data = tail_array;
-            update = true;
-        }
-        let buffer = MMBuffer3::new_i32(data.view_mut());
 
-        let variable = variable.append(buffer, update).await?;
-        let mut variables = self.variables;
+            let buffer = MMBuffer3::new_i32(tail_array.view_mut());
+            variable.append(buffer, true).await?
+        } else {
+            let buffer = MMBuffer3::new_i32(data);
+            variable.append(buffer, false).await?
+        };
+
+        let mut variables = self.variables.clone();
         for i in 0..variables.len() {
             if variables[i].name == variable.name {
                 variables[i] = variable;
@@ -195,10 +196,23 @@ impl Dataset {
             }
         }
 
-        Ok(Self { variables, ..self })
+        let prev = if let Some(cid) = self.cid {
+            Some(cid)
+        } else {
+            self.prev
+        };
+
+        Ok(Self {
+            variables,
+            prev,
+            coordinates: self.coordinates.clone(),
+            shape: self.shape,
+            cid: None,
+            resolver: Arc::clone(&self.resolver),
+        })
     }
 
-    pub async fn append_i64(self, name: &str, mut data: Array3<i64>) -> Result<Self> {
+    pub async fn append_i64(&self, name: &str, data: ArrayViewMut3<'_, i64>) -> Result<Self> {
         let variable = self
             .variables
             .iter()
@@ -208,8 +222,7 @@ impl Dataset {
             .clone();
 
         // Extract data from last, incomplete span and prepend to passed in data
-        let mut update = false;
-        if let Some(tail_data) = variable.tail_data().await? {
+        let variable = if let Some(tail_data) = variable.tail_data().await? {
             let [instants, rows, cols] = tail_data.shape();
             let mut tail_array = Array3::zeros([instants, rows, cols]);
             let mut tail_buffer = MMBuffer3::new_i64(tail_array.view_mut());
@@ -220,13 +233,15 @@ impl Dataset {
                 )
                 .await?;
             tail_array.append(Axis(0), data.view()).unwrap();
-            data = tail_array;
-            update = true;
-        }
-        let buffer = MMBuffer3::new_i64(data.view_mut());
 
-        let variable = variable.append(buffer, update).await?;
-        let mut variables = self.variables;
+            let buffer = MMBuffer3::new_i64(tail_array.view_mut());
+            variable.append(buffer, true).await?
+        } else {
+            let buffer = MMBuffer3::new_i64(data);
+            variable.append(buffer, false).await?
+        };
+
+        let mut variables = self.variables.clone();
         for i in 0..variables.len() {
             if variables[i].name == variable.name {
                 variables[i] = variable;
@@ -234,10 +249,23 @@ impl Dataset {
             }
         }
 
-        Ok(Self { variables, ..self })
+        let prev = if let Some(cid) = self.cid {
+            Some(cid)
+        } else {
+            self.prev
+        };
+
+        Ok(Self {
+            variables,
+            prev,
+            coordinates: self.coordinates.clone(),
+            shape: self.shape,
+            cid: None,
+            resolver: Arc::clone(&self.resolver),
+        })
     }
 
-    pub async fn append_f32(self, name: &str, mut data: Array3<f32>) -> Result<Self> {
+    pub async fn append_f32(&self, name: &str, data: ArrayViewMut3<'_, f32>) -> Result<Self> {
         let variable = self
             .variables
             .iter()
@@ -246,9 +274,13 @@ impl Dataset {
             .ok_or(Error::BadName(name.to_string()))?
             .clone();
 
+        let (round, fractional_bits) = match variable.round {
+            Some(bits) => (true, bits),
+            None => (false, 0),
+        };
+
         // Extract data from last, incomplete span and prepend to passed in data
-        let mut update = false;
-        if let Some(tail_data) = variable.tail_data().await? {
+        let variable = if let Some(tail_data) = variable.tail_data().await? {
             let [instants, rows, cols] = tail_data.shape();
             let mut tail_array = Array3::zeros([instants, rows, cols]);
             let mut tail_buffer =
@@ -260,17 +292,15 @@ impl Dataset {
                 )
                 .await?;
             tail_array.append(Axis(0), data.view()).unwrap();
-            data = tail_array;
-            update = true;
-        }
-        let (round, fractional_bits) = match variable.round {
-            Some(bits) => (true, bits),
-            None => (false, 0),
-        };
-        let buffer = MMBuffer3::new_f32(data.view_mut(), fractional_bits, round);
 
-        let variable = variable.append(buffer, update).await?;
-        let mut variables = self.variables;
+            let buffer = MMBuffer3::new_f32(tail_array.view_mut(), fractional_bits, round);
+            variable.append(buffer, true).await?
+        } else {
+            let buffer = MMBuffer3::new_f32(data, fractional_bits, round);
+            variable.append(buffer, false).await?
+        };
+
+        let mut variables = self.variables.clone();
         for i in 0..variables.len() {
             if variables[i].name == variable.name {
                 variables[i] = variable;
@@ -278,10 +308,23 @@ impl Dataset {
             }
         }
 
-        Ok(Self { variables, ..self })
+        let prev = if let Some(cid) = self.cid {
+            Some(cid)
+        } else {
+            self.prev
+        };
+
+        Ok(Self {
+            variables,
+            prev,
+            coordinates: self.coordinates.clone(),
+            shape: self.shape,
+            cid: None,
+            resolver: Arc::clone(&self.resolver),
+        })
     }
 
-    pub async fn append_f64(self, name: &str, mut data: Array3<f64>) -> Result<Self> {
+    pub async fn append_f64(&self, name: &str, data: ArrayViewMut3<'_, f64>) -> Result<Self> {
         let variable = self
             .variables
             .iter()
@@ -290,9 +333,13 @@ impl Dataset {
             .ok_or(Error::BadName(name.to_string()))?
             .clone();
 
+        let (round, fractional_bits) = match variable.round {
+            Some(bits) => (true, bits),
+            None => (false, 0),
+        };
+
         // Extract data from last, incomplete span and prepend to passed in data
-        let mut update = false;
-        if let Some(tail_data) = variable.tail_data().await? {
+        let variable = if let Some(tail_data) = variable.tail_data().await? {
             let [instants, rows, cols] = tail_data.shape();
             let mut tail_array = Array3::zeros([instants, rows, cols]);
             let mut tail_buffer =
@@ -304,17 +351,15 @@ impl Dataset {
                 )
                 .await?;
             tail_array.append(Axis(0), data.view()).unwrap();
-            data = tail_array;
-            update = true;
-        }
-        let (round, fractional_bits) = match variable.round {
-            Some(bits) => (true, bits),
-            None => (false, 0),
-        };
-        let buffer = MMBuffer3::new_f64(data.view_mut(), fractional_bits, round);
 
-        let variable = variable.append(buffer, update).await?;
-        let mut variables = self.variables;
+            let buffer = MMBuffer3::new_f64(tail_array.view_mut(), fractional_bits, round);
+            variable.append(buffer, true).await?
+        } else {
+            let buffer = MMBuffer3::new_f64(data, fractional_bits, round);
+            variable.append(buffer, false).await?
+        };
+
+        let mut variables = self.variables.clone();
         for i in 0..variables.len() {
             if variables[i].name == variable.name {
                 variables[i] = variable;
@@ -322,7 +367,20 @@ impl Dataset {
             }
         }
 
-        Ok(Self { variables, ..self })
+        let prev = if let Some(cid) = self.cid {
+            Some(cid)
+        } else {
+            self.prev
+        };
+
+        Ok(Self {
+            variables,
+            prev,
+            coordinates: self.coordinates.clone(),
+            shape: self.shape,
+            cid: None,
+            resolver: Arc::clone(&self.resolver),
+        })
     }
 
     pub fn get_coordinate(&self, name: &str) -> Option<&Coordinate> {
@@ -343,14 +401,6 @@ impl Dataset {
         }
 
         None
-    }
-
-    pub fn commit(self) -> Cid {
-        todo!();
-    }
-
-    pub fn prev(self) -> Self {
-        todo!();
     }
 }
 
@@ -549,6 +599,28 @@ impl Coordinate {
         }
     }
 
+    pub fn len(&self) -> Result<usize> {
+        match &self.kind {
+            CoordinateKind::Time(_) => Err(Error::TimeIsInfinite),
+            CoordinateKind::I32(coord) => match coord {
+                CoordinateI32::Range(range) => Ok(range.len()),
+                _ => todo!(),
+            },
+            CoordinateKind::I64(coord) => match coord {
+                CoordinateI64::Range(range) => Ok(range.len()),
+                _ => todo!(),
+            },
+            CoordinateKind::F32(coord) => match coord {
+                CoordinateF32::Range(range) => Ok(range.len()),
+                _ => todo!(),
+            },
+            CoordinateKind::F64(coord) => match coord {
+                CoordinateF64::Range(range) => Ok(range.len()),
+                _ => todo!(),
+            },
+        }
+    }
+
     pub fn range_i32<S: Into<String>>(name: S, start: i32, step: i32, steps: usize) -> Self {
         let name = name.into();
         Self {
@@ -626,7 +698,7 @@ impl Serialize for CoordinateKind {
     async fn write_to(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
         match self {
             CoordinateKind::Time(range) => {
-                stream.write_byte(MMEncoding::TIME as u8).await?;
+                stream.write_byte(MMEncoding::Time as u8).await?;
                 stream.write_i64(range.start).await?;
                 stream.write_i64(range.step).await?;
             }
@@ -695,7 +767,7 @@ impl Serialize for CoordinateKind {
     async fn read_from(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
         let encoding = MMEncoding::try_from(stream.read_byte().await?)?;
         let kind = match encoding {
-            MMEncoding::TIME => {
+            MMEncoding::Time => {
                 let start = stream.read_i64().await?;
                 let step = stream.read_i64().await?;
                 CoordinateKind::Time(TimeRange::new(start, step))
@@ -774,7 +846,7 @@ impl Variable {
             let mut span = spans.pop().unwrap();
 
             // If current tail span is full, save the current span and create a new, open span
-            if span.len() == variable.span_size {
+            if span.shape()[0] == variable.span_size * span.stride() {
                 spans.push(span);
                 variable = variable.save_spans(spans).await?;
                 variable = variable.create_open_span([rows, cols]).await?;
@@ -1011,7 +1083,7 @@ impl Cacheable for Variable {
 
 #[cfg(test)]
 mod tests {
-    use ndarray::Array3;
+    use ndarray::{s, Array3};
     use num_traits::{cast, Float, PrimInt};
 
     use super::*;
@@ -1040,8 +1112,11 @@ mod tests {
                     let dataset = [<make_one_ $type>](resolver);
 
                     assert_eq!(dataset.coordinates[0].name, "t");
+                    assert!(dataset.coordinates[0].len().is_err());
                     assert_eq!(dataset.coordinates[1].name, "y");
+                    assert_eq!(dataset.coordinates[1].len().unwrap(), 16);
                     assert_eq!(dataset.coordinates[2].name, "x");
+                    assert_eq!(dataset.coordinates[2].len().unwrap(), 16);
 
                     assert_eq!(dataset.shape, [16, 16]);
                     assert_eq!(dataset.prev, None);
@@ -1106,30 +1181,62 @@ mod tests {
         let dataset = dataset
             .add_variable("apples", None, 10, 20, vec![2, 2], MMEncoding::F32)
             .await?;
-        let apple_data = make_float_data::<f32>(360);
-        let dataset = dataset.append_f32("apples", apple_data.clone()).await?;
+        let mut apple_data = make_float_data::<f32>(360);
+        let dataset = dataset
+            .append_f32("apples", apple_data.slice_mut(s![..99_usize, .., ..]))
+            .await?;
+        let dataset = dataset
+            .append_f32("apples", apple_data.slice_mut(s![99..200_usize, .., ..]))
+            .await?;
+        let dataset = dataset
+            .append_f32("apples", apple_data.slice_mut(s![200_usize.., .., ..]))
+            .await?;
 
         let dataset = dataset
             .add_variable("pears", None, 10, 20, vec![2, 2], MMEncoding::F64)
             .await?;
-        let pear_data = make_float_data::<f64>(500);
-        let dataset = dataset.append_f64("pears", pear_data.clone()).await?;
+        let mut pear_data = make_float_data::<f64>(500);
+        let dataset = dataset
+            .append_f64("pears", pear_data.slice_mut(s![..189_usize, .., ..]))
+            .await?;
+        let dataset = dataset
+            .append_f64("pears", pear_data.slice_mut(s![189..400_usize, .., ..]))
+            .await?;
+        let dataset = dataset
+            .append_f64("pears", pear_data.slice_mut(s![400_usize.., .., ..]))
+            .await?;
 
         let dataset = dataset
             .add_variable("bananas", None, 10, 20, vec![2, 2], MMEncoding::I32)
             .await?;
-        let banana_data = make_int_data::<i32>(511);
-        let dataset = dataset.append_i32("bananas", banana_data.clone()).await?;
+        let mut banana_data = make_int_data::<i32>(511);
+        let dataset = dataset
+            .append_i32("bananas", banana_data.slice_mut(s![..59_usize, .., ..]))
+            .await?;
+        let dataset = dataset
+            .append_i32("bananas", banana_data.slice_mut(s![59..300_usize, .., ..]))
+            .await?;
+        let dataset = dataset
+            .append_i32("bananas", banana_data.slice_mut(s![300_usize.., .., ..]))
+            .await?;
 
         let dataset = dataset
             .add_variable("grapes", None, 10, 20, vec![2, 2], MMEncoding::I64)
             .await?;
-        let grape_data = make_int_data::<i64>(365);
-        let dataset = dataset.append_i64("grapes", grape_data.clone()).await?;
+        let mut grape_data = make_int_data::<i64>(3650);
+        let dataset = dataset
+            .append_i64("grapes", grape_data.slice_mut(s![..1079_usize, .., ..]))
+            .await?;
+        let dataset = dataset
+            .append_i64("grapes", grape_data.slice_mut(s![1079_usize..3000, .., ..]))
+            .await?;
+        let dataset = dataset
+            .append_i64("grapes", grape_data.slice_mut(s![3000_usize.., .., ..]))
+            .await?;
 
         assert!(dataset.prev.is_none());
         let resolver = Arc::clone(&dataset.resolver);
-        let cid = dataset.save().await?;
+        let cid = dataset.commit().await?;
         let dataset = resolver.get_dataset(&cid).await?;
         assert_eq!(dataset.cid, Some(cid));
 
@@ -1138,7 +1245,7 @@ mod tests {
             .await?;
 
         let mut date_data = make_float_data::<f32>(489);
-        let dataset = dataset.append_f32("dates", date_data.clone()).await?;
+        let dataset = dataset.append_f32("dates", date_data.view_mut()).await?;
         date_data.mapv_inplace(|v| from_fixed(to_fixed(v, 2, true), 2));
 
         assert!(dataset.cid.is_none());
@@ -1148,7 +1255,7 @@ mod tests {
             .add_variable("melons", Some(2), 10, 20, vec![2, 2], MMEncoding::F64)
             .await?;
         let mut melon_data = make_float_data::<f64>(275);
-        let dataset = dataset.append_f64("melons", melon_data.clone()).await?;
+        let dataset = dataset.append_f64("melons", melon_data.view_mut()).await?;
         melon_data.mapv_inplace(|v| from_fixed(to_fixed(v, 2, true), 2));
 
         assert!(dataset.cid.is_none());
@@ -1213,7 +1320,7 @@ mod tests {
             populate(dataset).await?;
         assert_eq!(dataset.variables.len(), 6);
 
-        let cid = dataset.save().await?;
+        let cid = dataset.commit().await?;
         let dataset = resolver.get_dataset(&cid).await?;
 
         let apples = dataset.get_variable("apples").unwrap();

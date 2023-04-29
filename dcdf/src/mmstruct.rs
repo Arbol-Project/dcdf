@@ -35,7 +35,7 @@ pub struct MMStruct3Build {
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum MMEncoding {
-    TIME = 0,
+    Time = 0,
     I32 = 4,
     I64 = 8,
     F32 = 32,
@@ -47,7 +47,7 @@ impl TryFrom<u8> for MMEncoding {
 
     fn try_from(value: u8) -> Result<Self> {
         match value {
-            0 => Ok(MMEncoding::TIME),
+            0 => Ok(MMEncoding::Time),
             4 => Ok(MMEncoding::I32),
             8 => Ok(MMEncoding::I64),
             32 => Ok(MMEncoding::F32),

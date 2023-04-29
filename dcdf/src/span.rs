@@ -179,8 +179,6 @@ impl Span {
 
     /// Fill in a preallocated array with subarray from this chunk
     ///
-    /// Fill in a preallocated array with subarray from this chunk
-    ///
     #[async_recursion]
     pub(crate) async fn fill_window(
         &self,

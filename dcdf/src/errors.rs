@@ -14,6 +14,7 @@ pub enum Error {
     BadValue,
     NotFound(cid::Cid),
     BadName(String),
+    TimeIsInfinite,
 }
 
 impl From<io::Error> for Error {

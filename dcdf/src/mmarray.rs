@@ -22,6 +22,7 @@ impl MMArray1I32 {
             Self::Range(mmarray) => mmarray.get(index),
         }
     }
+
     pub fn slice(&self, start: usize, stop: usize) -> Array1<i32> {
         match self {
             Self::Range(mmarray) => mmarray.slice(start, stop),
@@ -130,6 +131,7 @@ impl MMArray1F64 {
     }
 }
 
+#[derive(Clone)]
 pub struct MMArray3I32 {
     pub(crate) data: Arc<MMStruct3>,
 }
@@ -227,6 +229,7 @@ impl MMArray3I32 {
     }
 }
 
+#[derive(Clone)]
 pub struct MMArray3I64 {
     data: Arc<MMStruct3>,
 }
@@ -324,6 +327,7 @@ impl MMArray3I64 {
     }
 }
 
+#[derive(Clone)]
 pub struct MMArray3F32 {
     pub(crate) data: Arc<MMStruct3>,
     fractional_bits: usize,
@@ -427,6 +431,7 @@ impl MMArray3F32 {
     }
 }
 
+#[derive(Clone)]
 pub struct MMArray3F64 {
     data: Arc<MMStruct3>,
     fractional_bits: usize,

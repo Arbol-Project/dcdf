@@ -364,29 +364,39 @@ mod ipfs_tests {
         let dataset = dataset
             .add_variable("apples", None, 10, 20, vec![2, 2], MMEncoding::F32)
             .await?;
-        let apple_data = make_float_data::<f32>(360);
-        let dataset = dataset.append_f32("apples", apple_data.clone()).await?;
+        let mut apple_data = make_float_data::<f32>(360);
+        let dataset = dataset
+            .append_f32("apples", apple_data.slice_mut(s![..99_usize, .., ..]))
+            .await?;
+        let dataset = dataset
+            .append_f32("apples", apple_data.slice_mut(s![99..200_usize, .., ..]))
+            .await?;
+        let dataset = dataset
+            .append_f32("apples", apple_data.slice_mut(s![200_usize.., .., ..]))
+            .await?;
 
         let dataset = dataset
             .add_variable("pears", None, 10, 20, vec![2, 2], MMEncoding::F64)
             .await?;
-        let pear_data = make_float_data::<f64>(500);
-        let dataset = dataset.append_f64("pears", pear_data.clone()).await?;
+        let mut pear_data = make_float_data::<f64>(500);
+        let dataset = dataset.append_f64("pears", pear_data.view_mut()).await?;
 
         let dataset = dataset
             .add_variable("bananas", None, 10, 20, vec![2, 2], MMEncoding::I32)
             .await?;
-        let banana_data = make_int_data::<i32>(511);
-        let dataset = dataset.append_i32("bananas", banana_data.clone()).await?;
+        let mut banana_data = make_int_data::<i32>(511);
+        let dataset = dataset
+            .append_i32("bananas", banana_data.view_mut())
+            .await?;
 
         let dataset = dataset
             .add_variable("grapes", None, 10, 20, vec![2, 2], MMEncoding::I64)
             .await?;
-        let grape_data = make_int_data::<i64>(365);
-        let dataset = dataset.append_i64("grapes", grape_data.clone()).await?;
+        let mut grape_data = make_int_data::<i64>(365);
+        let dataset = dataset.append_i64("grapes", grape_data.view_mut()).await?;
 
         assert!(dataset.prev.is_none());
-        let cid = dataset.save().await?;
+        let cid = dataset.commit().await?;
         let dataset = resolver.get_dataset(&cid).await?;
         assert_eq!(dataset.cid, Some(cid));
 
@@ -395,7 +405,7 @@ mod ipfs_tests {
             .await?;
 
         let mut date_data = make_float_data::<f32>(489);
-        let dataset = dataset.append_f32("dates", date_data.clone()).await?;
+        let dataset = dataset.append_f32("dates", date_data.view_mut()).await?;
         date_data.mapv_inplace(|v| from_fixed(to_fixed(v, 2, true), 2));
 
         assert!(dataset.cid.is_none());
@@ -405,7 +415,7 @@ mod ipfs_tests {
             .add_variable("melons", Some(2), 10, 20, vec![2, 2], MMEncoding::F64)
             .await?;
         let mut melon_data = make_float_data::<f64>(275);
-        let dataset = dataset.append_f64("melons", melon_data.clone()).await?;
+        let dataset = dataset.append_f64("melons", melon_data.view_mut()).await?;
         melon_data.mapv_inplace(|v| from_fixed(to_fixed(v, 2, true), 2));
 
         assert!(dataset.cid.is_none());
@@ -470,7 +480,7 @@ mod ipfs_tests {
             populate(&resolver, dataset).await?;
         assert_eq!(dataset.variables.len(), 6);
 
-        let cid = dataset.save().await?;
+        let cid = dataset.commit().await?;
         let dataset = resolver.get_dataset(&cid).await?;
 
         let apples = dataset.get_variable("apples").unwrap();
