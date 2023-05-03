@@ -25,7 +25,6 @@ def get_head(dataset):
     metadata_path = process.stdout.decode("utf8").strip()
     assert metadata_path.startswith("/ipfs/")
     metadata_cid = metadata_path[len("/ipfs/") :]
-    print(f"dclimate metadata: {metadata_cid}")
 
     process = subprocess.run(["ipfs", "dag", "get", metadata_cid], capture_output=True)
     metadata = json.loads(process.stdout)
@@ -34,7 +33,6 @@ def get_head(dataset):
 
 
 class InstrumentedIPLDStore(ipldstore.IPLDStore):
-
     def __init__(self, castore):
         super().__init__(castore)
 

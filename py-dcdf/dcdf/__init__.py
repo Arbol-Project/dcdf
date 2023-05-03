@@ -146,7 +146,9 @@ class Dataset:
 
 class Coordinate:
     @classmethod
-    def time(cls, name: str, start: int, step):
+    def time(cls, name: str, start, step):
+        if isinstance(start, numpy.datetime64):
+            start = int((start - numpy.datetime64(0, "s")).item().total_seconds())
         if isinstance(step, numpy.timedelta64):
             step = int(step.item().total_seconds())
         return cls(_dcdf.PyCoordinate.time(name, start, step), _PRIVATE)
