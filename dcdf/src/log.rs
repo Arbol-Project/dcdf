@@ -1,28 +1,15 @@
-use std::{
-    cmp::min,
-    collections::VecDeque,
-    fmt::Debug,
-    io::{Read, Write},
-    marker::PhantomData,
-};
+use std::{cmp::min, collections::VecDeque};
 
 use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncWrite};
-use num_traits::PrimInt;
 
 use crate::{
-    cache::Cacheable,
-    errors::Result,
-    extio::{
-        ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite, Serialize,
-        SerializeAsync,
-    },
-    geom,
-};
-
-use super::{
     bitmap::{BitMap, BitMapBuilder},
+    cache::Cacheable,
     dac::Dac,
+    errors::Result,
+    extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
+    geom,
     snapshot::Snapshot,
 };
 
@@ -31,12 +18,7 @@ use super::{
 /// A Log stores raster data for a particular time instant in a raster time series as the
 /// difference between this time instant and a reference Snapshot.
 ///
-pub struct Log<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
-    _marker: PhantomData<I>,
-
+pub(crate) struct Log {
     /// Bitmap of tree structure, known as T in Silva-Coira
     nodemap: BitMap,
 
@@ -64,85 +46,38 @@ where
     sidelen: usize,
 }
 
-impl<I> Serialize for Log<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
-    /// Write a log to a stream
-    ///
-    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
-        stream.write_byte(self.k as u8)?;
-        stream.write_u32(self.shape[0] as u32)?;
-        stream.write_u32(self.shape[1] as u32)?;
-        stream.write_u32(self.sidelen as u32)?;
-        self.nodemap.write_to(stream)?;
-        self.equal.write_to(stream)?;
-        self.max.write_to(stream)?;
-        self.min.write_to(stream)?;
-
-        Ok(())
-    }
-
-    /// Read a log from a stream
-    ///
-    fn read_from(stream: &mut impl Read) -> Result<Self> {
-        let k = stream.read_byte()? as i32;
-        let shape = [stream.read_u32()? as usize, stream.read_u32()? as usize];
-        let sidelen = stream.read_u32()? as usize;
-        let nodemap = BitMap::read_from(stream)?;
-        let equal = BitMap::read_from(stream)?;
-        let max = Dac::read_from(stream)?;
-        let min = Dac::read_from(stream)?;
-
-        Ok(Self {
-            _marker: PhantomData,
-            nodemap,
-            equal,
-            max,
-            min,
-            k,
-            shape,
-            sidelen,
-        })
-    }
-}
-
 #[async_trait]
-impl<I> SerializeAsync for Log<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
+impl Serialize for Log {
     /// Write a log to a stream
     ///
-    async fn write_to_async(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
-        stream.write_byte_async(self.k as u8).await?;
-        stream.write_u32_async(self.shape[0] as u32).await?;
-        stream.write_u32_async(self.shape[1] as u32).await?;
-        stream.write_u32_async(self.sidelen as u32).await?;
-        self.nodemap.write_to_async(stream).await?;
-        self.equal.write_to_async(stream).await?;
-        self.max.write_to_async(stream).await?;
-        self.min.write_to_async(stream).await?;
+    async fn write_to(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+        stream.write_byte(self.k as u8).await?;
+        stream.write_u32(self.shape[0] as u32).await?;
+        stream.write_u32(self.shape[1] as u32).await?;
+        stream.write_u32(self.sidelen as u32).await?;
+        self.nodemap.write_to(stream).await?;
+        self.equal.write_to(stream).await?;
+        self.max.write_to(stream).await?;
+        self.min.write_to(stream).await?;
 
         Ok(())
     }
 
     /// Read a log from a stream
     ///
-    async fn read_from_async(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
-        let k = stream.read_byte_async().await? as i32;
+    async fn read_from(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+        let k = stream.read_byte().await? as i32;
         let shape = [
-            stream.read_u32_async().await? as usize,
-            stream.read_u32_async().await? as usize,
+            stream.read_u32().await? as usize,
+            stream.read_u32().await? as usize,
         ];
-        let sidelen = stream.read_u32_async().await? as usize;
-        let nodemap = BitMap::read_from_async(stream).await?;
-        let equal = BitMap::read_from_async(stream).await?;
-        let max = Dac::read_from_async(stream).await?;
-        let min = Dac::read_from_async(stream).await?;
+        let sidelen = stream.read_u32().await? as usize;
+        let nodemap = BitMap::read_from(stream).await?;
+        let equal = BitMap::read_from(stream).await?;
+        let max = Dac::read_from(stream).await?;
+        let min = Dac::read_from(stream).await?;
 
         Ok(Self {
-            _marker: PhantomData,
             nodemap,
             equal,
             max,
@@ -154,10 +89,7 @@ where
     }
 }
 
-impl<I> Cacheable for Log<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
+impl Cacheable for Log {
     /// Return number of bytes in serialized representation
     ///
     fn size(&self) -> u64 {
@@ -165,10 +97,7 @@ where
     }
 }
 
-impl<I> Log<I>
-where
-    I: PrimInt + Debug + Send + Sync,
-{
+impl Log {
     /// Build a log from a pair of two-dimensional arrays.
     ///
     /// The notional two-dimensional arrays are represented by `get_s' and `get_t`, which are
@@ -180,7 +109,7 @@ where
     /// `get_t` indirection.
     ///
 
-    pub fn build<GS, GT>(get_s: GS, get_t: GT, shape: [usize; 2], k: i32) -> Self
+    pub(crate) fn build<GS, GT>(get_s: GS, get_t: GT, shape: [usize; 2], k: i32) -> Self
     where
         GS: Fn(usize, usize) -> i64,
         GT: Fn(usize, usize) -> i64,
@@ -225,7 +154,6 @@ where
         }
 
         Log {
-            _marker: PhantomData,
             nodemap: nodemap.finish(),
             equal: equal.finish(),
             max: Dac::from(max),
@@ -245,9 +173,9 @@ where
     ///
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
-    pub fn get(&self, snapshot: &Snapshot<I>, row: usize, col: usize) -> I {
-        let max_t: I = self.max.get(0);
-        let max_s: I = snapshot.max.get(0);
+    pub(crate) fn get(&self, snapshot: &Snapshot, row: usize, col: usize) -> i64 {
+        let max_t = self.max.get(0);
+        let max_s = snapshot.max.get(0);
         let single_t = !self.nodemap.get(0);
         let single_s = !snapshot.nodemap.get(0);
         if single_t && single_s {
@@ -259,24 +187,22 @@ where
         } else {
             let index_t = if single_t { None } else { Some(0) };
             let index_s = if single_s { None } else { Some(0) };
-            let value = self._get(
+            self._get(
                 snapshot,
                 self.sidelen,
                 row,
                 col,
                 index_t,
                 index_s,
-                max_t.to_i64().unwrap(),
-                max_s.to_i64().unwrap(),
-            );
-
-            I::from(value).unwrap()
+                max_t,
+                max_s,
+            )
         }
     }
 
     fn _get(
         &self,
-        snapshot: &Snapshot<I>,
+        snapshot: &Snapshot,
         sidelen: usize,
         row: usize,
         col: usize,
@@ -294,7 +220,7 @@ where
             Some(index) => {
                 let index = 1 + snapshot.nodemap.rank(index) * k * k;
                 let index = index + row / sidelen * k + col / sidelen;
-                max_s = max_s - snapshot.max.get::<i64>(index);
+                max_s = max_s - snapshot.max.get(index);
                 Some(index)
             }
             None => None,
@@ -382,7 +308,7 @@ where
     ///
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
-    pub fn fill_window<S>(&self, mut set: S, snapshot: &Snapshot<I>, bounds: &geom::Rect)
+    pub(crate) fn fill_window<S>(&self, mut set: S, snapshot: &Snapshot, bounds: &geom::Rect)
     where
         S: FnMut(usize, usize, i64),
     {
@@ -423,7 +349,7 @@ where
     fn _fill_window<S>(
         &self,
         set: &mut S,
-        snapshot: &Snapshot<I>,
+        snapshot: &Snapshot,
         sidelen: usize,
         top: usize,
         bottom: usize,
@@ -484,7 +410,7 @@ where
                 };
 
                 let max_s_ = match index_s_ {
-                    Some(index) => max_s - snapshot.max.get::<i64>(index),
+                    Some(index) => max_s - snapshot.max.get(index),
                     None => max_s,
                 };
 
@@ -590,12 +516,12 @@ where
     ///
     /// [1]: https://index.ggws.net/downloads/2021-06-18/91/silva-coira2021.pdf
     ///
-    pub fn search_window(
+    pub(crate) fn search_window(
         &self,
-        snapshot: &Snapshot<I>,
+        snapshot: &Snapshot,
         bounds: &geom::Rect,
-        lower: I,
-        upper: I,
+        lower: i64,
+        upper: i64,
     ) -> Vec<(usize, usize)> {
         let mut cells: Vec<(usize, usize)> = vec![];
         let single_t = !self.nodemap.get(0);
@@ -608,8 +534,8 @@ where
             bounds.bottom - 1,
             bounds.left,
             bounds.right - 1,
-            lower.to_i64().unwrap(),
-            upper.to_i64().unwrap(),
+            lower,
+            upper,
             if single_t { None } else { Some(0) },
             if single_s { None } else { Some(0) },
             self.min.get(0),
@@ -626,7 +552,7 @@ where
 
     fn _search_window(
         &self,
-        snapshot: &Snapshot<I>,
+        snapshot: &Snapshot,
         sidelen: usize,
         top: usize,
         bottom: usize,
@@ -699,7 +625,7 @@ where
                 };
 
                 let max_s_ = match index_s_ {
-                    Some(index) => max_s - snapshot.max.get::<i64>(index),
+                    Some(index) => max_s - snapshot.max.get(index),
                     None => max_s,
                 };
 
@@ -729,7 +655,7 @@ where
                         if leaf_s {
                             min_s
                         } else {
-                            min_s + snapshot.min.get::<i64>(snapshot.nodemap.rank(index))
+                            min_s + snapshot.min.get(snapshot.nodemap.rank(index))
                         }
                     }
                     None => min_s,
@@ -893,14 +819,13 @@ impl K2PTreeNode {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testing::array_search_window;
     use super::*;
-    use futures::io::Cursor as AsyncCursor;
+    use crate::testing::array_search_window2;
+    use futures::io::Cursor;
     use ndarray::{arr3, s, Array2, Array3};
     use std::collections::HashSet;
-    use std::io::Cursor;
 
-    fn array8() -> Array3<i32> {
+    fn array8() -> Array3<i64> {
         arr3(&[
             [
                 [9, 8, 7, 7, 6, 6, 3, 2],
@@ -935,11 +860,7 @@ mod tests {
         ])
     }
 
-    fn array8_unsigned() -> Array3<u32> {
-        array8().mapv(|x| x as u32)
-    }
-
-    fn array9() -> Array3<i32> {
+    fn array9() -> Array3<i64> {
         arr3(&[
             [
                 [9, 8, 7, 7, 6, 6, 3, 2, 1],
@@ -987,14 +908,14 @@ mod tests {
         assert_eq!(log.equal.bitmap, vec![0b10001010000000000000000000000000]);
 
         assert_eq!(
-            log.max.collect::<i32>(),
+            log.max.collect(),
             vec![
                 0, 0, 1, 0, 1, 1, -1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0,
                 0, 0
             ]
         );
 
-        assert_eq!(log.min.collect::<i32>(), vec![0, 0, 0, 0, 0, 1, 0,]);
+        assert_eq!(log.min.collect(), vec![0, 0, 0, 0, 0, 1, 0,]);
 
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
         assert_eq!(log.nodemap.length, 21);
@@ -1003,21 +924,21 @@ mod tests {
         assert_eq!(log.equal.bitmap, vec![0b10100010100000000000000000000000]);
 
         assert_eq!(
-            log.max.collect::<i32>(),
+            log.max.collect(),
             vec![
                 0, 0, 2, 0, 2, 0, 0, 1, 0, 2, 2, 1, 1, 0, 0, 0, 0, 0, 0, 2, 0, 2, 1, 1, 1, 1, 0, 1,
                 1, 1, 0, 1, 0, 2, 0, 1, 0,
             ]
         );
 
-        assert_eq!(log.min.collect::<i32>(), vec![1, 1, 1, 0, 0, 1, 0, 1, 0,]);
+        assert_eq!(log.min.collect(), vec![1, 1, 1, 0, 0, 1, 0, 1, 0,]);
 
         assert_eq!(log.shape, [8, 8]);
     }
 
     #[test]
     fn build_make_sure_fill_values_match_local_nonfill_values_in_same_quadbox() {
-        let mut data: Array3<i32> = Array3::zeros([3, 9, 9]) + 5;
+        let mut data: Array3<i64> = Array3::zeros([3, 9, 9]) + 5;
         data.slice_mut(s![.., ..8, ..8]).assign(&array8());
         data.slice_mut(s![0, .., ..])
             .assign(&array9().slice(s![0, .., ..]));
@@ -1031,42 +952,6 @@ mod tests {
 
         let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
         assert_eq!(log.get(&snapshot, 8, 8), 5);
-    }
-
-    #[test]
-    fn build_unsigned() {
-        let data = array8_unsigned();
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
-        assert_eq!(log.nodemap.length, 17);
-        assert_eq!(log.nodemap.bitmap, vec![0b10111001000010010000000000000000]);
-        assert_eq!(log.equal.length, 10);
-        assert_eq!(log.equal.bitmap, vec![0b10001010000000000000000000000000]);
-
-        assert_eq!(
-            log.max.collect::<i32>(),
-            vec![
-                0, 0, 1, 0, 1, 1, -1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0,
-                0, 0
-            ]
-        );
-
-        assert_eq!(log.min.collect::<i32>(), vec![0, 0, 0, 0, 0, 1, 0,]);
-
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
-        assert_eq!(log.nodemap.length, 21);
-        assert_eq!(log.nodemap.bitmap, vec![0b11111000010100001001000000000000]);
-        assert_eq!(log.equal.length, 12);
-        assert_eq!(log.equal.bitmap, vec![0b10100010100000000000000000000000]);
-
-        assert_eq!(
-            log.max.collect::<i32>(),
-            vec![
-                0, 0, 2, 0, 2, 0, 0, 1, 0, 2, 2, 1, 1, 0, 0, 0, 0, 0, 0, 2, 0, 2, 1, 1, 1, 1, 0, 1,
-                1, 1, 0, 1, 0, 2, 0, 1, 0,
-            ]
-        );
-
-        assert_eq!(log.min.collect::<i32>(), vec![1, 1, 1, 0, 0, 1, 0, 1, 0,]);
     }
 
     #[test]
@@ -1090,29 +975,9 @@ mod tests {
     }
 
     #[test]
-    fn get_unsigned() {
-        let data = array8_unsigned();
-        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
-
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
-        for row in 0..8 {
-            for col in 0..8 {
-                assert_eq!(log.get(&snapshot, row, col), data[[1, row, col]]);
-            }
-        }
-
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
-        for row in 0..8 {
-            for col in 0..8 {
-                assert_eq!(log.get(&snapshot, row, col), data[[2, row, col]]);
-            }
-        }
-    }
-
-    #[test]
     fn get_single_node_trees() {
-        let data_s: Array2<i32> = Array2::zeros([8, 8]) + 20;
-        let data_t: Array2<i32> = Array2::zeros([8, 8]) + 42;
+        let data_s: Array2<i64> = Array2::zeros([8, 8]) + 20;
+        let data_t: Array2<i64> = Array2::zeros([8, 8]) + 42;
         let snapshot = Snapshot::from_array(data_s.view(), 2);
         let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
 
@@ -1126,7 +991,7 @@ mod tests {
     #[test]
     fn get_single_node_snapshot() {
         let data = array8();
-        let data_s: Array2<i32> = Array2::zeros([8, 8]) + 20;
+        let data_s: Array2<i64> = Array2::zeros([8, 8]) + 20;
         let data_t = data.slice(s![0, .., ..]);
 
         let snapshot = Snapshot::from_array(data_s.view(), 2);
@@ -1143,7 +1008,7 @@ mod tests {
     fn get_single_node_log() {
         let data = array8();
         let data_s = data.slice(s![0, .., ..]);
-        let data_t: Array2<i32> = Array2::zeros([8, 8]) + 20;
+        let data_t: Array2<i64> = Array2::zeros([8, 8]) + 20;
 
         let snapshot = Snapshot::from_array(data_s.view(), 2);
         let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
@@ -1245,40 +1110,6 @@ mod tests {
     }
 
     #[test]
-    fn get_window_unsigned() {
-        let data = array8_unsigned();
-        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
-
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
-        for top in 0..8 {
-            for bottom in top + 1..=8 {
-                for left in 0..8 {
-                    for right in left + 1..=8 {
-                        let bounds = geom::Rect::new(top, bottom, left, right);
-                        let window = log.get_window(&snapshot, &bounds);
-                        let expected = data.slice(s![1, top..bottom, left..right]);
-                        assert_eq!(window, expected);
-                    }
-                }
-            }
-        }
-
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![2, .., ..]), 2);
-        for top in 0..8 {
-            for bottom in top + 1..=8 {
-                for left in 0..8 {
-                    for right in left + 1..=8 {
-                        let bounds = geom::Rect::new(top, bottom, left, right);
-                        let window = log.get_window(&snapshot, &bounds);
-                        let expected = data.slice(s![2, top..bottom, left..right]);
-                        assert_eq!(window, expected);
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
     fn get_window_array9() {
         let data = array9();
         let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
@@ -1348,8 +1179,8 @@ mod tests {
 
     #[test]
     fn get_window_single_node_trees() {
-        let data_s: Array2<i32> = Array2::zeros([8, 8]) + 20;
-        let data_t: Array2<i32> = Array2::zeros([8, 8]) + 42;
+        let data_s: Array2<i64> = Array2::zeros([8, 8]) + 20;
+        let data_t: Array2<i64> = Array2::zeros([8, 8]) + 42;
 
         let snapshot = Snapshot::from_array(data_s.view(), 2);
         let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
@@ -1370,7 +1201,7 @@ mod tests {
     #[test]
     fn get_window_single_node_snapshot() {
         let data = array8();
-        let data_s: Array2<i32> = Array2::zeros([8, 8]) + 20;
+        let data_s: Array2<i64> = Array2::zeros([8, 8]) + 20;
         let data_t = data.slice(s![0, .., ..]);
 
         let snapshot = Snapshot::from_array(data_s.view(), 2);
@@ -1393,7 +1224,7 @@ mod tests {
     fn get_window_single_node_log() {
         let data = array8();
         let data_s = data.slice(s![0, .., ..]);
-        let data_t: Array2<i32> = Array2::zeros([8, 8]) + 20;
+        let data_t: Array2<i64> = Array2::zeros([8, 8]) + 20;
 
         let snapshot = Snapshot::from_array(data_s.view(), 2);
         let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
@@ -1446,7 +1277,7 @@ mod tests {
                     for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
+                                let expected: Vec<(usize, usize)> = array_search_window2(
                                     data1, top, bottom, left, right, lower, upper,
                                 );
                                 let expected: HashSet<(usize, usize)> =
@@ -1472,66 +1303,7 @@ mod tests {
                     for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
-                                    data2, top, bottom, left, right, lower, upper,
-                                );
-                                let expected: HashSet<(usize, usize)> =
-                                    HashSet::from_iter(expected.iter().cloned());
-
-                                let bounds = geom::Rect::new(top, bottom, left, right);
-                                let coords = log.search_window(&snapshot, &bounds, lower, upper);
-                                let coords = HashSet::from_iter(coords.iter().cloned());
-
-                                assert_eq!(coords, expected);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn search_window_unsigned() {
-        let data = array8_unsigned();
-        let data0 = data.slice(s![0, .., ..]);
-        let snapshot = Snapshot::from_array(data0, 2);
-
-        let data1 = data.slice(s![1, .., ..]);
-        let log = Log::from_arrays(data0, data1, 2);
-        for top in 0..8 {
-            for bottom in top + 1..=8 {
-                for left in 0..8 {
-                    for right in left + 1..=8 {
-                        for lower in 4..=9 {
-                            for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
-                                    data1, top, bottom, left, right, lower, upper,
-                                );
-                                let expected: HashSet<(usize, usize)> =
-                                    HashSet::from_iter(expected.iter().cloned());
-
-                                let bounds = geom::Rect::new(top, bottom, left, right);
-                                let coords = log.search_window(&snapshot, &bounds, lower, upper);
-                                let coords = HashSet::from_iter(coords.iter().cloned());
-
-                                assert_eq!(coords, expected);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let data2 = data.slice(s![2, .., ..]);
-        let log = Log::from_arrays(data0, data2, 2);
-        for top in 0..8 {
-            for bottom in top + 1..=8 {
-                for left in 0..8 {
-                    for right in left + 1..=8 {
-                        for lower in 4..=9 {
-                            for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
+                                let expected: Vec<(usize, usize)> = array_search_window2(
                                     data2, top, bottom, left, right, lower, upper,
                                 );
                                 let expected: HashSet<(usize, usize)> =
@@ -1564,7 +1336,7 @@ mod tests {
                     for right in left + 1..=9 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
+                                let expected: Vec<(usize, usize)> = array_search_window2(
                                     data1, top, bottom, left, right, lower, upper,
                                 );
                                 let expected: HashSet<(usize, usize)> =
@@ -1590,7 +1362,7 @@ mod tests {
                     for right in left + 1..=9 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
+                                let expected: Vec<(usize, usize)> = array_search_window2(
                                     data2, top, bottom, left, right, lower, upper,
                                 );
                                 let expected: HashSet<(usize, usize)> =
@@ -1623,7 +1395,7 @@ mod tests {
                     for right in left + 1..=9 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
+                                let expected: Vec<(usize, usize)> = array_search_window2(
                                     data1, top, bottom, left, right, lower, upper,
                                 );
                                 let expected: HashSet<(usize, usize)> =
@@ -1649,7 +1421,7 @@ mod tests {
                     for right in left + 1..=9 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
+                                let expected: Vec<(usize, usize)> = array_search_window2(
                                     data2, top, bottom, left, right, lower, upper,
                                 );
                                 let expected: HashSet<(usize, usize)> =
@@ -1670,8 +1442,8 @@ mod tests {
 
     #[test]
     fn search_window_single_node_trees() {
-        let data_s: Array2<i32> = Array2::zeros([8, 8]) + 20;
-        let data_t: Array2<i32> = Array2::zeros([8, 8]) + 42;
+        let data_s: Array2<i64> = Array2::zeros([8, 8]) + 20;
+        let data_t: Array2<i64> = Array2::zeros([8, 8]) + 42;
         let snapshot = Snapshot::from_array(data_s.view(), 2);
         let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
 
@@ -1681,7 +1453,7 @@ mod tests {
                     for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
+                                let expected: Vec<(usize, usize)> = array_search_window2(
                                     data_t.view(),
                                     top,
                                     bottom,
@@ -1709,7 +1481,7 @@ mod tests {
     #[test]
     fn search_window_single_node_snapshot() {
         let data = array8();
-        let data_s: Array2<i32> = Array2::zeros([8, 8]) + 42;
+        let data_s: Array2<i64> = Array2::zeros([8, 8]) + 42;
         let data_t = data.slice(s![0, .., ..]);
         let snapshot = Snapshot::from_array(data_s.view(), 2);
         let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
@@ -1720,7 +1492,7 @@ mod tests {
                     for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
+                                let expected: Vec<(usize, usize)> = array_search_window2(
                                     data_t.view(),
                                     top,
                                     bottom,
@@ -1749,7 +1521,7 @@ mod tests {
     fn search_window_single_node_log() {
         let data = array8();
         let data_s = data.slice(s![0, .., ..]);
-        let data_t: Array2<i32> = Array2::zeros([8, 8]) + 42;
+        let data_t: Array2<i64> = Array2::zeros([8, 8]) + 42;
         let snapshot = Snapshot::from_array(data_s.view(), 2);
         let log = Log::from_arrays(data_s.view(), data_t.view(), 2);
 
@@ -1759,7 +1531,7 @@ mod tests {
                     for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
+                                let expected: Vec<(usize, usize)> = array_search_window2(
                                     data_t.view(),
                                     top,
                                     bottom,
@@ -1797,7 +1569,7 @@ mod tests {
                     for right in left + 1..=8 {
                         for lower in 4..=9 {
                             for upper in lower..=9 {
-                                let expected: Vec<(usize, usize)> = array_search_window(
+                                let expected: Vec<(usize, usize)> = array_search_window2(
                                     data_s.view(),
                                     top,
                                     bottom,
@@ -1843,40 +1615,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn serialize_deserialize() -> Result<()> {
+    #[tokio::test]
+    async fn serialize_deserialize() -> Result<()> {
         let data = array8();
         let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
         let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
 
         let mut buffer: Vec<u8> = Vec::with_capacity(log.size() as usize);
-        log.write_to(&mut buffer)?;
+        log.write_to(&mut buffer).await?;
         assert_eq!(buffer.len(), log.size() as usize);
 
         let mut buffer = Cursor::new(buffer);
-        let log = Log::read_from(&mut buffer)?;
-
-        for row in 0..8 {
-            for col in 0..8 {
-                assert_eq!(log.get(&snapshot, row, col), data[[1, row, col]]);
-            }
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn serialize_deserialize_async() -> Result<()> {
-        let data = array8();
-        let snapshot = Snapshot::from_array(data.slice(s![0, .., ..]), 2);
-        let log = Log::from_arrays(data.slice(s![0, .., ..]), data.slice(s![1, .., ..]), 2);
-
-        let mut buffer: Vec<u8> = Vec::with_capacity(log.size() as usize);
-        log.write_to_async(&mut buffer).await?;
-        assert_eq!(buffer.len(), log.size() as usize);
-
-        let mut buffer = AsyncCursor::new(buffer);
-        let log = Log::read_from_async(&mut buffer).await?;
+        let log = Log::read_from(&mut buffer).await?;
 
         for row in 0..8 {
             for col in 0..8 {

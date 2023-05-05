@@ -1,6 +1,6 @@
 [package]
 name = "py-dcdf"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [package.metadata.maturin]
@@ -15,6 +15,6 @@ cid = "0.10"
 dcdf = { path = "../dcdf" }
 dcdf-ipfs = { path = "../dcdf-ipfs" }
 ndarray = "0.15"
-numpy = "0.16"
-pyo3 = { version = "0.16", features = ["extension-module"] }
-pyo3-file = "0.5"
+numpy = "0.18"
+pyo3 = { version = "0.18", features = ["extension-module"] }
+tokio = { version = "1.24", features=["rt", "rt-multi-thread"] }

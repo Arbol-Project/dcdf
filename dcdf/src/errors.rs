@@ -11,6 +11,10 @@ pub enum Error {
     Cid(cid::Error),
     UnsignedVarint(UnsignedVarintError),
     Load,
+    BadValue,
+    NotFound(cid::Cid),
+    BadName(String),
+    TimeIsInfinite,
 }
 
 impl From<io::Error> for Error {

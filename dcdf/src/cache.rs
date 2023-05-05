@@ -1,13 +1,15 @@
 /// An implementation of an LRU (Least Recently Used) cache.
 ///
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::hash::Hash;
-use std::sync::Arc;
+use std::{collections::HashMap, fmt::Debug, hash::Hash, sync::Arc};
 
-use parking_lot::{Condvar, Mutex};
+use futures::{
+    channel::oneshot::{channel, Sender},
+    future::BoxFuture,
+};
 
-use super::errors::Result;
+use parking_lot::Mutex;
+
+use crate::errors::{Error, Result};
 
 /// An LRU (least recently used) cache.
 ///
@@ -60,15 +62,12 @@ struct Loader<V>
 where
     V: Cacheable,
 {
-    /// Indicates status of the load as being either finished or still in progress.
-    finished: Mutex<bool>,
+    /// The loaded entry. If object is not yet loaded, this will be ``None``. Otherwise, it will
+    /// contain the loaded object.
+    object: Mutex<Option<Result<Arc<V>>>>,
 
-    /// The loaded entry. If ``finished`` is ``false``, this will be ``None``. Otherwise, it will
-    /// contain the cache entry for the loaded object.
-    object: Mutex<Option<Arc<V>>>,
-
-    /// A synchronization primitive used to notify waiting threads when the object is loaded.
-    waiter: Condvar,
+    /// Tasks waiting for this object to be loaded
+    waiters: Mutex<Vec<Sender<Result<Arc<V>>>>>,
 }
 
 /// A structure containing the entries stored in this cache.
@@ -147,13 +146,13 @@ where
     /// the cache. If the same object is already being loaded in another thread, this will wait for
     /// that object load to finish and then return.
     ///
-    pub fn get<L>(&self, key: &K, load: L) -> Result<Arc<V>>
+    pub async fn get<L>(&self, key: &K, load: L) -> Result<Arc<V>>
     where
-        L: FnMut(K) -> Result<Option<V>>,
+        L: FnOnce(K) -> BoxFuture<'static, Result<Option<V>>>,
     {
         let object = match self.lookup(key) {
             Some(object) => object,
-            None => self.load(key, load)?,
+            None => self.load(key, load).await?,
         };
 
         Ok(object)
@@ -179,9 +178,9 @@ where
     ///
     /// If another thread is already loading the object, wait for that thread.
     ///
-    fn load<L>(&self, key: &K, mut load: L) -> Result<Arc<V>>
+    async fn load<L>(&self, key: &K, load: L) -> Result<Arc<V>>
     where
-        L: FnMut(K) -> Result<Option<V>>,
+        L: FnOnce(K) -> BoxFuture<'static, Result<Option<V>>>,
     {
         let (first, loader) = {
             let mut loaders = self.loaders.lock();
@@ -198,7 +197,7 @@ where
 
         if first {
             // We're the first thread to try and load this object, so we'll load it here
-            match load(*key) {
+            match load(*key).await {
                 Ok(result) => {
                     match result {
                         Some(object) => {
@@ -206,29 +205,29 @@ where
                             self.recent.lock().insert(*key, &object);
 
                             // Tell any waiting threads we've finished loading the object
-                            loader.finish(Some(&object));
+                            loader.finish(Ok(Arc::clone(&object)));
                             self.loaders.lock().remove(key);
 
                             Ok(object)
                         }
                         None => {
                             // We tried
-                            loader.finish(None);
+                            loader.finish(Err(Error::Load));
                             self.loaders.lock().remove(key);
-                            panic!("Object not found for key: {key:?}");
+                            panic!();
                         }
                     }
                 }
                 Err(err) => {
                     // We tried
-                    loader.finish(None);
+                    loader.finish(Err(Error::Load));
                     self.loaders.lock().remove(key);
                     Err(err)
                 }
             }
         } else {
             // Another thread is loading this object already, just wait for it to finish
-            loader.wait()
+            loader.wait().await
         }
     }
 }
@@ -239,42 +238,48 @@ where
 {
     fn new() -> Self {
         Loader {
-            finished: Mutex::new(false),
             object: Mutex::new(None),
-            waiter: Condvar::new(),
+            waiters: Mutex::new(Vec::new()),
         }
     }
 
     /// Inform any waiting threads that the object has been loaded, or the loading thread has given
     /// up trying.
     ///
-    fn finish(&self, object: Option<&Arc<V>>) {
-        {
-            let mut finished = self.finished.lock();
-            if !*finished {
-                // verify expected state
-                *finished = true;
-                *self.object.lock() = match object {
-                    Some(object) => Some(Arc::clone(object)),
-                    None => None,
-                };
+    fn finish(&self, object: Result<Arc<V>>) {
+        *self.object.lock() = Some(match &object {
+            Ok(object) => Ok(Arc::clone(object)),
+            Err(_) => Err(Error::Load),
+        });
+        let mut waiters = self.waiters.lock();
+        for waiter in waiters.drain(..) {
+            let result = waiter.send(match &object {
+                Ok(object) => Ok(Arc::clone(object)),
+                Err(_) => Err(Error::Load),
+            });
+            if let Err(_) = result {
+                panic!("Other end hung up!");
             }
         }
-
-        self.waiter.notify_all();
     }
 
     /// Wait for the loading thread to finish loading the object, or give up trying.
-    fn wait(&self) -> Result<Arc<V>> {
-        let mut finished = self.finished.lock();
-        while !*finished {
-            self.waiter.wait(&mut finished);
-        }
+    async fn wait(&self) -> Result<Arc<V>> {
+        let receive = {
+            let mut waiters = self.waiters.lock();
+            if let Some(object) = &*self.object.lock() {
+                return match object {
+                    Ok(object) => Ok(Arc::clone(&object)),
+                    Err(_) => Err(Error::Load),
+                };
+            }
+            let (send, receive) = channel::<Result<Arc<V>>>();
+            waiters.push(send);
 
-        match &*self.object.lock() {
-            Some(object) => Ok(Arc::clone(&object)),
-            None => panic!("Object load failed on another thread"),
-        }
+            receive
+        };
+
+        receive.await.expect("channel closed unexpectedly")
     }
 }
 
@@ -403,8 +408,9 @@ where
 mod tests {
     use super::*;
 
-    use std::thread;
+    use futures::future::{join_all, FutureExt};
     use std::time::Duration;
+    use tokio::time;
 
     struct DummyValue {
         value: u32,
@@ -460,12 +466,12 @@ mod tests {
         frontwise
     }
 
-    #[test]
-    fn test_common_use() -> Result<()> {
+    #[tokio::test]
+    async fn test_common_use() -> Result<()> {
         let cache: Cache<u32, DummyValue> = Cache::new(100);
-        let load = |key| Ok(Some(DummyValue::new(key, 25)));
+        let load = |key| async move { Ok(Some(DummyValue::new(key, 25))) }.boxed();
 
-        assert_eq!(cache.get(&1, load)?.value, 1);
+        assert_eq!(cache.get(&1, load).await?.value, 1);
         {
             let recent = cache.recent.lock();
             assert_eq!(recent.size, 25);
@@ -474,10 +480,10 @@ mod tests {
         }
 
         let load = |_| panic!("I shouldn't get called");
-        assert_eq!(cache.get(&1, load)?.value, 1);
+        assert_eq!(cache.get(&1, load).await?.value, 1);
 
-        let load = |key| Ok(Some(DummyValue::new(key, 25)));
-        assert_eq!(cache.get(&2, load)?.value, 2);
+        let load = |key| async move { Ok(Some(DummyValue::new(key, 25))) }.boxed();
+        assert_eq!(cache.get(&2, load).await?.value, 2);
         {
             let recent = cache.recent.lock();
             assert_eq!(recent.size, 50);
@@ -485,8 +491,8 @@ mod tests {
             assert_eq!(collect_linked_list(&recent), vec![2, 1]);
         }
 
-        assert_eq!(cache.get(&3, load)?.value, 3);
-        assert_eq!(cache.get(&4, load)?.value, 4);
+        assert_eq!(cache.get(&3, load).await?.value, 3);
+        assert_eq!(cache.get(&4, load).await?.value, 4);
         {
             let recent = cache.recent.lock();
             assert_eq!(recent.size, 100);
@@ -495,27 +501,27 @@ mod tests {
         }
 
         let load = |_| panic!("I shouldn't get called");
-        assert_eq!(cache.get(&3, load)?.value, 3);
+        assert_eq!(cache.get(&3, load).await?.value, 3);
         {
             let recent = cache.recent.lock();
             assert_eq!(collect_linked_list(&recent), vec![3, 4, 2, 1]);
         }
 
-        assert_eq!(cache.get(&3, load)?.value, 3);
+        assert_eq!(cache.get(&3, load).await?.value, 3);
         {
             let recent = cache.recent.lock();
             assert_eq!(collect_linked_list(&recent), vec![3, 4, 2, 1]);
         }
 
-        assert_eq!(cache.get(&1, load)?.value, 1);
+        assert_eq!(cache.get(&1, load).await?.value, 1);
         {
             let recent = cache.recent.lock();
             assert_eq!(collect_linked_list(&recent), vec![1, 3, 4, 2]);
         }
 
         // Cache is now full, next load should push 4 and 2 out
-        let load = |key| Ok(Some(DummyValue::new(key, 50)));
-        assert_eq!(cache.get(&5, load)?.value, 5);
+        let load = |key| async move { Ok(Some(DummyValue::new(key, 50))) }.boxed();
+        assert_eq!(cache.get(&5, load).await?.value, 5);
         {
             let recent = cache.recent.lock();
             assert_eq!(recent.size, 100);
@@ -523,18 +529,18 @@ mod tests {
             assert_eq!(collect_linked_list(&recent), vec![5, 1, 3]);
         }
 
-        let load = |key| Ok(Some(DummyValue::new(key * 2, 33)));
-        assert_eq!(cache.get(&1, load)?.value, 1);
-        assert_eq!(cache.get(&3, load)?.value, 3);
-        assert_eq!(cache.get(&5, load)?.value, 5);
-        assert_eq!(cache.get(&7, load)?.value, 14);
-        assert_eq!(cache.get(&1, load)?.value, 2);
-        assert_eq!(cache.get(&3, load)?.value, 6);
-        assert_eq!(cache.get(&5, load)?.value, 10);
+        let load = |key| async move { Ok(Some(DummyValue::new(key * 2, 33))) }.boxed();
+        assert_eq!(cache.get(&1, load).await?.value, 1);
+        assert_eq!(cache.get(&3, load).await?.value, 3);
+        assert_eq!(cache.get(&5, load).await?.value, 5);
+        assert_eq!(cache.get(&7, load).await?.value, 14);
+        assert_eq!(cache.get(&1, load).await?.value, 2);
+        assert_eq!(cache.get(&3, load).await?.value, 6);
+        assert_eq!(cache.get(&5, load).await?.value, 10);
 
         // This will obliterate the cache
-        let load = |key| Ok(Some(DummyValue::new(key, 101)));
-        assert_eq!(cache.get(&7, load)?.value, 7);
+        let load = |key| async move { Ok(Some(DummyValue::new(key, 101))) }.boxed();
+        assert_eq!(cache.get(&7, load).await?.value, 7);
         {
             let recent = cache.recent.lock();
             assert_eq!(recent.size, 0);
@@ -546,78 +552,93 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_concurrent_load() -> Result<()> {
+    #[tokio::test]
+    async fn test_concurrent_load() -> Result<()> {
         let loading = Arc::new(Mutex::new(false));
         let loaded = Arc::new(Mutex::new(false));
         let cache: Arc<Cache<u32, DummyValue>> = Arc::new(Cache::new(100));
-        let mut handles = vec![];
+        let mut futures = vec![];
 
-        // 10 threads trying to load single key, only one should actually do the load
+        // 10 tasks trying to load single key, only one should actually do the load
         for _ in 1..=10 {
             let loading = Arc::clone(&loading);
             let loaded = Arc::clone(&loaded);
             let cache = Arc::clone(&cache);
-            let handle = thread::spawn(move || {
+            let future = async move {
                 let long_load = |key| {
-                    // Verify that load is only called once even with many threads trying to load
-                    // concurrently.
-                    {
-                        let mut loading = loading.lock();
-                        assert!(!*loading);
-                        *loading = true;
+                    async move {
+                        // Verify that load is only called once even with many threads trying to load
+                        // concurrently.
+                        {
+                            let mut loading = loading.lock();
+                            assert!(!*loading);
+                            *loading = true;
+                        }
+
+                        // Make all those other threads wait a bit
+                        time::sleep(Duration::from_millis(30)).await;
+
+                        // Let the test know we're nearly done loading
+                        {
+                            let mut loaded = loaded.lock();
+                            assert!(!*loaded);
+                            *loaded = true;
+                        }
+
+                        Ok(Some(DummyValue::new(key, 25)))
                     }
-
-                    // Make all those other threads wait a bit
-                    thread::sleep(Duration::from_millis(30));
-
-                    // Let the test know we're nearly done loading
-                    {
-                        let mut loaded = loaded.lock();
-                        assert!(!*loaded);
-                        *loaded = true;
-                    }
-
-                    Ok(Some(DummyValue::new(key, 25)))
+                    .boxed()
                 };
 
-                assert_eq!(cache.get(&42, long_load).expect("oh no error!").value, 42);
-            });
-            handles.push(handle);
+                assert_eq!(
+                    cache.get(&42, long_load).await.expect("oh no error!").value,
+                    42
+                );
+            }
+            .boxed();
+            futures.push(future);
         }
 
         // Another 10 threads loading a different key that shouldn't be blocked by the long load
         // above
-        thread::sleep(Duration::from_millis(5));
-        for _ in 11..=20 {
-            let loaded = Arc::clone(&loaded);
-            let loading = Arc::clone(&loading);
-            let cache = Arc::clone(&cache);
-            let handle = thread::spawn(move || {
-                let load = |key| {
-                    // 5ms wait above should be plenty that the long load has started by now
+        let future = async {
+            let mut futures = vec![];
+            time::sleep(Duration::from_millis(5)).await;
+            for _ in 11..=20 {
+                let loaded = Arc::clone(&loaded);
+                let loading = Arc::clone(&loading);
+                let cache = Arc::clone(&cache);
+                let future = async move {
+                    let load = |key| {
+                        async move {
+                            // 5ms wait above should be plenty that the long load has started by now
+                            {
+                                let loading = loading.lock();
+                                assert!(*loading);
+                            }
+
+                            Ok(Some(DummyValue::new(key * 2, 25)))
+                        }
+                        .boxed()
+                    };
+
+                    assert_eq!(cache.get(&21, load).await.expect("oh no error!").value, 42);
+
+                    // The long load shouldn't have finished yet
                     {
-                        let loading = loading.lock();
-                        assert!(*loading);
+                        let loaded = loaded.lock();
+                        assert!(!*loaded);
                     }
-
-                    Ok(Some(DummyValue::new(key * 2, 25)))
                 };
+                futures.push(future);
+            }
 
-                assert_eq!(cache.get(&21, load).expect("oh no error!").value, 42);
-
-                // The long load shouldn't have finished yet
-                {
-                    let loaded = loaded.lock();
-                    assert!(!*loaded);
-                }
-            });
-            handles.push(handle);
+            join_all(futures).await;
         }
+        .boxed();
 
-        for handle in handles {
-            handle.join().unwrap();
-        }
+        futures.push(future);
+        join_all(futures).await;
 
         Ok(())
     }

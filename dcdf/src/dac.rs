@@ -13,65 +13,31 @@
 //!     https://gist.github.com/mfuerstenau/ba870a29e16536fdbaba)
 //!
 use std::fmt::Debug;
-use std::io::{Read, Write};
 
 use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use num_traits::PrimInt;
 
 use crate::{
+    bitmap::{BitMap, BitMapBuilder},
     cache::Cacheable,
     errors::Result,
-    extio::{
-        ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite, Serialize,
-        SerializeAsync,
-    },
+    extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
 };
 
-use super::bitmap::{BitMap, BitMapBuilder};
-
 /// Compact storage for integers (Directly Addressable Codes)
-pub struct Dac {
-    pub levels: Vec<(BitMap, Vec<u8>)>,
-}
-
-impl Serialize for Dac {
-    /// Write the dac to a stream
-    ///
-    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
-        stream.write_byte(self.levels.len() as u8)?;
-        for (bitmap, bytes) in &self.levels {
-            bitmap.write_to(stream)?;
-            stream.write_all(bytes)?;
-        }
-        Ok(())
-    }
-
-    /// Read the dac from a stream
-    ///
-    fn read_from(stream: &mut impl Read) -> Result<Self> {
-        let n_levels = stream.read_byte()? as usize;
-        let mut levels = Vec::with_capacity(n_levels);
-        for _ in 0..n_levels {
-            let bitmap = BitMap::read_from(stream)?;
-            let mut bytes = Vec::with_capacity(bitmap.length);
-            stream.take(bitmap.length as u64).read_to_end(&mut bytes)?;
-
-            levels.push((bitmap, bytes));
-        }
-
-        Ok(Self { levels })
-    }
+pub(crate) struct Dac {
+    pub(crate) levels: Vec<(BitMap, Vec<u8>)>,
 }
 
 #[async_trait]
-impl SerializeAsync for Dac {
+impl Serialize for Dac {
     /// Write the dac to a stream
     ///
-    async fn write_to_async(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
-        stream.write_byte_async(self.levels.len() as u8).await?;
+    async fn write_to(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+        stream.write_byte(self.levels.len() as u8).await?;
         for (bitmap, bytes) in &self.levels {
-            bitmap.write_to_async(stream).await?;
+            bitmap.write_to(stream).await?;
             stream.write_all(bytes).await?;
         }
         Ok(())
@@ -79,11 +45,11 @@ impl SerializeAsync for Dac {
 
     /// Read the dac from a stream
     ///
-    async fn read_from_async(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
-        let n_levels = stream.read_byte_async().await? as usize;
+    async fn read_from(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+        let n_levels = stream.read_byte().await? as usize;
         let mut levels = Vec::with_capacity(n_levels);
         for _ in 0..n_levels {
-            let bitmap = BitMap::read_from_async(stream).await?;
+            let bitmap = BitMap::read_from(stream).await?;
             let mut bytes = Vec::with_capacity(bitmap.length);
             stream
                 .take(bitmap.length as u64)
@@ -111,10 +77,7 @@ impl Cacheable for Dac {
 impl Dac {
     /// Get the value at the given index
     ///
-    pub fn get<I>(&self, index: usize) -> I
-    where
-        I: PrimInt + Debug,
-    {
+    pub(crate) fn get(&self, index: usize) -> i64 {
         let mut index = index;
         let mut n: u64 = 0;
         for (i, (bitmap, bytes)) in self.levels.iter().enumerate() {
@@ -126,8 +89,7 @@ impl Dac {
             }
         }
 
-        let n = zigzag_decode(n);
-        I::from(n).unwrap()
+        zigzag_decode(n)
     }
 }
 
@@ -182,8 +144,7 @@ fn zigzag_decode(zz: u64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::io::Cursor as AsyncCursor;
-    use std::io::Cursor;
+    use futures::io::Cursor;
 
     impl Dac {
         // Some functions that are useful for testing but not needed otherwise.
@@ -194,66 +155,43 @@ mod tests {
         }
 
         /// Decompress back into Vector of integers
-        pub fn collect<I>(&self) -> Vec<I>
-        where
-            I: PrimInt + Debug,
-        {
+        pub(crate) fn collect(&self) -> Vec<i64> {
             (0..self.len()).into_iter().map(|i| self.get(i)).collect()
         }
     }
 
     #[test]
-    fn get_i32() {
+    fn get() {
         let data = vec![0, 2, -3, -2.pow(9), 2.pow(17) + 1, -2.pow(30) - 42];
         let dac = Dac::from(data.clone());
         for i in 0..data.len() {
-            assert_eq!(dac.get::<i32>(i), data[i]);
+            assert_eq!(dac.get(i), data[i]);
         }
         assert_eq!(dac.levels[0].0.get(2), false);
     }
 
     #[test]
     fn this_one() {
-        let data: Vec<i32> = vec![-512];
+        let data: Vec<i64> = vec![-512];
         let dac = Dac::from(data.clone());
         assert_eq!(zigzag_decode(zigzag_encode(-512)), -512);
-        assert_eq!(dac.get::<i32>(0), data[0]);
-    }
-
-    #[test]
-    fn serialize_deserialize() -> Result<()> {
-        let data = vec![0, 2, -3, -2.pow(9), 2.pow(17) + 1, -2.pow(30) - 42];
-        let dac = Dac::from(data.clone());
-
-        let mut buffer: Vec<u8> = Vec::with_capacity(dac.size() as usize);
-        dac.write_to(&mut buffer)?;
-        assert_eq!(buffer.len(), dac.size() as usize);
-
-        let mut buffer = Cursor::new(buffer);
-        let dac = Dac::read_from(&mut buffer)?;
-
-        for i in 0..data.len() {
-            assert_eq!(dac.get::<i32>(i), data[i]);
-        }
-        assert_eq!(dac.levels[0].0.get(2), false);
-
-        Ok(())
+        assert_eq!(dac.get(0), data[0]);
     }
 
     #[tokio::test]
-    async fn serialize_deserialize_async() -> Result<()> {
+    async fn serialize_deserialize() -> Result<()> {
         let data = vec![0, 2, -3, -2.pow(9), 2.pow(17) + 1, -2.pow(30) - 42];
         let dac = Dac::from(data.clone());
 
         let mut buffer: Vec<u8> = Vec::with_capacity(dac.size() as usize);
-        dac.write_to_async(&mut buffer).await?;
+        dac.write_to(&mut buffer).await?;
         assert_eq!(buffer.len(), dac.size() as usize);
 
-        let mut buffer = AsyncCursor::new(buffer);
-        let dac = Dac::read_from_async(&mut buffer).await?;
+        let mut buffer = Cursor::new(buffer);
+        let dac = Dac::read_from(&mut buffer).await?;
 
         for i in 0..data.len() {
-            assert_eq!(dac.get::<i32>(i), data[i]);
+            assert_eq!(dac.get(i), data[i]);
         }
         assert_eq!(dac.levels[0].0.get(2), false);
 

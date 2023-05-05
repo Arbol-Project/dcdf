@@ -1,7 +1,4 @@
-use std::{
-    fmt::Debug,
-    io::{Read, Write},
-};
+use std::fmt::Debug;
 
 use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncWrite};
@@ -10,10 +7,7 @@ use num_traits::PrimInt;
 use crate::{
     cache::Cacheable,
     errors::Result,
-    extio::{
-        ExtendedAsyncRead, ExtendedAsyncWrite, ExtendedRead, ExtendedWrite, Serialize,
-        SerializeAsync,
-    },
+    extio::{ExtendedAsyncRead, ExtendedAsyncWrite, Serialize},
 };
 
 /// Used to build up a BitMap.
@@ -32,14 +26,14 @@ use crate::{
 ///
 /// let bitmap = builder.finish();
 ///
-pub struct BitMapBuilder {
-    pub length: usize,
+pub(crate) struct BitMapBuilder {
+    pub(crate) length: usize,
     bitmap: Vec<u8>,
 }
 
 impl BitMapBuilder {
     /// Initialize an empty BitMapBuilder
-    pub fn new() -> BitMapBuilder {
+    pub(crate) fn new() -> BitMapBuilder {
         BitMapBuilder {
             length: 0,
             bitmap: vec![],
@@ -47,7 +41,7 @@ impl BitMapBuilder {
     }
 
     /// Push a bit onto the BitMapBuilder
-    pub fn push(&mut self, bit: bool) {
+    pub(crate) fn push(&mut self, bit: bool) {
         // Which bit do we need to set in the relevant byte?
         let position = self.length % 8;
 
@@ -69,7 +63,7 @@ impl BitMapBuilder {
 
     /// Finish building BitMap.
     ///
-    pub fn finish(self) -> BitMap {
+    pub(crate) fn finish(self) -> BitMap {
         // Value of k is more or less arbitrary. Could be tuned via benchmarking.
         // Index will add bitmap.length / k extra space to store the index
         let k = 4; // 25% extra space to store the index
@@ -120,87 +114,45 @@ impl BitMapBuilder {
 
 /// An array of bits with a single level index for making fast rank queries.
 ///
-pub struct BitMap {
-    pub length: usize,
+pub(crate) struct BitMap {
+    pub(crate) length: usize,
     k: usize,
     index: Vec<u32>,
-    pub bitmap: Vec<u32>,
-}
-
-impl Serialize for BitMap {
-    /// Write the bitmap to a stream
-    ///
-    fn write_to(&self, stream: &mut impl Write) -> Result<()> {
-        stream.write_u32(self.length as u32)?;
-        stream.write_u32(self.k as u32)?;
-        for index_block in &self.index {
-            stream.write_u32(*index_block)?;
-        }
-        for bitmap_block in &self.bitmap {
-            stream.write_u32(*bitmap_block)?;
-        }
-        Ok(())
-    }
-
-    /// Read a bitmap from a stream
-    ///
-    fn read_from(stream: &mut impl Read) -> Result<Self> {
-        let length = stream.read_u32()? as usize;
-        let k = stream.read_u32()? as usize;
-
-        let blocks = length / 32 / k;
-        let mut index = Vec::with_capacity(blocks as usize);
-        for _ in 0..blocks {
-            index.push(stream.read_u32()?);
-        }
-
-        let words = div_ceil(length, 32);
-        let mut bitmap = Vec::with_capacity(words);
-        for _ in 0..words {
-            bitmap.push(stream.read_u32()?);
-        }
-
-        Ok(Self {
-            length,
-            k,
-            index,
-            bitmap,
-        })
-    }
+    pub(crate) bitmap: Vec<u32>,
 }
 
 #[async_trait]
-impl SerializeAsync for BitMap {
+impl Serialize for BitMap {
     /// Write the bitmap to a stream
     ///
-    async fn write_to_async(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
-        stream.write_u32_async(self.length as u32).await?;
-        stream.write_u32_async(self.k as u32).await?;
+    async fn write_to(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+        stream.write_u32(self.length as u32).await?;
+        stream.write_u32(self.k as u32).await?;
         for index_block in &self.index {
-            stream.write_u32_async(*index_block).await?;
+            stream.write_u32(*index_block).await?;
         }
         for bitmap_block in &self.bitmap {
-            stream.write_u32_async(*bitmap_block).await?;
+            stream.write_u32(*bitmap_block).await?;
         }
         Ok(())
     }
 
     /// Read a bitmap from a stream
     ///
-    async fn read_from_async(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
-        let length = stream.read_u32_async().await? as usize;
-        let k = stream.read_u32_async().await? as usize;
+    async fn read_from(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+        let length = stream.read_u32().await? as usize;
+        let k = stream.read_u32().await? as usize;
 
         let blocks = length / 32 / k;
         let mut index = Vec::with_capacity(blocks as usize);
         for _ in 0..blocks {
-            index.push(stream.read_u32_async().await?);
+            index.push(stream.read_u32().await?);
         }
 
         let words = div_ceil(length, 32);
         let mut bitmap = Vec::with_capacity(words);
         for _ in 0..words {
-            bitmap.push(stream.read_u32_async().await?);
+            bitmap.push(stream.read_u32().await?);
         }
 
         Ok(Self {
@@ -221,7 +173,7 @@ impl Cacheable for BitMap {
 
 impl BitMap {
     /// Get the bit at position `i`
-    pub fn get(&self, i: usize) -> bool {
+    pub(crate) fn get(&self, i: usize) -> bool {
         let word_index = i / 32;
         let bit_index = i % 32;
         let shift = 31 - bit_index;
@@ -231,7 +183,7 @@ impl BitMap {
     }
 
     /// Count occurences of 1 in BitMap[0...i]
-    pub fn rank(&self, i: usize) -> usize {
+    pub(crate) fn rank(&self, i: usize) -> usize {
         if i > self.length {
             // Can only happen if there is a programming error in this module
             panic!("index out of bounds. length: {}, i: {}", self.length, i);
@@ -260,7 +212,7 @@ impl BitMap {
     }
 
     /// Count occurences of 0 in BitMap[0...i]
-    pub fn rank0(&self, i: usize) -> usize {
+    pub(crate) fn rank0(&self, i: usize) -> usize {
         i - self.rank(i)
     }
 }
@@ -281,10 +233,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::io::Cursor as AsyncCursor;
+    use futures::io::Cursor;
     use rand;
     use rand::{Rng, RngCore};
-    use std::io::Cursor;
     use std::time;
 
     impl BitMapBuilder {
@@ -292,7 +243,7 @@ mod tests {
         ///
         /// Naive brute force implementation that is used to double check the indexed
         /// implementation in tests.
-        pub fn rank(&self, i: usize) -> usize {
+        pub(crate) fn rank(&self, i: usize) -> usize {
             let mut count = 0;
             for word in self.bitmap.iter().take(i / 8) {
                 count += word.count_ones();
@@ -448,38 +399,18 @@ mod tests {
         test_rank(bitmap, &indexes);
     }
 
-    #[test]
-    fn serialize_deserialize() -> Result<()> {
+    #[tokio::test]
+    async fn serialize_deserialize() -> Result<()> {
         let bitmap = make_bitmap(1 << 20).finish();
         let indexes = RandomRange(1 << 20);
         let indexes: Vec<usize> = indexes.take(100).collect();
 
         let mut buffer: Vec<u8> = Vec::with_capacity(bitmap.size() as usize);
-        bitmap.write_to(&mut buffer)?;
+        bitmap.write_to(&mut buffer).await?;
         assert_eq!(buffer.len(), bitmap.size() as usize);
 
         let mut cursor = Cursor::new(buffer);
-        let bitmap2 = BitMap::read_from(&mut cursor)?;
-
-        for index in indexes {
-            assert_eq!(bitmap.rank(index), bitmap2.rank(index));
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn serialize_deserialize_async() -> Result<()> {
-        let bitmap = make_bitmap(1 << 20).finish();
-        let indexes = RandomRange(1 << 20);
-        let indexes: Vec<usize> = indexes.take(100).collect();
-
-        let mut buffer: Vec<u8> = Vec::with_capacity(bitmap.size() as usize);
-        bitmap.write_to_async(&mut buffer).await?;
-        assert_eq!(buffer.len(), bitmap.size() as usize);
-
-        let mut cursor = AsyncCursor::new(buffer);
-        let bitmap2 = BitMap::read_from_async(&mut cursor).await?;
+        let bitmap2 = BitMap::read_from(&mut cursor).await?;
 
         for index in indexes {
             assert_eq!(bitmap.rank(index), bitmap2.rank(index));
