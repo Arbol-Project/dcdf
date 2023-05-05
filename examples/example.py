@@ -300,6 +300,7 @@ def copy_data_from_dclimate(Dataset, n_instants=None, commit_every=10):
             for col in range(0, cols, col_stride):
                 src_chunk[:, row : row + row_stride, col : col + col_stride].data
                 print(".", end="")
+                sys.stdout.flush()
         print("")
 
         # Again, notice that mutating a dataset creates a new dataset. Data in
