@@ -1,4 +1,5 @@
 import code
+import collections
 import os
 import sys
 
@@ -407,6 +408,64 @@ def shell(Dataset):
     code.interact(banner, local=locals)
 
 
+def ls(Dataset, path_or_cid):
+    head_file = f".{Dataset.name}_head"
+    if not os.path.exists(head_file):
+        error(
+            f"Dataset doesn't exist. Have you initalized it? HEAD should be"
+            f" stored at {head_file}"
+        )
+    head_cid = open(head_file).read().strip()
+
+    resolver = dcdf.Resolver()
+    for entry in _ls(resolver, head_cid, path_or_cid):
+        print(f"{entry.cid} {entry.node_type:10} {entry.size:10} {entry.name}")
+
+
+def _ls(resolver, head_cid, path_or_cid):
+    if path_or_cid is None:
+        return resolver.ls(head_cid)
+
+    try:
+        entries = resolver.ls(path_or_cid)
+    except ValueError:  # Not a cid
+        path = path_or_cid.split("/")
+        entries = resolver.ls(head_cid)
+        while path:
+            name = path.pop(0)
+            for entry in entries:
+                if entry.name == name:
+                    entries = resolver.ls(entry.cid)
+                    break
+            else:
+                error(f"Not found: {path_or_cid}")
+
+    return entries
+
+
+def du(Dataset, path_or_cid):
+    head_file = f".{Dataset.name}_head"
+    if not os.path.exists(head_file):
+        error(
+            f"Dataset doesn't exist. Have you initalized it? HEAD should be"
+            f" stored at {head_file}"
+        )
+    head_cid = open(head_file).read().strip()
+
+    resolver = dcdf.Resolver()
+    usage = 0  # TODO stat starting object for its size
+    objects = 1
+    entries = collections.deque()
+    entries.extend(_ls(resolver, head_cid, path_or_cid))
+    while entries:
+        entry = entries.popleft()
+        entries.extend(_ls(resolver, head_cid, entry.cid))
+        usage += entry.size
+        objects += 1
+
+    print(usage)
+
+
 def main():
     """
     Example of DCDF (K-squared raster)
@@ -416,6 +475,8 @@ def main():
         example.py <dataset> copy [<n_instants>]
         example.py <dataset> add <input_file>...
         example.py <dataset> shell
+        example.py <dataset> ls [<path_or_cid>]
+        example.py <dataset> du [<path_or_cid>]
 
     Options:
       -h --help     Show this screen.
@@ -440,6 +501,12 @@ def main():
     elif args["add"]:
         for input_file in args["<input_file>"]:
             add_data_from_file(Dataset, input_file)
+
+    elif args["ls"]:
+        ls(Dataset, args["<path_or_cid>"])
+
+    elif args["du"]:
+        du(Dataset, args["<path_or_cid>"])
 
 
 def error(message):

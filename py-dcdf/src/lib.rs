@@ -6,7 +6,7 @@ use pyo3::{
     prelude::*,
 };
 
-use dcdf::{self, geom, MMEncoding};
+use dcdf::{self, geom, LsEntry, MMEncoding};
 use numpy::{
     borrow::PyReadwriteArray3,
     datetime::{units, Datetime},
@@ -151,6 +151,12 @@ impl PyResolver {
         Ok(PyDataset(block_on_result(
             self.0.get_dataset(&parse_cid(cid)?),
         )?))
+    }
+
+    pub fn ls(&self, cid: &str) -> PyResult<Vec<PyLsEntry>> {
+        let ls = block_on_result(self.0.ls(&parse_cid(cid)?))?;
+
+        Ok(ls.into_iter().map(|entry| PyLsEntry::from(entry)).collect())
     }
 }
 
@@ -571,6 +577,32 @@ impl PyMMArray3F64 {
         let array = block_on_result(self.0.window(bounds))?;
 
         Ok(array.to_pyarray(py))
+    }
+}
+
+#[pyclass]
+pub struct PyLsEntry {
+    #[pyo3(get)]
+    pub cid: String,
+
+    #[pyo3(get)]
+    pub name: String,
+
+    #[pyo3(get)]
+    pub node_type: Option<&'static str>,
+
+    #[pyo3(get)]
+    pub size: Option<u64>,
+}
+
+impl From<LsEntry> for PyLsEntry {
+    fn from(entry: LsEntry) -> Self {
+        Self {
+            cid: entry.cid.to_string(),
+            name: entry.name,
+            node_type: entry.node_type,
+            size: entry.size,
+        }
     }
 }
 

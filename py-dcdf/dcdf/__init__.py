@@ -44,6 +44,9 @@ class Resolver:
     def get_dataset(self, cid):
         return Dataset(self._inner.get_dataset(cid), _PRIVATE)
 
+    def ls(self, cid):
+        return self._inner.ls(cid)
+
 
 class Dataset:
     @classmethod

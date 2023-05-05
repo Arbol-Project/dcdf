@@ -471,7 +471,15 @@ impl Node for Dataset {
     }
 
     fn ls(&self) -> Vec<(String, Cid)> {
-        todo!();
+        let mut ls = vec![];
+        for variable in &self.variables {
+            ls.push((variable.name.clone(), variable.cid.clone()));
+        }
+        if let Some(cid) = self.prev {
+            ls.push((String::from("prev"), cid.clone()));
+        }
+
+        ls
     }
 }
 
@@ -1177,6 +1185,7 @@ mod tests {
         Dataset,
     )> {
         assert!(dataset.cid.is_none());
+        assert_eq!(dataset.ls().len(), 0);
 
         let dataset = dataset
             .add_variable("apples", None, 10, 20, vec![2, 2], MMEncoding::F32)
@@ -1235,6 +1244,7 @@ mod tests {
             .await?;
 
         assert!(dataset.prev.is_none());
+        assert_eq!(dataset.ls().len(), 4);
         let resolver = Arc::clone(&dataset.resolver);
         let cid = dataset.commit().await?;
         let dataset = resolver.get_dataset(&cid).await?;
@@ -1260,6 +1270,9 @@ mod tests {
 
         assert!(dataset.cid.is_none());
         assert_eq!(dataset.prev, Some(cid));
+
+        assert_eq!(dataset.ls().len(), 7);
+        assert_eq!(dataset.ls()[6].0, String::from("prev"));
 
         Ok((
             apple_data,
@@ -1388,6 +1401,37 @@ mod tests {
 
         let melons_mmstruct = melons.data_f64().await?;
         verify_f64(melon_data, melons_mmstruct).await?;
+
+        let ls = resolver.ls(&cid).await?;
+        assert_eq!(ls.len(), 7);
+
+        assert_eq!(ls[0].name, String::from("apples"));
+        assert_eq!(ls[0].cid, apples.cid);
+        assert_eq!(ls[0].node_type, Some("Span"));
+
+        assert_eq!(ls[1].name, String::from("pears"));
+        assert_eq!(ls[1].cid, pears.cid);
+        assert_eq!(ls[1].node_type, Some("Span"));
+
+        assert_eq!(ls[2].name, String::from("bananas"));
+        assert_eq!(ls[2].cid, bananas.cid);
+        assert_eq!(ls[2].node_type, Some("Span"));
+
+        assert_eq!(ls[3].name, String::from("grapes"));
+        assert_eq!(ls[3].cid, grapes.cid);
+        assert_eq!(ls[3].node_type, Some("Span"));
+
+        assert_eq!(ls[4].name, String::from("dates"));
+        assert_eq!(ls[4].cid, dates.cid);
+        assert_eq!(ls[4].node_type, Some("Span"));
+
+        assert_eq!(ls[5].name, String::from("melons"));
+        assert_eq!(ls[5].cid, melons.cid);
+        assert_eq!(ls[5].node_type, Some("Span"));
+
+        assert_eq!(ls[6].name, String::from("prev"));
+        assert_eq!(ls[6].cid, dataset.prev.unwrap());
+        assert_eq!(ls[6].node_type, Some("Dataset"));
 
         Ok(())
     }

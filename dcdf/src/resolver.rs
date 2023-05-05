@@ -37,9 +37,7 @@ enum CacheItem {
 impl CacheItem {
     fn ls(&self) -> Vec<(String, Cid)> {
         match self {
-            CacheItem::Dataset(_dataset) => {
-                todo!();
-            }
+            CacheItem::Dataset(dataset) => dataset.ls(),
             CacheItem::Links(links) => links.ls(),
             CacheItem::MMStruct3(node) => node.ls(),
         }
@@ -211,6 +209,7 @@ impl Resolver {
                     code = stream.read_byte().await?;
                 }
                 let node_type = match code {
+                    node::NODE_DATASET => "Dataset",
                     node::NODE_LINKS => "Links",
                     node::NODE_SUBCHUNK => "Subchunk",
                     node::NODE_SUPERCHUNK => "Superchunk",

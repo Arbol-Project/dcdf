@@ -33,5 +33,5 @@ pub use mapper::{Mapper, StoreWrite};
 pub mod geom;
 pub use mmarray::*;
 pub use mmstruct::MMEncoding;
-pub use resolver::Resolver;
+pub use resolver::{LsEntry, Resolver};
 pub use time::TimeRange;
