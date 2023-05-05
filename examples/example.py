@@ -6,6 +6,7 @@ import docopt
 import numpy as np
 
 import dcdf
+import xarray
 import dclimate
 
 """
@@ -17,6 +18,12 @@ class CpcPrecip:
     name = "cpc_precip_global-daily"
     """
     The name of the Dataset in dClimate.
+    """
+
+    zarr_chunk_size = (24, 24)
+    """Taken from ZARR metadata for this dataset. Used to prime local IPFS during
+    copying, to try and get around a plague of timeout errors due to dClimate IPFS
+    serving blocks extremely slowly.
     """
 
     @staticmethod
@@ -120,8 +127,88 @@ class CpcPrecip:
         # uses immutable data structures.
         return dataset
 
+    @staticmethod
+    def extract_and_translate(path):
+        # Load data from file
+        dataset = xarray.open_dataset(path)
 
-DATASETS = {"cpc_precip": CpcPrecip}
+        # Find where this block sits along the time axis. We'll need to return this.
+        start = int(
+            (dataset.time[0] - np.datetime64("1979-01-01")) // np.timedelta64(1, "D")
+        )
+
+        # The latitude axis in the source data is descending, but dClimate uses
+        # ascending order, so need to flip along the second axis.
+        data = np.flip(dataset.precip.data, axis=1)
+
+        # The longitude axis in the source data goes from 0 to 360, but dClimate uses
+        # -180 to 180. 0 is the prime meridian in both cases. The src data needs to be
+        # shifted to the right to line up to dClimate's notion. Data that rolls off the
+        # end on the right is wrapped back around to the left.
+        data = np.roll(data, 360, axis=2)
+
+        return start, data
+
+
+class Era5LandPrecip:
+    name = "era5_land_precip-hourly"
+    """
+    The name of the Dataset in dClimate.
+    """
+
+    zarr_chunk_size = (15, 40)
+    """Taken from ZARR metadata for this dataset. Used to prime local IPFS during
+    copying, to try and get around a plague of timeout errors due to dClimate IPFS
+    serving blocks extremely slowly.
+    """
+
+    @staticmethod
+    def factory(resolver: dcdf.Resolver) -> dcdf.Dataset:
+        """
+        Create a new, empty Dataset configured for CPC Precipation data.
+        """
+        # First we need to set up the coordinates. DCDF deals with 3 dimensional arrays
+        # so there will always be 3 coordinates: The first coordinate for time, and two
+        # more coordinates for position.
+
+        # Starts on Jan 1, 1981, and has measurements every hour
+        t = dcdf.Coordinate.time(
+            "time", np.datetime64("1981-01-01"), np.timedelta64(1, "h")
+        )
+
+        # Set up the lat/lon coordinates. Dtype defaults to np.float64. We use float32
+        # here to match the dClimate dataset
+        lat = dcdf.Coordinate.range("latitude", -90.0, 0.1, 1801, np.float64)
+        lon = dcdf.Coordinate.range("longitude", -180.0, 0.1, 3600, np.float64)
+
+        # For shape, we just specify the two dimensional cross-section, which is a
+        # function of how many points are in the space coordinates.
+        shape = (1801, 3600)
+
+        dataset = dcdf.Dataset.new([t, lat, lon], shape, resolver)
+
+        # See comments for CPC Precip.
+        chunk_size = 64
+
+        # This dataset will be expanded to 4096x4096 under the hoad. log2(4096) == 12,
+        # so we need 12 tree levels total. For this one, we'll use a top level
+        # superchunk with 2 levels, then a layer of superchunks with 4 levels,
+        # containing subchunks with 6 levels, yielding 64x64x64 subchunks, just like the
+        # CPC dataset. What's the optimal arragngement? I don't know. We'd need to do
+        # some experimentation and benchmarking to determine that.
+        k2_levels = [2, 4, 6]  # Must add up to 12 for this dataset
+
+        # See comments for CPC Precip.
+        span_size = 20000
+
+        return dataset.add_variable("tp", span_size, chunk_size, k2_levels)
+
+    @staticmethod
+    def extract_and_translate(path):
+        raise NotImplementedError
+
+
+DATASETS = {"cpc_precip": CpcPrecip, "era5_land_precip": Era5LandPrecip}
 
 
 def initialize_dataset(Dataset):
@@ -149,10 +236,14 @@ def initialize_dataset(Dataset):
     # topmost level. Most everything else has already been written.
     cid = dataset.commit()
 
+    save_head(head_file, cid)
+
+
+def save_head(head_file, cid, message="Success."):
     with open(head_file, "w") as out:
         print(cid, file=out)
 
-    print(f"Success. New head saved to {head_file}.")
+    print(f"{message} New head saved to {head_file}.")
 
 
 def copy_data_from_dclimate(Dataset, n_instants=None, commit_every=10):
@@ -199,19 +290,29 @@ def copy_data_from_dclimate(Dataset, n_instants=None, commit_every=10):
     for index in range(written, written + n_instants, dst.chunk_size):
         src_chunk = src[index : index + dst.chunk_size]
 
+        # Prime local IPFS store by fetching one ZARR chunk at a time from dClimate. An
+        # attempt to get around perpetual timeout errors caused by dClimate serving IPFS
+        # *very* slowly.
+        _, rows, cols = src_chunk.shape
+        row_stride, col_stride = Dataset.zarr_chunk_size
+        print("Prime zarr chunks")
+        for row in range(0, rows, row_stride):
+            for col in range(0, cols, col_stride):
+                src_chunk[:, row : row + row_stride, col : col + col_stride].data
+                print(".", end="")
+        print("")
+
         # Again, notice that mutating a dataset creates a new dataset. Data in
         # K-squared, and in IPLD more generally, is immutable.
-        print("About to get src data")
+        print("DEBUG: About to get src data")
         src_data = src_chunk.data
-        print("Got src data")
+        print("DEBUG: Got src data")
         dataset = dataset.append(dst.name, src_data)
         remaining -= dst.chunk_size
 
         if commit_count == 1:
             cid = dataset.commit()
-            with open(head_file, "w") as out:
-                print(cid, file=out)
-            print(f"Incremental progress saved. New head saved to {head_file}.")
+            save_head(head_file, cid, "Incremental progress saved.")
             commit_count = commit_every
 
         else:
@@ -230,11 +331,44 @@ def copy_data_from_dclimate(Dataset, n_instants=None, commit_every=10):
     # Commit changes. Data is already written, this just formalizes the top level
     # Dataset structure.
     cid = dataset.commit()
+    save_head(head_file, cid)
 
-    with open(head_file, "w") as out:
-        print(cid, file=out)
 
-    print(f"Success. New head saved to {head_file}.")
+def add_data_from_file(Dataset, path):
+    """Add data from a file to the dataset."""
+    head_file = f".{Dataset.name}_head"
+    if not os.path.exists(head_file):
+        error(
+            f"Dataset doesn't exist. Have you initalized it? HEAD should be"
+            f" stored at {head_file}"
+        )
+
+    # Get our Dataset
+    resolver = dcdf.Resolver()
+    head = open(head_file).read().strip()
+    dataset = resolver.get_dataset(head)
+
+    # Assume only one variable
+    dst = dataset.variables[0]
+
+    # Extract an xarray from the file. This is dataset dependent.
+    start, data = Dataset.extract_and_translate(path)
+
+    # Make sure this data actually goes here
+    instants = dst.shape[0]
+    if start != instants:
+        print(
+            f"Expected data to start at {instants} but starts at {start}",
+            file=sys.stderr,
+        )
+        return
+
+    # Add the data. Note that mutating the dataset creates a new dataset.
+    dataset = dataset.append(dst.name, data)
+
+    # Commit the changes
+    cid = dataset.commit()
+    save_head(head_file, cid, f"Imported {path}")
 
 
 def shell(Dataset):
@@ -279,6 +413,7 @@ def main():
     Usage:
         example.py <dataset> init
         example.py <dataset> copy [<n_instants>]
+        example.py <dataset> add <input_file>...
         example.py <dataset> shell
 
     Options:
@@ -300,6 +435,10 @@ def main():
 
     elif args["shell"]:
         shell(Dataset)
+
+    elif args["add"]:
+        for input_file in args["<input_file>"]:
+            add_data_from_file(Dataset, input_file)
 
 
 def error(message):

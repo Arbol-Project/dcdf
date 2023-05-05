@@ -29,6 +29,10 @@ def get_head(dataset):
     process = subprocess.run(["ipfs", "dag", "get", metadata_cid], capture_output=True)
     metadata = json.loads(process.stdout)
 
+    import pprint
+
+    pprint.pprint(metadata)
+
     return metadata["assets"]["zmetadata"]["href"]["/"]
 
 
