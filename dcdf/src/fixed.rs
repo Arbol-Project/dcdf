@@ -63,7 +63,10 @@ where
 
     match shifted.to_i64() {
         Some(number) => number + 1, // Set LSB to 1 to indicate not a NaN
-        None => panic!("Overflow converting {n:?} to fixed point representation."),
+        None => panic!(
+            "Overflow converting {n:?} (DEBUG: {shifted:?}, {fractional_bits}) \
+            to fixed point representation."
+        ),
     }
 }
 
@@ -102,11 +105,23 @@ where
     // in the data
     let mut values = data.iter();
     let mut max_value = values.next().unwrap();
+    while max_value.is_nan() {
+        if let Some(n) = values.next() {
+            max_value = n;
+        } else {
+            break;
+        }
+    }
     for n in values {
-        if n > max_value {
+        if !n.is_nan() && n > max_value {
             max_value = n;
         }
     }
+    if max_value.is_nan() {
+        // We were passed data that as all NaNs
+        return Fraction::Precise(0);
+    }
+
     let whole_bits = 1 + max_value.to_f64().unwrap().log2().floor() as usize;
 
     // Total number of bits we have available to encode fractions. Hopefully we'll find we need
@@ -350,6 +365,34 @@ mod tests {
         match fraction {
             Round(bits) => {
                 assert_eq!(bits, 53);
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+    }
+
+    #[test]
+    fn suggest_fraction_with_nans() {
+        let data = arr3(&[[[f32::NAN, 16.0, f32::NAN, 1.0 / 16.0]]]);
+        let fraction = suggest_fraction(data.view());
+        match fraction {
+            Precise(bits) => {
+                assert_eq!(bits, 4);
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+    }
+
+    #[test]
+    fn suggest_fraction_all_nans() {
+        let data = arr3(&[[[f32::NAN, f32::NAN, f32::NAN, f32::NAN]]]);
+        let fraction = suggest_fraction(data.view());
+        match fraction {
+            Precise(bits) => {
+                assert_eq!(bits, 0);
             }
             _ => {
                 assert!(false);
