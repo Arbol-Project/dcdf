@@ -1,3 +1,4 @@
+import functools
 from typing import List
 import numpy
 
@@ -310,26 +311,29 @@ class Variable:
         instant, row, col = indices = fixed_indices
         scalars = tuple(map(_is_int, indices))
 
-        if all(scalars):
-            return self.get(instant, row, col)
+        def realize(instant=instant, row=row, col=col, indices=indices):
+            if all(scalars):
+                return self.get(instant, row, col)
 
-        if scalars == (False, True, True):
-            return self.cell(instant.start, instant.stop, row, col)
+            if scalars == (False, True, True):
+                return self.cell(instant.start, instant.stop, row, col)
 
-        indices = list(map(_as_slice, indices))
-        instant, row, col = indices
-        array = self.window(
-            instant.start, instant.stop, row.start, row.stop, col.start, col.stop
-        )
+            indices = list(map(_as_slice, indices))
+            instant, row, col = indices
+            array = self.window(
+                instant.start, instant.stop, row.start, row.stop, col.start, col.stop
+            )
 
-        mask = tuple(
-            (0 if scalar else slice(None, None) for scalar in scalars[:n_indices])
-        )
-        if len(mask) == 1:
-            mask = mask[0]
-        array = array.__getitem__(mask)
+            mask = tuple(
+                (0 if scalar else slice(None, None) for scalar in scalars[:n_indices])
+            )
+            if len(mask) == 1:
+                mask = mask[0]
+            array = array.__getitem__(mask)
 
-        return array
+            return array
+
+        return _Slice(realize)
 
     @property
     def _data(self):
@@ -344,6 +348,18 @@ class Variable:
             return self._inner.data_f64()
         else:  # pragma: NO COVER
             raise ValueError(f"Unexpected MMEncoding {encoding}")
+
+
+class _Slice:
+    def __init__(self, realize):
+        self.realize = realize
+
+    @functools.cached_property
+    def data(self):
+        return self.realize()
+
+    def __getitem__(self, arg):
+        return self.data.__getitem__(arg)
 
 
 def _to_datetime64(i):

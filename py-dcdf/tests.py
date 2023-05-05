@@ -238,7 +238,7 @@ def test_get(dataset, test_data, var):
     for instant in range(0, instants, 13):
         for row in range(0, rows, 4):
             for col in range(0, cols, 3):
-                assert variable[instant, row, col] == data[instant, row, col]
+                assert variable[instant, row, col].data == data[instant, row, col]
 
 
 @pytest.mark.parametrize("var", VARIABLES)
@@ -251,7 +251,7 @@ def test_cell(dataset, test_data, var):
             start = row + col
             end = instants - start
             expected = data[start:end, row, col]
-            got = variable[start:end, row, col]
+            got = variable[start:end, row, col].data
             assert numpy.array_equal(got, expected)
 
 
@@ -267,7 +267,7 @@ def test_window(dataset, test_data, var):
             start = top + bottom
             end = instants - start
             expected = data[start:end, top:bottom, left:right]
-            got = variable[start:end, top:bottom, left:right]
+            got = variable[start:end, top:bottom, left:right].data
             assert numpy.array_equal(got, expected)
 
 
@@ -285,7 +285,7 @@ def test_all_slice_permutations(dataset, test_data):
 
     for arg in slice_args:
         expected = data.__getitem__(arg)
-        got = variable.__getitem__(arg)
+        got = variable.__getitem__(arg).data
         if isinstance(expected, (int, float, numpy.number)):
             assert got == expected
         else:
