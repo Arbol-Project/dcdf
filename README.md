@@ -32,6 +32,7 @@ may not work at this time.
 Then:
 
     $ pip install -U pip setuptools
+    $ pip install "ipldstore @ git+https://github.com/dClimate/ipldstore@v1.0.0"
     $ pip install -e py-dcdf[dev,examples]
 
 From there, you should be able to run anything in the "examples" directory.

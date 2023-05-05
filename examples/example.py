@@ -266,7 +266,7 @@ def copy_data_from_dclimate(Dataset, n_instants=None, commit_every=10):
     dst = dataset.variables[0]
 
     # Get the dClimate dataset
-    src_dataset = dclimate.get_dataset(dclimate.get_head(Dataset.name))
+    src_dataset = dclimate.get_dataset(Dataset.name)
 
     # Get the dClimate variable (same name as ours)
     src = getattr(src_dataset, dst.name)
@@ -387,7 +387,7 @@ def shell(Dataset):
     data = resolver.get_dataset(head)
 
     # Get the dClimate dataset
-    src = dclimate.get_dataset(dclimate.get_head(Dataset.name))
+    src = dclimate.get_dataset(Dataset.name)
 
     locals = {
         "data": data,
