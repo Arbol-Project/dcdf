@@ -1091,7 +1091,9 @@ impl Cacheable for Variable {
 
 #[cfg(test)]
 mod tests {
-    use ndarray::{s, Array3};
+    use std::fmt::Debug;
+
+    use ndarray::{s, Array3, ArrayBase, Data, Dimension};
     use num_traits::{cast, Float, PrimInt};
 
     use super::*;
@@ -1310,7 +1312,7 @@ mod tests {
         let extracted = mmarray
             .window(geom::Cube::new(0, instants, 0, rows, 0, cols))
             .await?;
-        assert_eq!(array, extracted);
+        assert!(array_eq(array, extracted));
 
         Ok(())
     }
@@ -1320,7 +1322,7 @@ mod tests {
         let extracted = mmarray
             .window(geom::Cube::new(0, instants, 0, rows, 0, cols))
             .await?;
-        assert_eq!(array, extracted);
+        assert!(array_eq(array, extracted));
 
         Ok(())
     }
@@ -1434,5 +1436,22 @@ mod tests {
         assert_eq!(ls[6].node_type, Some("Dataset"));
 
         Ok(())
+    }
+
+    fn array_eq<S, N, D>(left: ArrayBase<S, D>, right: ArrayBase<S, D>) -> bool
+    where
+        S: Data<Elem = N>,
+        N: Float + Debug,
+        D: Dimension,
+    {
+        assert_eq!(left.len(), right.len());
+
+        for (l, r) in left.iter().zip(right.iter()) {
+            if !(l.is_nan() && r.is_nan()) {
+                assert_eq!(l, r);
+            }
+        }
+
+        return true;
     }
 }

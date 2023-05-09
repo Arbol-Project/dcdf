@@ -823,6 +823,7 @@ impl<'a> Iterator for SuperCellIter<'a> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum Reference {
     Elided,
     Local(usize),

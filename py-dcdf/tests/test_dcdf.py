@@ -1,4 +1,6 @@
 import itertools
+import os
+
 import numpy
 import pytest
 
@@ -178,7 +180,7 @@ def test_data(populated):
     return populated[1]
 
 
-def test_populate(dataset, resolver):
+def test_populate(dataset):
     apples = dataset.apples
     assert apples.name == "apples"
     assert apples.round is False
@@ -238,7 +240,11 @@ def test_get(dataset, test_data, var):
     for instant in range(0, instants, 13):
         for row in range(0, rows, 4):
             for col in range(0, cols, 3):
-                assert variable[instant, row, col].data == data[instant, row, col]
+                expected = data[instant, row, col]
+                got = variable[instant, row, col].data
+                if numpy.isnan(expected) and numpy.isnan(got):
+                    continue
+                assert got == expected
 
 
 @pytest.mark.parametrize("var", VARIABLES)
@@ -252,7 +258,7 @@ def test_cell(dataset, test_data, var):
             end = instants - start
             expected = data[start:end, row, col]
             got = variable[start:end, row, col].data
-            assert numpy.array_equal(got, expected)
+            assert numpy.array_equal(got, expected, equal_nan=True)
 
 
 @pytest.mark.parametrize("var", VARIABLES)
@@ -268,7 +274,7 @@ def test_window(dataset, test_data, var):
             end = instants - start
             expected = data[start:end, top:bottom, left:right]
             got = variable[start:end, top:bottom, left:right].data
-            assert numpy.array_equal(got, expected)
+            assert numpy.array_equal(got, expected, equal_nan=True)
 
 
 def test_all_slice_permutations(dataset, test_data):
@@ -328,3 +334,32 @@ def test_coordinate_step_not_supported_for_slice():
 def test_variable_too_many_indices_in_slice(dataset):
     with pytest.raises(IndexError):
         dataset.apples[1, 2, 3, 4]
+
+
+@pytest.fixture(scope="session")
+def cpc_precip(resolver: dcdf.Resolver) -> dcdf.Dataset:
+    t = dcdf.Coordinate.time(
+        "time", numpy.datetime64("1979-01-01"), numpy.timedelta64(1, "D")
+    )
+    lat = dcdf.Coordinate.range("latitude", -89.75, 0.5, 360, numpy.float32)
+    lon = dcdf.Coordinate.range("longitude", -179.75, 0.5, 720, numpy.float32)
+
+    shape = (360, 720)
+
+    dataset = dcdf.Dataset.new([t, lat, lon], shape, resolver)
+
+    chunk_size = 64
+    k2_levels = [4, 6]
+    span_size = 20000
+    return dataset.add_variable("precip", span_size, chunk_size, k2_levels)
+
+
+def test_real_world_data(cpc_precip):
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "testdata.txt")) as input:
+        testdata = numpy.array(list(map(numpy.float32, input)))
+
+    testdata = testdata.reshape(1, 360, 720)
+    dataset = cpc_precip.append("precip", testdata)
+
+    test_get(dataset, {"precip": testdata}, "precip")
