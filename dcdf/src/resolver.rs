@@ -15,7 +15,7 @@ use crate::{
 };
 
 const MAGIC_NUMBER: u16 = 0xDCDF + 1;
-const FORMAT_VERSION: u32 = 0;
+const FORMAT_VERSION: u32 = 1;
 
 /// The `Resolver` manages storage and retrieval of objects from an IPLD datastore
 ///

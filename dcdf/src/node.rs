@@ -7,12 +7,12 @@ use futures::io::{AsyncRead, AsyncWrite};
 use crate::{errors::Result, resolver::Resolver};
 
 pub(crate) const NODE_DATASET: u8 = 0;
-pub(crate) const NODE_LINKS: u8 = 4;
-pub(crate) const NODE_MMSTRUCT3: u8 = 10;
-pub(crate) const NODE_SUBCHUNK: u8 = 11;
-pub(crate) const NODE_SUPERCHUNK: u8 = 2;
+pub(crate) const NODE_LINKS: u8 = 1;
+pub(crate) const NODE_MMSTRUCT3: u8 = 2;
 pub(crate) const NODE_SPAN: u8 = 3;
-pub(crate) const NODE_VARIABLE: u8 = 1;
+pub(crate) const NODE_SUBCHUNK: u8 = 4;
+pub(crate) const NODE_SUPERCHUNK: u8 = 5;
+pub(crate) const NODE_VARIABLE: u8 = 6;
 
 /// A DAG node.
 ///
