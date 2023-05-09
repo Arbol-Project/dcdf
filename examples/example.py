@@ -406,20 +406,20 @@ def verify(Dataset):
         assert src.time[instant] == data.time[instant]
         expected = src_var[instant].data
         got = var[instant].data
-        if not np.array_equal(got, expected):
+        if not np.array_equal(got, expected, equal_nan=True):
             print(f"\nMismatch at {instant} ({data.time[instant]})")
 
-        locals = {
-            "data": data,
-            "src": src,
-            "np": np,
-            "expected": expected,
-            "got": got,
-        }
+            locals = {
+                "data": data,
+                "src": src,
+                "np": np,
+                "expected": expected,
+                "got": got,
+            }
 
-        banner = pprint.pformat(locals)
-        code.interact(banner, local=locals)
-        break
+            banner = pprint.pformat(locals)
+            code.interact(banner, local=locals)
+            break
 
 
 def shell(Dataset):
