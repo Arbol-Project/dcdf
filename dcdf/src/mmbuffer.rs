@@ -1,7 +1,7 @@
 use std::cmp;
 
 use ndarray::{s, ArrayBase, ArrayViewMut1, ArrayViewMut3, Data, Ix3};
-use num_traits::Num;
+use num_traits::{Float, Num};
 
 use crate::{
     fixed::{from_fixed, suggest_fraction, to_fixed, Fraction},
@@ -372,7 +372,7 @@ impl<'a> MMBuffer3<'a> {
 
             Self::I64(buffer) => min_max(&buffer.0),
 
-            Self::F32(buffer) => min_max(&buffer.array)
+            Self::F32(buffer) => min_max_float(&buffer.array)
                 .into_iter()
                 .map(|(a, b)| {
                     (
@@ -382,7 +382,7 @@ impl<'a> MMBuffer3<'a> {
                 })
                 .collect(),
 
-            Self::F64(buffer) => min_max(&buffer.array)
+            Self::F64(buffer) => min_max_float(&buffer.array)
                 .into_iter()
                 .map(|(a, b)| {
                     (
@@ -459,6 +459,42 @@ where
         min_max.push((min_value, max_value));
     }
 
+    min_max
+}
+
+fn min_max_float<N, S>(array: &ArrayBase<S, Ix3>) -> Vec<(N, N)>
+where
+    N: Float + PartialOrd + Copy,
+    S: Data<Elem = N>,
+{
+    let mut min_max = Vec::with_capacity(array.shape()[0]);
+    for subarray in array.outer_iter() {
+        let mut values = subarray.iter();
+        let first_value = values.next().unwrap();
+        let (mut min_value, mut max_value) = (first_value, first_value);
+        while min_value.is_nan() {
+            if let Some(value) = values.next() {
+                min_value = value;
+                max_value = value;
+            } else {
+                break;
+            }
+        }
+
+        for n in values {
+            if n.is_nan() {
+                min_value = n;
+            } else {
+                if n < min_value {
+                    min_value = n;
+                } else if n > max_value {
+                    max_value = n;
+                }
+            }
+        }
+
+        min_max.push((*min_value, *max_value));
+    }
     min_max
 }
 

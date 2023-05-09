@@ -544,10 +544,11 @@ mod tests {
         testing,
     };
 
-    use std::collections::HashSet;
+    use std::{collections::HashSet, fmt::Debug};
 
     use futures::StreamExt;
-    use ndarray::{array, s, Array3};
+    use ndarray::{array, s, Array3, ArrayBase, Data, Dimension};
+    use num_traits::{Float, PrimInt};
     use paste::paste;
 
     macro_rules! mmarray1_int_tests {
@@ -704,21 +705,6 @@ mod tests {
         ($name:ident) => {
             paste! {
                 #[tokio::test]
-                async fn [<$name _test_get>]() -> Result<()> {
-                    let (data, mmarray) = $name().await?;
-                    let [instants, rows, cols] = mmarray.shape();
-                    for instant in 0..instants {
-                        for row in 0..rows {
-                            for col in 0..cols {
-                                assert_eq!(mmarray.get(instant, row, col).await?, data[[instant, row, col]]);
-                            }
-                        }
-                    }
-
-                    Ok(())
-                }
-
-                #[tokio::test]
                 #[should_panic]
                 async fn [<$name _test_get_instant_out_of_bounds>]() {
                     let (_data, mmarray) = $name().await.unwrap();
@@ -740,22 +726,6 @@ mod tests {
                     let (_data, mmarray) = $name().await.unwrap();
                     let [instants, rows, cols] = mmarray.shape();
                     mmarray.get(instants - 1, rows - 1, cols).await.unwrap();
-                }
-
-                #[tokio::test]
-                async fn [<$name _test_cell>]() -> Result<()> {
-                    let (data, mmarray) = $name().await?;
-                    let [instants, rows, cols] = mmarray.shape();
-                    for row in 0..rows {
-                        for col in 0..cols {
-                            let start = row + col;
-                            let end = instants - start;
-                            let cell = mmarray.cell(start, end, row, col).await?;
-                            assert_eq!(cell, data.slice(s![start..end, row, col]));
-                        }
-                    }
-
-                    Ok(())
                 }
 
                 #[tokio::test]
@@ -782,26 +752,6 @@ mod tests {
                     mmarray.cell(0, instants - 1, rows - 1, cols).await.unwrap();
                 }
 
-                #[tokio::test]
-                async fn [<$name _test_window>]() -> Result<()> {
-                    let (data, mmarray) = $name().await?;
-                    let [instants, rows, cols] = mmarray.shape();
-                    for top in 0..rows / 2 {
-                        let bottom = top + rows / 2;
-                        for left in 0..cols / 2 {
-                            let right = left + cols / 2;
-                            let start = top + bottom;
-                            let end = instants - start;
-
-                            let bounds = geom::Cube::new(start, end, top, bottom, left, right);
-                            let window = mmarray.window(bounds).await?;
-
-                            assert_eq!(window, data.slice(s![start..end, top..bottom, left..right]));
-                        }
-                    }
-
-                    Ok(())
-                }
 
                 #[tokio::test]
                 #[should_panic]
@@ -830,7 +780,131 @@ mod tests {
                     mmarray.window(bounds).await.unwrap();
                 }
             }
+        };
+    }
+
+    macro_rules! mmarray3_int_tests {
+        ($name:ident) => {
+            paste! {
+                #[tokio::test]
+                async fn [<$name _test_get>]() -> Result<()> {
+                    let (data, mmarray) = $name().await?;
+                    let [instants, rows, cols] = mmarray.shape();
+                    for instant in 0..instants {
+                        for row in 0..rows {
+                            for col in 0..cols {
+                                let got = mmarray.get(instant, row, col).await?;
+                                let expected = data[[instant, row, col]];
+                                assert_eq!(got, expected);
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                #[tokio::test]
+                async fn [<$name _test_cell>]() -> Result<()> {
+                    let (data, mmarray) = $name().await?;
+                    let [instants, rows, cols] = mmarray.shape();
+                    for row in 0..rows {
+                        for col in 0..cols {
+                            let start = row + col;
+                            let end = instants - start;
+                            let cell = mmarray.cell(start, end, row, col).await?;
+                            assert_eq!(cell.view(), data.slice(s![start..end, row, col]));
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                #[tokio::test]
+                async fn [<$name _test_window>]() -> Result<()> {
+                    let (data, mmarray) = $name().await?;
+                    let [instants, rows, cols] = mmarray.shape();
+                    for top in 0..rows / 2 {
+                        let bottom = top + rows / 2;
+                        for left in 0..cols / 2 {
+                            let right = left + cols / 2;
+                            let start = top + bottom;
+                            let end = instants - start;
+
+                            let bounds = geom::Cube::new(start, end, top, bottom, left, right);
+                            let window = mmarray.window(bounds).await?;
+
+                            assert_eq!(window.view(), data.slice(s![start..end, top..bottom, left..right]));
+                        }
+                    }
+
+                    Ok(())
+                }
+            }
         }
+    }
+
+    macro_rules! mmarray3_float_tests {
+        ($name:ident) => {
+            paste! {
+                #[tokio::test]
+                async fn [<$name _test_get>]() -> Result<()> {
+                    let (data, mmarray) = $name().await?;
+                    let [instants, rows, cols] = mmarray.shape();
+                    for instant in 0..instants {
+                        for row in 0..rows {
+                            for col in 0..cols {
+                                let got = mmarray.get(instant, row, col).await?;
+                                let expected = data[[instant, row, col]];
+                                if !(got.is_nan() && expected.is_nan()) {
+                                    assert_eq!(got, expected);
+                                }
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                #[tokio::test]
+                async fn [<$name _test_cell>]() -> Result<()> {
+                    let (data, mmarray) = $name().await?;
+                    let [instants, rows, cols] = mmarray.shape();
+                    for row in 0..rows {
+                        for col in 0..cols {
+                            let start = row + col;
+                            let end = instants - start;
+                            let cell = mmarray.cell(start, end, row, col).await?;
+                            assert!(array_eq(cell.view(), data.slice(s![start..end, row, col])));
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                #[tokio::test]
+                async fn [<$name _test_window>]() -> Result<()> {
+                    let (data, mmarray) = $name().await?;
+                    let [instants, rows, cols] = mmarray.shape();
+                    for top in 0..rows / 2 {
+                        let bottom = top + rows / 2;
+                        for left in 0..cols / 2 {
+                            let right = left + cols / 2;
+                            let start = top + bottom;
+                            let end = instants - start;
+
+                            let bounds = geom::Cube::new(start, end, top, bottom, left, right);
+                            let window = mmarray.window(bounds).await?;
+
+                            assert!(array_eq(window.view(), data.slice(
+                                s![start..end, top..bottom, left..right]))
+                            );
+                        }
+                    }
+
+                    Ok(())
+                }
+            }
+        };
     }
 
     macro_rules! mmarray3_i32_search_tests {
@@ -1078,8 +1152,11 @@ mod tests {
     }
 
     mmarray3_tests!(chunk_i32);
+    mmarray3_int_tests!(chunk_i32);
     mmarray3_tests!(span_i32);
+    mmarray3_int_tests!(span_i32);
     mmarray3_tests!(span_i32_shallow_superchunks);
+    mmarray3_int_tests!(span_i32_shallow_superchunks);
     mmarray3_i32_search_tests!(chunk_i32);
     mmarray3_i32_search_tests!(span_i32);
 
@@ -1192,8 +1269,11 @@ mod tests {
     }
 
     mmarray3_tests!(chunk_i64);
+    mmarray3_int_tests!(chunk_i64);
     mmarray3_tests!(span_i64);
+    mmarray3_int_tests!(span_i64);
     mmarray3_tests!(span_i64_shallow_superchunks);
+    mmarray3_int_tests!(span_i64_shallow_superchunks);
     mmarray3_i64_search_tests!(chunk_i64);
     mmarray3_i64_search_tests!(span_i64);
 
@@ -1308,8 +1388,11 @@ mod tests {
     }
 
     mmarray3_tests!(chunk_f32);
+    mmarray3_float_tests!(chunk_f32);
     mmarray3_tests!(span_f32);
+    mmarray3_float_tests!(span_f32);
     mmarray3_tests!(span_f32_shallow_superchunks);
+    mmarray3_float_tests!(span_f32_shallow_superchunks);
 
     type DataArray3F64 = Result<(Array3<f64>, MMArray3F64)>;
 
@@ -1422,6 +1505,36 @@ mod tests {
     }
 
     mmarray3_tests!(chunk_f64);
+    mmarray3_float_tests!(chunk_f64);
     mmarray3_tests!(span_f64);
+    mmarray3_float_tests!(span_f64);
     mmarray3_tests!(span_f64_shallow_superchunks);
+    mmarray3_float_tests!(span_f64_shallow_superchunks);
+
+    trait IntWithNan {
+        fn is_nan(&self) -> bool;
+    }
+
+    impl<T: PrimInt> IntWithNan for T {
+        fn is_nan(&self) -> bool {
+            false
+        }
+    }
+
+    fn array_eq<S, N, D>(left: ArrayBase<S, D>, right: ArrayBase<S, D>) -> bool
+    where
+        S: Data<Elem = N>,
+        N: Float + Debug,
+        D: Dimension,
+    {
+        assert_eq!(left.len(), right.len());
+
+        for (l, r) in left.iter().zip(right.iter()) {
+            if !(l.is_nan() && r.is_nan()) {
+                assert_eq!(l, r);
+            }
+        }
+
+        return true;
+    }
 }

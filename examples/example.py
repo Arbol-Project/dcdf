@@ -1,6 +1,7 @@
 import code
 import collections
 import os
+import pprint
 import sys
 
 import docopt
@@ -290,19 +291,7 @@ def copy_data_from_dclimate(Dataset, n_instants=None, commit_every=10):
     # Copy one chunk width at a time
     for index in range(written, written + n_instants, dst.chunk_size):
         src_chunk = src[index : index + dst.chunk_size]
-
-        # Prime local IPFS store by fetching one ZARR chunk at a time from dClimate. An
-        # attempt to get around perpetual timeout errors caused by dClimate serving IPFS
-        # *very* slowly.
-        _, rows, cols = src_chunk.shape
-        row_stride, col_stride = Dataset.zarr_chunk_size
-        print("Prime zarr chunks")
-        for row in range(0, rows, row_stride):
-            for col in range(0, cols, col_stride):
-                src_chunk[:, row : row + row_stride, col : col + col_stride].data
-                print(".", end="")
-                sys.stdout.flush()
-        print("")
+        prime_ipfs(src_chunk, Dataset.zarr_chunk_size)
 
         # Again, notice that mutating a dataset creates a new dataset. Data in
         # K-squared, and in IPLD more generally, is immutable.
@@ -334,6 +323,21 @@ def copy_data_from_dclimate(Dataset, n_instants=None, commit_every=10):
     # Dataset structure.
     cid = dataset.commit()
     save_head(head_file, cid)
+
+
+def prime_ipfs(src_chunk, zarr_chunk_size):
+    # Prime local IPFS store by fetching one ZARR chunk at a time from dClimate. An
+    # attempt to get around perpetual timeout errors caused by dClimate serving IPFS
+    # *very* slowly.
+    _, rows, cols = src_chunk.shape
+    row_stride, col_stride = zarr_chunk_size
+    print("Prime zarr chunks")
+    for row in range(0, rows, row_stride):
+        for col in range(0, cols, col_stride):
+            src_chunk[:, row : row + row_stride, col : col + col_stride].data
+            print(".", end="")
+            sys.stdout.flush()
+    print("")
 
 
 def add_data_from_file(Dataset, path):
@@ -371,6 +375,51 @@ def add_data_from_file(Dataset, path):
     # Commit the changes
     cid = dataset.commit()
     save_head(head_file, cid, f"Imported {path}")
+
+
+def verify(Dataset):
+    """Check DCDF encoded data against dClimate and make sure they match."""
+    """Open an interactive shell to explore data."""
+    print("verify", flush=True)
+    head_file = f".{Dataset.name}_head"
+    if not os.path.exists(head_file):
+        error(
+            f"Dataset doesn't exist. Have you initalized it? HEAD should be"
+            f" stored at {head_file}"
+        )
+
+    # Get our Dataset
+    resolver = dcdf.Resolver()
+    head = open(head_file).read().strip()
+    data = resolver.get_dataset(head)
+    var = data.variables[0]
+    print("got our dataset", flush=True)
+
+    # Get the dClimate dataset
+    src = dclimate.get_dataset(Dataset.name)
+    src_var = getattr(src, var.name)
+    print("got dclimate dataset", flush=True)
+
+    for instant in range(var.shape[0]):
+        print(".", end="", flush=True)
+
+        assert src.time[instant] == data.time[instant]
+        expected = src_var[instant].data
+        got = var[instant].data
+        if not np.array_equal(got, expected):
+            print(f"\nMismatch at {instant} ({data.time[instant]})")
+
+        locals = {
+            "data": data,
+            "src": src,
+            "np": np,
+            "expected": expected,
+            "got": got,
+        }
+
+        banner = pprint.pformat(locals)
+        code.interact(banner, local=locals)
+        break
 
 
 def shell(Dataset):
@@ -474,6 +523,7 @@ def main():
         example.py <dataset> init
         example.py <dataset> copy [<n_instants>]
         example.py <dataset> add <input_file>...
+        example.py <dataset> verify
         example.py <dataset> shell
         example.py <dataset> ls [<path_or_cid>]
         example.py <dataset> du [<path_or_cid>]
@@ -497,6 +547,9 @@ def main():
 
     elif args["shell"]:
         shell(Dataset)
+
+    elif args["verify"]:
+        verify(Dataset)
 
     elif args["add"]:
         for input_file in args["<input_file>"]:
